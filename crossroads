@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""Crossroads: Bastogne, December 1944.  A sample game for the Grognard
+engine.
+
+Seven roads meet at Bastogne, and the German offensive in the Ardennes
+needs them all.  The 101st Airborne Division and three armoured teams
+must hold the town until Patton's 4th Armored Division breaks through
+from the south.  Play either side against the computer, or against a
+friend at the same screen.
+
+Run it with ./crossroads (Python 3 with Tk, nothing else).  The game is
+saved to ~/.crossroads.json.  ./crossroads --selftest checks the map and
+plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+
+ID = 'crossroads'
+TITLE = 'Crossroads'
+SUBTITLE = 'Bastogne, December 1944'
+
+INTRO = [
+    "16 December 1944. Three German armies have broken out of the "
+    "snowbound forests of the Eifel into the thinly held Ardennes. Their "
+    "goal is the Meuse, and beyond it Antwerp.",
+
+    "Every road in the southern Ardennes runs through one market town: "
+    "Bastogne. Seven of them meet there. The Fifth Panzer Army cannot "
+    "supply a drive to the Meuse without it.",
+
+    "On the night of the 18th the 101st Airborne Division arrives in "
+    "trucks, without winter clothing and short of ammunition, and joins "
+    "the scattered teams of the 10th Armored Division east of the town. "
+    "To the south, General Patton has promised to turn the Third Army "
+    "north in forty-eight hours.",
+
+    "It is the morning of 19 December, and fog lies on the hills.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='de', name='Germans', adj='German', colour='#a2acb4',
+         ink='#101010', flag='cross', posture='attack',
+         about='Take Bastogne, or bypass it and drive west for the Meuse.'),
+    dict(id='us', name='Americans', adj='American', colour='#a8b46a',
+         ink='#101010', flag='star', posture='defend',
+         about='Hold Bastogne until the 4th Armored Division arrives.'),
+]
+ORDER = ['de', 'us']            # the Germans move first each turn
+
+TURNS = 16
+START = (1944, 12, 19)
+TURN_PARTS = ['AM', 'PM']
+STACK = 3                       # units in a hex (4 in Bastogne)
+FOG = True                      # you only see enemy units near your own
+
+# The weather by turn: fog on the 19th, snow from the 21st, and on the
+# 23rd the skies clear, the transports drop supplies and the fighter-
+# bombers come out.
+WEATHER = {1: 'fog', 3: 'overcast', 5: 'snow', 8: 'overcast', 9: 'drop',
+           11: 'clear'}
+WEATHER_TYPES = {
+    'drop': dict(name='Clear: airdrop', icon='sun', air=True,
+                 airdrop='us'),
+}
+AIR = ['us']                    # who has fighter-bombers when it's clear
+
+SUPPLY = {
+    'de': dict(**{'from': ['E', 'N'], 'range': 9}),
+    'us': dict(**{'from': ['S', 'W'], 'range': 7}),
+}
+
+# German units that leave by the west edge are on their way to the
+# Meuse: 2 VP for each step.
+EXITS = {'de': dict(hexes=['W'], vp=2)}
+STEP_VP = 1                     # each step the enemy loses
+
+# --------------------------------------------------------------- the map
+
+# Snow on everything.
+TERRAIN = {
+    'clear':  dict(name='Open', colour='#dfe5e6', ink='#b4c0c6',
+                   pattern='snow', edge='#9aa6ae'),
+    'woods':  dict(colour='#5c7660', ink='#2e4a34', pattern='pines',
+                   snow='#e8eef0', edge='#24382a'),
+    'forest': dict(colour='#405a46', ink='#1e3424', snow='#d8e2e4',
+                   edge='#14241a'),
+    'hills':  dict(colour='#d2d4cc', ink='#8c8e86', edge='#7a7c72'),
+    'marsh':  dict(colour='#c4d0cc', ink='#6a8aa0', edge='#6a8a90'),
+    'town':   dict(name='Village', colour='#c8ccd0', ink='#7a4436'),
+    'city':   dict(name='Town', colour='#b8bcc0', ink='#6e4438', stack=4),
+}
+HEXSIDES = {'river': dict(colour='#5a7ea0'),
+            'stream': dict(colour='#6a8eae')}
+
+MAP = [
+    'hh.hh........fftf.....F.FF',
+    '.hh.h.........f..ff...F.F.',
+    '.h..h.h.......ffff.F...FF.',
+    '.hh.....fff........hFh.FF.',
+    '.m.......f...t..t...hhh...',
+    '..mt.....f.....f...hh.....',
+    '..m........t.tfff....hh..h',
+    '.....ft..t....ff.f.......h',
+    '...........t..t...t.......',
+    '...ff...t...C..tt......hhh',
+    '....ff....t.........F..F.F',
+    '......tf......t.t....FFFFF',
+    '......f..tfft.....ft.FFF..',
+    '.......f..fffff...f...FFFF',
+    '..F.FFFF....fff..f.f.FF.FF',
+    '...F...tF..t.........t....',
+    '..F.FFF.Ff..........F.....',
+    '...FFF...fff....F.tFF.....',
+    '..FFFFFF.f........F..F....',
+    '..FFF..F......t.FF..F.F...',
+]
+
+# Roads, as waypoints: each runs straight from one to the next.
+ROADS = [
+    ('road', ['1310', '1407', '1405', '1601']),              # Houffalize
+    ('road', ['1310', '1610', '1710', '1909', '2609']),      # Clervaux
+    ('road', ['1310', '1712', '2013', '2216', '2616']),      # Wiltz
+    ('road', ['1310', '1414', '1517', '1520']),              # Arlon (N4)
+    ('road', ['1310', '1013', '0816', '0520']),              # Neufchâteau
+    ('road', ['1310', '0910', '0708', '0406', '0103']),      # Marche
+    ('road', ['1310', '1111', '0712', '0112']),              # St-Hubert
+    ('trail', ['1310', '1509', '1705', '2604']),
+    ('trail', ['1310', '1512', '1712']),
+    ('trail', ['1310', '1313', '1216', '1220']),
+    ('trail', ['1310', '1209', '1008', '0708']),
+    ('trail', ['1209', '1207', '1405']),
+    ('trail', ['2216', '1918', '1520']),
+    ('rail', ['1310', '1509', '1806', '2603']),
+]
+
+RIVERS = [
+    ('river', ['1317:S', '1417:SW,S,SE', '1517:S', '1617:SW,S,SE',
+               '1717:S', '1817:SW,S,SE', '1917:S', '2017:SW,S,SE',
+               '2117:S', '2217:SW,S,SE', '2317:S', '2417:SW,S,SE',
+               '2517:S', '2617:SW,S,SE']),                    # the Sûre
+    ('river', ['0401:NE,SE', '0402:NE,SE', '0403:NE,SE', '0404:NE,SE',
+               '0405:NE,SE', '0406:NE,SE', '0407:NE,SE', '0408:NE,SE',
+               '0409:NE,SE', '0410:NE,SE', '0411:NE,SE']),    # the Ourthe
+]
+
+LABELS = {
+    '1310': 'Bastogne', '1405': 'Noville', '1407': 'Foy', '1509': 'Bizory',
+    '1610': 'Neffe', '1710': 'Mageret', '1909': 'Longvilly',
+    '1712': 'Wardin', '1512': 'Marvie', '1313': 'Assenois',
+    '1013': 'Sibret', '1111': 'Senonchamps', '0910': 'Mande',
+    '1008': 'Champs', '1207': 'Longchamps', '1209': 'Hemroulle',
+    '0708': 'Flamierge', '1601': 'Houffalize', '1705': 'Bourcy',
+    '2216': 'Wiltz', '1216': 'Chaumont', '1520': 'Martelange',
+    '0816': 'Vaux', '0406': 'Tillet', '2013': 'Doncols', '1918': 'Esch',
+    '0712': 'Morhet',
+}
+
+# Objectives count for whoever holds them, as long as 'for' is them.
+# Bastogne's perimeter shifts attacks on it one more column.
+OBJECTIVES = {
+    '1310': dict(vp=10, owner='us', shift=-1, works='perimeter',
+                 **{'for': 'de'}),
+    '1405': dict(vp=1, owner='us', **{'for': 'de'}),
+    '1610': dict(vp=1, owner='us', **{'for': 'de'}),
+    '1512': dict(vp=1, owner='us', **{'for': 'de'}),
+    '1008': dict(vp=1, owner='us', **{'for': 'de'}),
+    '1013': dict(vp=2, owner='us', **{'for': 'de'}),
+    '0910': dict(vp=2, owner='us', **{'for': 'de'}),
+    '1313': dict(vp=2, owner='us'),
+}
+SUDDEN_DEATH = {'de': ['1310']}     # take Bastogne and the game is won
+
+
+def SCORE(e, side):
+    """The Germans score objectives, exits and American losses; the
+    Americans score German losses, Assenois, where the relief came in,
+    and 5 VP for holding Bastogne."""
+    vp = e.vp(side)
+    if side == 'us' and e.control.get(grognard.parse('1310')) == 'us':
+        vp += 5
+    return vp
+
+
+def VICTORY(e):
+    """The margin decides: the Germans must do much better than hold
+    their own (the margins are set from games between computer players:
+    ./crossroads --simulate 20)."""
+    de, us = SCORE(e, 'de'), SCORE(e, 'us')
+    m = de - us
+    score = 'Germans %d VP, Americans %d.' % (de, us)
+    if m >= 15:
+        return 'de', ('German victory. %s Bastogne is bypassed and the '
+                      'panzers are across the Ourthe.' % score)
+    if m >= 11:
+        return 'de', 'German marginal victory. %s' % score
+    if m >= 4:
+        return 'us', ('American marginal victory: the Germans needed 11 VP '
+                      'more than the Americans, and got %d. %s Bastogne '
+                      'holds.' % (m, score))
+    return 'us', ('American victory. %s "Nuts!" Bastogne holds and the '
+                  'siege is broken.' % score)
+
+
+# ----------------------------------------------------------------- units
+
+DE_PZ = '#9aa8b6'       # panzer divisions: blue-grey
+DE_VG = '#b4b4aa'       # Volksgrenadiers: field grey
+DE_FJ = '#a8b498'       # Fallschirmjäger: Luftwaffe grey-green
+US_AB = '#c4bc86'       # airborne: khaki
+US_AR = '#9cb064'       # armour: olive
+
+UNITS = [
+    # ---- the Americans
+    dict(id='501', side='us', type='para', size='III', a=6, d=8, m=4,
+         range=0, hex='1410', formation='101st Airborne', colour=US_AB,
+         long='501st Parachute Infantry'),
+    dict(id='506', side='us', type='para', size='III', a=6, d=8, m=4,
+         hex='1308', formation='101st Airborne', colour=US_AB,
+         long='506th Parachute Infantry'),
+    dict(id='502', side='us', type='para', size='III', a=6, d=8, m=4,
+         hex='1209', formation='101st Airborne', colour=US_AB,
+         long='502nd Parachute Infantry'),
+    dict(id='327', side='us', type='glider', size='III', a=6, d=8, m=4,
+         hex='1311', formation='101st Airborne', colour=US_AB,
+         long='327th Glider Infantry'),
+    dict(id='101A', name='377', side='us', type='artillery', size='II',
+         a=4, d=2, m=4, range=3, steps=1, hex='1310',
+         formation='101st Airborne', colour=US_AB,
+         long='377th & 463rd Field Artillery'),
+    dict(id='101B', name='321', side='us', type='artillery', size='II',
+         a=4, d=2, m=4, range=3, steps=1, hex='1210',
+         formation='101st Airborne', colour=US_AB,
+         long='321st & 907th Glider Field Artillery'),
+    dict(id='101HQ', name='101', side='us', type='hq', size='XX', a=0, d=1,
+         m=6, steps=1, hex='1310', formation='101st Airborne',
+         colour=US_AB, long='101st Airborne HQ (McAuliffe)'),
+    dict(id='Desobry', name='DESOB', side='us', type='armor', size='II',
+         a=5, d=4, m=8, hex='1405', formation='10th Armored',
+         colour=US_AR, long='Team Desobry'),
+    dict(id='Cherry', name='CHERRY', side='us', type='armor', size='II',
+         a=5, d=4, m=8, hex='1710', formation='10th Armored',
+         colour=US_AR, long='Team Cherry'),
+    dict(id='OHara', name='OHARA', side='us', type='armor', size='II',
+         a=4, d=4, m=8, hex='1712', formation='10th Armored',
+         colour=US_AR, long="Team O'Hara"),
+    dict(id='CCR9', name='CCR9', side='us', type='armor', size='X', a=3,
+         d=3, m=8, steps=1, hex='1909', formation='9th Armored',
+         colour=US_AR, long='CCR, 9th Armored (remnants)'),
+    dict(id='420', side='us', type='sp_art', size='II', a=4, d=2, m=6,
+         range=3, steps=1, hex='1310', formation='10th Armored',
+         colour=US_AR, long='420th Armored Field Artillery'),
+    dict(id='755', side='us', type='artillery', size='II', a=5, d=2, m=4,
+         range=4, steps=1, hex='1211', formation='VIII Corps',
+         colour=US_AR, long='755th & 969th Field Artillery (155mm)'),
+    dict(id='SNAFU', side='us', type='infantry', size='II', a=2, d=3, m=4,
+         steps=1, hex='1310', formation='VIII Corps', colour=US_AR,
+         long='Team SNAFU (stragglers)'),
+    dict(id='705', side='us', type='td', size='II', a=4, d=5, m=8,
+         arrive=2, at='1001', formation='VIII Corps', colour=US_AR,
+         long='705th Tank Destroyer Battalion'),
+    dict(id='CCA4', side='us', posture='attack', type='armor', size='X',
+         a=7, d=5, m=8,
+         arrive=7, at='1520', formation='4th Armored', colour=US_AR,
+         long='CCA, 4th Armored Division'),
+    dict(id='CCB4', side='us', posture='attack', type='armor', size='X',
+         a=7, d=5, m=8,
+         arrive=7, at='0520', formation='4th Armored', colour=US_AR,
+         long='CCB, 4th Armored Division'),
+    dict(id='CCR4', side='us', posture='attack', type='armor', size='X',
+         a=6, d=5, m=8,
+         arrive=10, at='1220', formation='4th Armored', colour=US_AR,
+         long='CCR, 4th Armored Division (Abrams)'),
+    dict(id='4ART', name='4ARM', side='us', posture='attack', type='sp_art',
+         size='III', a=6, d=2, m=6, range=4, steps=1, arrive=9, at='1520',
+         formation='4th Armored', colour=US_AR,
+         long='4th Armored Division Artillery'),
+    dict(id='318', side='us', posture='attack', type='infantry', size='III',
+         a=4, d=5, m=4, arrive=10, at='1520', formation='80th Infantry', colour=US_AR,
+         long='318th Infantry Regiment'),
+
+    # ---- the Germans
+    dict(id='3Pz', name='3PZ', side='de', type='armor', size='III', a=8,
+         d=5, m=8, ra=4, rd=3, hex='1704', formation='2nd Panzer',
+         colour=DE_PZ, long='3rd Panzer Regiment'),
+    dict(id='2PzG', name='2PZG', side='de', type='mech', size='III', a=6,
+         d=5, m=8, hex='1804', formation='2nd Panzer', colour=DE_PZ,
+         long='2nd Panzergrenadier Regiment'),
+    dict(id='304', side='de', type='mech', size='III', a=6, d=5, m=8,
+         hex='1903', formation='2nd Panzer', colour=DE_PZ,
+         long='304th Panzergrenadier Regiment'),
+    dict(id='2Rec', name='2AUFK', side='de', type='recon', size='II', a=3,
+         d=2, m=10, steps=1, hex='1602', formation='2nd Panzer',
+         colour=DE_PZ, long='2nd Panzer Reconnaissance Battalion'),
+    dict(id='74', side='de', type='sp_art', size='III', a=6, d=2, m=6,
+         range=3, steps=1, hex='1903', formation='2nd Panzer', colour=DE_PZ,
+         long='74th Panzer Artillery Regiment'),
+    dict(id='130', side='de', type='armor', size='III', a=8, d=5, m=8,
+         ra=4, rd=3, hex='2009', formation='Panzer Lehr', colour=DE_PZ,
+         long='130th Panzer Lehr Regiment'),
+    dict(id='901', side='de', type='mech', size='III', a=6, d=5, m=8,
+         hex='2109', formation='Panzer Lehr', colour=DE_PZ,
+         long='901st Panzergrenadier Lehr Regiment'),
+    dict(id='902', side='de', type='mech', size='III', a=6, d=5, m=8,
+         hex='2010', formation='Panzer Lehr', colour=DE_PZ,
+         long='902nd Panzergrenadier Lehr Regiment'),
+    dict(id='130A', name='130', side='de', type='sp_art', size='III', a=5,
+         d=2, m=6, range=3, steps=1, hex='2210', formation='Panzer Lehr',
+         colour=DE_PZ, long='130th Panzer Artillery Regiment'),
+    dict(id='39', side='de', type='infantry', size='III', a=5, d=5, m=4,
+         hex='2112', formation='26th Volksgrenadier', colour=DE_VG,
+         long='39th Volksgrenadier Regiment'),
+    dict(id='77', side='de', type='infantry', size='III', a=5, d=5, m=4,
+         hex='1908', formation='26th Volksgrenadier', colour=DE_VG,
+         long='77th Volksgrenadier Regiment'),
+    dict(id='78', side='de', type='infantry', size='III', a=5, d=5, m=4,
+         arrive=1, at='2609', formation='26th Volksgrenadier',
+         colour=DE_VG, long='78th Volksgrenadier Regiment'),
+    dict(id='26A', name='26', side='de', type='artillery', size='III', a=5,
+         d=2, m=4, range=3, steps=1, arrive=2, at='2609',
+         formation='26th Volksgrenadier', colour=DE_VG,
+         long='26th Artillery Regiment'),
+    dict(id='26F', name='26FUS', side='de', type='recon', size='II', a=3,
+         d=3, m=8, steps=1, arrive=2, at='2616',
+         formation='26th Volksgrenadier', colour=DE_VG,
+         long='26th Füsilier Battalion'),
+    dict(id='766', side='de', type='rocket', size='III', a=7, d=2, m=4,
+         range=4, steps=1, arrive=4, at='2609', formation='XLVII Corps',
+         colour=DE_VG, long='766th Volksartillerie Korps'),
+    dict(id='XLVII', name='XLVII', side='de', type='hq', size='XXX', a=0,
+         d=1, m=6, steps=1, hex='2210', formation='XLVII Panzer Corps',
+         colour=DE_PZ, long='XLVII Panzer Corps HQ (von Lüttwitz)'),
+    dict(id='14FJ', name='14FJ', side='de', type='infantry', size='III',
+         a=4, d=5, m=4, arrive=3, at='2616', formation='5th Fallschirmjäger',
+         colour=DE_FJ, long='14th Fallschirmjäger Regiment'),
+    dict(id='15FJ', name='15FJ', side='de', type='infantry', size='III',
+         a=4, d=5, m=4, arrive=4, at='2616', formation='5th Fallschirmjäger',
+         colour=DE_FJ, long='15th Fallschirmjäger Regiment'),
+    dict(id='13FJ', name='13FJ', side='de', type='infantry', size='III',
+         a=4, d=5, m=4, arrive=6, at='2616', formation='5th Fallschirmjäger',
+         colour=DE_FJ, long='13th Fallschirmjäger Regiment'),
+    dict(id='115', side='de', type='mech', size='III', a=6, d=5, m=8,
+         arrive=12, at='1001', formation='15th Panzergrenadier',
+         colour=DE_PZ, long='115th Panzergrenadier Regiment (KG Maucke)'),
+    dict(id='115Pz', name='115PZ', side='de', type='armor', size='II', a=6,
+         d=4, m=8, steps=1, arrive=12, at='1101',
+         formation='15th Panzergrenadier', colour=DE_PZ,
+         long='115th Panzer Battalion'),
+]
+
+# How the screen around the map looks: the panels on the right and along
+# the bottom, from the engine's widgets (see grognard/widgets.py).
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+
+ICON = 'crossroads'     # drawn below
+
+HELP = [
+    "The Germans move first each turn. Seven roads meet at Bastogne; "
+    "whoever holds it at the end of a turn controls the whole road net. "
+    "If the Germans ever hold Bastogne at the end of a turn they win at "
+    "once.",
+
+    "Otherwise the margin of victory points at the end of 26 December "
+    "decides. The Germans score for the villages they hold, for "
+    "American steps destroyed, and 2 VP a step for every unit they get "
+    "off the western edge on the road to the Meuse. The Americans score "
+    "for German steps destroyed, for holding Assenois, and 5 VP for "
+    "holding Bastogne at the end. The Germans need to be 11 VP ahead "
+    "to win (15 for a decisive victory); 4 to 10 ahead is an American "
+    "marginal victory, and less a clear one.",
+
+    "Fog on the 19th keeps everyone half blind. Snow from the 21st "
+    "slows everything off the roads. On the 23rd the sky clears: "
+    "supplies are dropped to the 101st, and American fighter-bombers "
+    "shift every attack the Americans make one column. Patton's 4th "
+    "Armored Division arrives from the south on the 22nd.",
+]
+
+
+@grognard.icon('crossroads')
+def draw_icon(p, n):
+    """A seven-pointed star of roads on snow, and a red objective at the
+    middle."""
+    import math
+    p.fill('#dfe5e6')
+    c = n / 2
+    for k in range(7):
+        a = math.radians(k * 360 / 7 - 90)
+        p.line(c, c, c + math.cos(a) * n, c + math.sin(a) * n,
+               '#4a3a28', max(2, n // 9))
+        p.line(c, c, c + math.cos(a) * n, c + math.sin(a) * n,
+               '#d8c8a0', max(1, n // 16))
+    p.disc(c, c, n * 0.2, '#b02020')
+    p.disc(c, c, n * 0.12, '#f0e0c0')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

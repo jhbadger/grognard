@@ -1,0 +1,288 @@
+# Grognard
+
+An engine for *hex-and-counter wargames*, the kind played on a paper map
+of hexagons with cardboard counters for regiments and battalions: zones
+of control, stacking, a combat results table, supply lines, reinforcements
+by turn and victory points for the towns that matter. It's written in
+Python and Tk with nothing to install, and everything (the map, the
+counters, the icon, the sound) is drawn in code, so there are no image or
+sound files. The computer can play either side, or both; two people can
+play at one screen.
+
+It's a sibling of the [tilerpgs](../tilerpgs) and of
+[blobber](../blobberrpg), and is built the same way: the whole screen is
+drawn into one framebuffer in pure Python, and the front end only shows
+the result, so a Kivy front end for Android is a few dozen lines.
+
+```bash
+./crossroads
+```
+
+If Python reports `No module named '_tkinter'`, install your Python's Tk
+package (`brew install python-tk` with Homebrew Python on macOS, or
+`sudo apt install python3-tk` on Debian and Ubuntu).
+
+## Crossroads: Bastogne, December 1944
+
+The sample game. Seven roads meet at Bastogne, and the German offensive
+in the Ardennes needs them all. The 101st Airborne Division and three
+armoured teams of the 10th Armored must hold the town until Patton's 4th
+Armored Division breaks through from the south.
+
+- **Sixteen turns**, morning and afternoon from 19 to 26 December. The
+  Germans move first each turn.
+- **The map**: 26 by 20 hexes of snow, pine forest, villages, the road
+  net, the railway to Gouvy, and the Sûre and Ourthe rivers.
+- **The Germans**: the 2nd Panzer and Panzer Lehr divisions, the 26th
+  Volksgrenadiers, the 5th Fallschirmjäger coming up from Wiltz, and the
+  15th Panzergrenadiers on Christmas Eve.
+- **The Americans**: the 501st, 502nd and 506th Parachute and the 327th
+  Glider Infantry, Teams Desobry, Cherry and O'Hara, the remnants of the
+  9th Armored, the 705th Tank Destroyers, the guns, and from the 22nd
+  the 4th Armored Division.
+- **The weather**: fog on the 19th; snow from the 21st, which slows
+  everything off the roads; on the 23rd the sky clears, the 101st is
+  supplied by air and American fighter-bombers shift every American
+  attack a column.
+- **Winning**: if the Germans hold Bastogne at the end of any turn they
+  win at once. Otherwise the Germans score for the villages they take,
+  American steps destroyed, and 2 VP a step for each unit they get off
+  the western edge on the road to the Meuse; the Americans for German
+  steps destroyed, Assenois, and holding Bastogne. The Germans must
+  finish 11 VP ahead to win.
+
+## Playing
+
+The screen is laid out like the wargames of the early '90s: a menu bar
+on top, the map, a column of panels on the right (the date, the weather,
+the score, the objectives and who holds them, the phase, and an arrow
+pad), and a row along the bottom (the selected unit, the orders and the
+log).
+
+- **Moving**: tap one of your units; what it can't reach goes dark. Tap
+  a lit hex to move there. Roads are quickest. Moving next to an enemy
+  unit (into its *zone of control*) stops a unit, unless a friendly unit
+  is already there, and a unit can't move straight from one enemy zone to
+  another. Tap a stack again for the next unit in it, or *Whole stack*.
+  *Undo* takes back moves until you bump into the enemy.
+- **Fighting**: enemy hexes you can attack are shaded red. Tap one and
+  every unit that can join is outlined in green; tap your hexes to leave
+  them out. Artillery joins from up to its range (in brackets on the
+  counter), and the defender's guns in range help defend. The bottom
+  panel shows the odds, the column shifts (terrain, rivers, armour in the
+  open, air power) and what each roll of the die would do. *Attack!*
+  rolls it. A city's defenders don't retreat: they lose a step instead.
+  Win a hex and you may advance into it.
+- **Steps**: most units can lose a step and fight on weaker (a pale band
+  across the top of the counter); the last loss destroys them.
+- **Supply**: a unit cut off from its side's map edges (by the enemy or
+  their zones of control) gets a red corner: it moves at half speed and
+  attacks at half strength.
+- **Fog of war**: you only see enemy units near your own. Where you last
+  saw them is marked with a faded counter and a `?`.
+
+| Key | |
+| --- | --- |
+| Arrows, or drag the map | scroll |
+| `+` `-` | zoom (three sizes, from the whole map to big counters with hex numbers) |
+| `N` | next unit (or next target in combat) |
+| `U` | undo a move |
+| `E`, Space | end the phase |
+| `A`, Enter | attack |
+| `K` | the whole stack |
+| `C` | find the selected unit |
+| `T` | the combat results and terrain charts |
+| `L` | the log |
+| `G` | hex grid on or off |
+| `P` | NATO symbols or pictures on the counters |
+| Esc | cancel, or the menus |
+| `?` | help |
+
+The Options menu sets how well the computer plays (Easy, Normal, Hard),
+how fast it moves, the sound, and which sides it plays. The game saves
+itself to `~/.crossroads.json` at the start of every player turn and
+when you quit; Continue on the title screen picks it up.
+
+### Apps
+
+```bash
+./crossroads --build-app ~/Applications
+```
+
+writes `Crossroads.app` with the game's icon. It holds a copy of the game
+and the engine and starts with the Python that built it.
+
+```bash
+./crossroads --build-android ~/crossroads-android
+```
+
+writes a Buildozer project for an Android app, with the same `build.sh`
+(Docker) and `tar` as blobber and the tilerpgs. The app uses the Kivy
+front end (`grognard/kivyshell.py`); `--kivy` runs that on the desktop
+too, if Kivy is installed. Held upright, a phone gets the upright layout:
+the map on top and the panels in columns underneath.
+
+## The engine
+
+`grognard/` holds the engine, which knows nothing about any one game:
+
+| Module | What it does |
+| --- | --- |
+| `hexgrid.py` | flat-topped hexes in columns (odd columns half a hex down), named `CCRR` as on a printed map; distances, neighbours, lines, rings, and the pixel shape of a hex at each zoom |
+| `terrain.py` | the stock terrain, river and road tables, and the patterns they're painted with (grass, fields, trees, pines, hills, rough, marsh, water, villages, cities, snow) |
+| `units.py` | units and unit types: NATO symbol, movement class, zone of control, armour, anti-tank, artillery |
+| `rules.py` | the board, and the Engine: the sequence of play, movement, zones of control, stacking, supply, reinforcements, exits, combat, retreats, advances, victory points, fog of war, saving |
+| `ai.py` | the computer player |
+| `counters.py` | the counters: NATO symbols or little pictures, unit sizes, the numbers in a 3×5 font, reduced and out-of-supply marks |
+| `render.py` | paints the whole map once per zoom: terrain, grid, terrain edges, rivers along hexsides, roads and railways |
+| `view.py` | the map on screen: scrolling, zoom, units, highlights, flags, names |
+| `widgets.py` | the panels, each a widget, and how they're laid out wide and upright |
+| `game.py` | the menu bar, the modes (title, play, dialogs, menus, charts), input, animation, the computer's turns, saving and settings |
+| `gfx.py`, `font.py`, `png.py` | the framebuffer, the bitmap font and PNG screenshots (from blobber) |
+| `sound.py` | synthesized effects (blobber's players) |
+| `tkshell.py`, `kivyshell.py` | the Tk and Kivy windows |
+| `build.py` | the icon, the macOS app and the Android project |
+
+### The rules
+
+The rules are the classic ones, and each part can be changed by a game:
+
+- **Sequence**: each turn every side in `ORDER` has a player turn:
+  reinforcements arrive, supply is traced, it moves, then it attacks.
+  `ON_TURN(engine, side)` and `ON_END_TURN(engine)` hook in.
+- **Movement**: movement points, terrain costs by movement class, roads
+  at their own cost (and over rivers: bridges), rivers adding to the cost
+  of crossing (or forbidding it), weather multiplying costs off the
+  roads. A unit may always move one hex if it hasn't moved. Entering an
+  enemy zone of control ends a move; moving from one to another isn't
+  allowed; friendly units cancel enemy zones where they stand.
+- **Stacking**: `STACK` units a hex (HQs don't count), or the terrain's
+  own `stack`.
+- **Combat**: adjacent units attack one hex together, each once a turn,
+  each hex once a phase. Artillery adds its strength from up to its
+  range, or bombards alone (and can't be hurt doing so). Up to
+  `DEFENSIVE_FIRE` (2) of the defender's guns in range add their
+  strength to the defence. Attacks across a river (`halve`) and by units
+  out of supply are at half strength. The odds, rounded down, give a
+  column of `CRT`; terrain `shift`s it (and an objective's own `shift`:
+  fortifications), armour attacking into the `open` without anti-tank
+  or armour defending shifts it one right, air power one right when the
+  weather allows, and `COMBAT_SHIFTS(engine, hex, attackers, support)`
+  adds any others. Results are step losses, retreats, exchanges and
+  eliminations. Defenders who can't retreat stand and lose another step
+  between them; in terrain that says `stand` (cities) they lose a step
+  instead of retreating at all. Attackers may advance into an emptied
+  hex.
+- **Supply**: traced from `SUPPLY[side]['from']` (map edges `'N'`, `'S'`,
+  `'E'`, `'W'` or hexes) up to `range`, through hexes free of the enemy
+  and of their zones (unless friendly units hold them); roads count half.
+  Out of supply: half movement, half attack. A weather's `airdrop` names
+  a side that's supplied regardless.
+- **Fog of war** (`FOG = True`): enemy units show within 2 hexes of your
+  own (`spot`, 3 for reconnaissance), or 1 where they're in terrain that
+  blocks sight (`los: False`), or in weather with its own `spot`; units
+  that fought are seen for the rest of the turn.
+- **Victory**: objectives held (each with `vp`, `owner` at the start, and
+  `for`, the side it counts for), `STEP_VP` for each enemy step
+  destroyed, `EXITS` for units leaving by an edge, and `SUDDEN_DEATH`
+  hexes; `VICTORY(engine)` decides, returning (winner, words), or the
+  side with more VP wins. `SCORE(engine, side)` sets what the panels
+  show.
+
+### The computer player
+
+`ai.py` plays through the same Engine calls as a person, one action at
+a time, so the screen shows each move. It sees only what its side can see,
+remembering where it last saw each enemy unit (and it begins knowing the
+enemy's starting positions, as the player does).
+
+Moving, it first chooses garrisons for the objectives it must hold (the
+strongest defenders in reach, as many as the danger calls for), then
+scores every hex each unit can reach: closeness to the objectives it
+wants to take or hold and to the exit edge; the terrain; supply; the
+enemy strength that could reach the hex against the strength of the
+stack there; and, for artillery, how many enemy hexes and held
+objectives it would cover. Fighting, it works out the expected value of
+every attack it could make (from the combat table's outcomes, weighing
+steps lost on each side, retreats and ground taken), makes the best,
+looks again, and stops when nothing is worth it.
+
+A side's `posture` ('attack' or 'defend') sets the balance; a unit can
+have its own (the 4th Armored attacks while the rest of the Americans
+defend), or one that starts on a given turn: `posture=('attack', 9)`.
+Skill (Options) adds noise to its judgement and makes it settle for
+worse odds.
+
+```bash
+./crossroads --simulate 20
+```
+
+plays 20 games between computer players and reports who won: a measure
+of a scenario's balance (Crossroads comes out about even).
+
+### Making a game
+
+A game is a script that defines a handful of names and calls
+`grognard.run()`. See `crossroads` for a complete one.
+
+- `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
+  engine's), `ICON` (a function registered with `@grognard.icon`)
+- `SIDES`: each a dict with `id`, `name`, `adj`, `colour` and `ink` for
+  its counters, `posture` for the computer, and `about`, told to whoever
+  plays it
+- `ORDER`, `TURNS`, `START` (a date) and `TURN_PARTS` (`['AM', 'PM']`),
+  or `TURN_NAME(turn)`
+- `MAP`: rows of characters, one a hex, and `LEGEND` for any not in the
+  stock one (`.` clear, `:` fields, `f` woods, `F` forest, `h` hills, `r`
+  rough, `m` marsh, `t` town, `C` city, `~` water, space for off the map)
+- `TERRAIN`, `HEXSIDES` and `ROAD_TYPES`: changes to the stock tables
+  (each entry merged over the stock one)
+- `ROADS`: `(kind, [waypoints])`, each leg running straight from one hex
+  to the next
+- `RIVERS`: `(kind, [sides])`, each side `'0603/0703'` (between two
+  hexes) or `'1417:SW,S,SE'` (a hex's sides by direction)
+- `LABELS`, `OBJECTIVES`, `SUDDEN_DEATH`, `EXITS`, `STEP_VP`, `VICTORY`,
+  `SCORE`
+- `UNITS` (see `units.py` for every field), with `hex` to start on the
+  map or `arrive` and `at` to come later; `UNIT_TYPES` to add or change
+  types
+- `WEATHER` (by turn) and `WEATHER_TYPES`, `AIR` (who has air power),
+  `SUPPLY`, `STACK`, `FOG`, `CRT`, `DEFENSIVE_FIRE`, `COMBAT_SHIFTS`
+- `PANELS`: the widgets on the right and along the bottom (`date`,
+  `weather`, `victory`, `objectives`, `phase`, `scroll`, `minimap`,
+  `unit`, `orders`, `log`), and `CHROME`, their colours. A game can add
+  widgets of its own with `@grognard.widget('name')`, terrain patterns
+  with `@grognard.pattern('name')` and NATO symbols with
+  `@grognard.symbol('name')`.
+- `STYLE = 'pictures'` for little pictures on the counters instead of
+  NATO symbols; `ZOOM` for the zoom a game starts at.
+
+### Testing
+
+```bash
+./run_tests.py
+```
+
+runs the engine's tests (hex geometry, and the rules on a tiny scenario),
+then each game's in its own Python: the map and units checked, computer
+games played out, every screen and widget drawn wide and upright, a
+player's moves, undo and attack through the screen, saving and loading,
+a fuzz of random keys and taps, and the Tk window. `--long` fuzzes more,
+`--no-gui` skips the window, and `KIVY_PYTHON` names a Python with Kivy
+to test that window too.
+
+```bash
+./crossroads --selftest
+```
+
+checks the map, the units and the supply sources, draws every screen and
+plays a computer game.
+
+```bash
+./crossroads --shot out.png --keys "new:us,enter,enter,enter,enter,enter,+"
+```
+
+plays a list of keys without a window and saves the screen as a PNG
+(`new:SIDE` starts a game against the computer, `watch` one between
+computers, `tap:X:Y` taps, `wait:N` lets N seconds pass). Other flags are
+`--mute`, `--kivy` and `--scale 2`.
