@@ -96,6 +96,30 @@ class Screens(unittest.TestCase):
         del s
 
 
+class Smooth(unittest.TestCase):
+    def test_every_screen_with_smooth_text(self):
+        """With a window that measures text (as Tk and Kivy do), every
+        screen records its text instead of drawing it."""
+        from grognard import font
+        g = util.new_game(GD, side=GD.SIDES[0]['id'])
+        g.measure = lambda s, scale: len(s) * 6 * scale
+        self.addCleanup(font.set_metrics, None)
+        s = g.frame()
+        self.assertTrue(s.texts)
+        for show in (g.show_help, g.show_charts, g.show_score):
+            show()
+            self.assertTrue(g.frame().texts)
+            g.key('esc')
+        for z in range(3):
+            g.view.set_zoom(z)
+            g.frame()
+        g.portrait = True
+        g.frame()
+        g.toggle_text()
+        self.assertIsNone(g.frame().texts)
+        g.toggle_text()
+
+
 class Playing(unittest.TestCase):
     def setUp(self):
         self.side = GD.ORDER[0] if hasattr(GD, 'ORDER') else \

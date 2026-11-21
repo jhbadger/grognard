@@ -22,7 +22,6 @@ import math
 
 from .gfx import rgb, mix
 from . import font
-from .font import UP, DOWN, LEFT, RIGHT
 
 WIDGETS = {}
 
@@ -317,15 +316,11 @@ class Scroll(Widget):
 
     def draw(self, g, s, r):
         panel(g, s, r)
-        arrows = {(0, -1): UP, (1, 0): RIGHT, (0, 1): DOWN, (-1, 0): LEFT,
-                  (0, 0): '+', (-1, -1): '\\', (1, 1): '\\', (1, -1): '/',
-                  (-1, 1): '/'}
         for (cx, cy, cw, chh, d) in self.cells(r):
             s.rect(cx, cy, cw, chh, ch(g, 'button'))
             s.bevel(cx, cy, cw, chh, ch(g, 'button_hi'), ch(g, 'button_lo'))
-            t = arrows[d]
-            s.text(cx + cw // 2 + 1, cy + (chh - 9) // 2 + 1, t,
-                   ch(g, 'button_text'), align='center')
+            arrow(s, cx + cw // 2, cy + chh // 2, d,
+                  max(2, min(cw, chh) // 3), ch(g, 'button_text'))
 
     def tap(self, g, x, y, r):
         for (cx, cy, cw, chh, d) in self.cells(r):
@@ -338,6 +333,25 @@ class Scroll(Widget):
                 g.dirty = True
                 return True
         return True
+
+
+def arrow(s, cx, cy, d, r, colour):
+    """An arrow pointing d (dx, dy: each -1, 0 or 1) centred on cx, cy,
+    r pixels from the middle to the tip; for (0, 0) a dot."""
+    dx, dy = d
+    if not dx and not dy:
+        s.rect(cx - 1, cy - 1, 3, 3, colour)
+        return
+    n = math.hypot(dx, dy)
+    ux, uy = dx / n, dy / n             # along the arrow
+    px, py = -uy, ux                    # across it
+    for i in range(-r, r + 1):          # the shaft
+        s.pixel(int(round(cx + ux * i)), int(round(cy + uy * i)), colour)
+    for k in range(r):                  # the head
+        tx, ty = cx + ux * (r - k), cy + uy * (r - k)
+        for j in range(-k, k + 1):
+            s.pixel(int(round(tx + px * j * 0.8)),
+                    int(round(ty + py * j * 0.8)), colour)
 
 
 @widget('minimap')

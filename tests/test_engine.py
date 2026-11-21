@@ -50,6 +50,43 @@ class Hexes(unittest.TestCase):
             self.assertEqual(g.at(*g.center((3, 3))), (3, 3))
 
 
+class SmoothText(unittest.TestCase):
+    """Text recorded for the window to draw in a real font."""
+
+    def setUp(self):
+        from grognard import font
+        font.set_metrics(lambda s, scale: len(s) * 5 * scale)
+        self.addCleanup(font.set_metrics, None)
+
+    def test_recorded_not_drawn(self):
+        from grognard.gfx import Surface
+        s = Surface(100, 50)
+        s.texts = []
+        w = s.text(50, 10, 'abc', (255, 255, 255), align='center')
+        self.assertEqual(w, 15)
+        self.assertEqual(s.texts, [(43, 10, 'abc', (255, 255, 255), None,
+                                    1)])
+        self.assertEqual(set(s.buf), {0})          # no pixels touched
+        s.text(0, 30, '\x01', (255, 255, 255))     # the bitmap's arrow
+        self.assertEqual(s.texts[-1][2], '\u2191')
+
+    def test_covered_and_clipped(self):
+        from grognard.gfx import Surface
+        s = Surface(100, 50)
+        s.texts = []
+        s.text(5, 5, 'under', (255, 255, 255))
+        s.text(5, 30, 'beside', (255, 255, 255))
+        s.rect(0, 0, 40, 20, (0, 0, 0))             # a box over the first
+        s.rect(0, 28, 1, 20, (0, 0, 0))             # a thin line: no matter
+        self.assertEqual([t[2] for t in s.texts], ['beside'])
+        s.set_clip(60, 0, 40, 50)
+        s.text(0, 0, 'outside', (255, 255, 255))
+        s.set_clip()
+        self.assertEqual(len(s.texts), 1)
+        s.fill((0, 0, 0))
+        self.assertEqual(s.texts, [])
+
+
 class Rules(unittest.TestCase):
     def setUp(self):
         self.e = Engine(util.tiny(), seed=1)

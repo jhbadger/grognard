@@ -1,9 +1,14 @@
 """The Tk front end: a window showing the game's framebuffer, scaled to
 fit, and the keyboard and mouse passed through to the game (a click is a
-tap; dragging scrolls the map; the wheel scrolls it too)."""
+tap; dragging scrolls the map; the wheel scrolls it too).  The game's
+text is drawn over the picture as canvas text in a real font, so it stays
+smooth however far the picture is scaled up."""
 
 import time
 import tkinter as tk
+from tkinter import font as tkfont
+
+from . import textfont
 
 W, H = 640, 480
 
@@ -59,6 +64,15 @@ class TkShell:
         self.full = False
         self.last = time.time()
         self.set_icon()
+        # smooth text
+        fs = textfont.spec(game.d)
+        self.family = fs['family'] or \
+            tkfont.nametofont('TkDefaultFont').actual()['family']
+        self.fsize_factor = fs['size']
+        self.bold = fs['bold']
+        self.fonts = {}
+        self.pool = []              # canvas text items, reused each frame
+        game.measure = self.measure
 
     def set_icon(self):
         try:
@@ -76,6 +90,51 @@ class TkShell:
             self._icon = ph
         except tk.TclError:
             pass
+
+    @property
+    def z(self):
+        return self.zoom[0] / self.zoom[1]
+
+    def font(self, scale):
+        """(Font, how far above the text's top its line starts)."""
+        n = textfont.pixels(scale, self.z, self.fsize_factor)
+        bold = self.bold or scale >= 2
+        f = self.fonts.get((n, bold))
+        if f is None:
+            font = tkfont.Font(family=self.family, size=-n,
+                               weight='bold' if bold else 'normal')
+            lift = font.metrics('ascent') - n * textfont.CAPS
+            f = self.fonts[(n, bold)] = (font, lift)
+        return f
+
+    def measure(self, s, scale):
+        """The width of s in the game's pixels."""
+        return self.font(scale)[0].measure(s) / self.z
+
+    def draw_texts(self, texts):
+        z = self.z
+        jobs = []
+        for (x, y, t, col, shadow, scale) in texts or ():
+            font, lift = self.font(scale)
+            X = self.ox + x * z
+            Y = self.oy + y * z - lift
+            if shadow:
+                d = max(1, round(z * (0.6 if scale < 1 else 1)))
+                jobs.append((X + d, Y + d, t, shadow, font))
+            jobs.append((X, Y, t, col, font))
+        c = self.canvas
+        for i, (X, Y, t, col, font) in enumerate(jobs):
+            fill = '#%02x%02x%02x' % col
+            if i < len(self.pool):
+                item = self.pool[i]
+                c.coords(item, X, Y)
+                c.itemconfig(item, text=t, fill=fill, font=font,
+                             state='normal')
+            else:
+                self.pool.append(c.create_text(X, Y, text=t, fill=fill,
+                                               font=font, anchor='nw'))
+        for item in self.pool[len(jobs):]:
+            c.itemconfig(item, state='hidden')
 
     def toggle_fullscreen(self, e=None):
         self.full = not self.full
@@ -171,6 +230,7 @@ class TkShell:
         if (s.w, s.h) != self.fsize:
             self.fsize = (s.w, s.h)
             self.place()
+            s = self.g.frame()      # again, the text measured at the new size
         img = tk.PhotoImage(data=s.ppm(), format='PPM')
         a, b = self.zoom
         if a != 1:
@@ -179,6 +239,7 @@ class TkShell:
             img = img.subsample(b)
         self.img = img
         self.canvas.itemconfig(self.item, image=img)
+        self.draw_texts(s.texts)
 
     def tick(self):
         now = time.time()

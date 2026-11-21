@@ -2,7 +2,7 @@
 and everything drawn over it each frame (units, highlights, markers and
 animations)."""
 
-from .gfx import rgb, mix
+from .gfx import rgb, mix, SMALL
 from .hexgrid import neighbours
 from . import counters
 from .render import MapArt, ZOOMS, hex_tint, hex_outline, thick_line
@@ -210,13 +210,15 @@ class MapView:
             s.frame(x0, y0, S + 2, S + 2, c)
             s.frame(x0 - 1, y0 - 1, S + 4, S + 4, rgb('#000000'))
             s.set_clip()
+        x0c, y0c, x1c, y1c = self.clip()
+        s.set_clip(x0c, y0c, x1c - x0c, y1c - y0c)
         if ghost:
-            self.blit(s, s.text_image('?', (255, 255, 255), (0, 0, 0)),
-                      sx - 2, sy - 5)
+            s.text(sx, sy - 5, '?', (255, 255, 255), (0, 0, 0),
+                   align='center')
         if len(units) > 1 and S >= 22:
-            t = str(len(units))
-            img = s.text_image(t, (255, 255, 255), (0, 0, 0))
-            self.blit(s, img, sx + S // 2 + 1, sy - S // 2 - 4)
+            s.text(sx + S // 2 + 1, sy - S // 2 - 4, str(len(units)),
+                   (255, 255, 255), (0, 0, 0))
+        s.set_clip()
 
     def label(self, s, hx, text, occupied):
         """A place name: across the lower half of its hex, or under the
@@ -226,15 +228,17 @@ class MapView:
         g = self.geo
         x0c, y0c, x1c, y1c = self.clip()
         s.set_clip(x0c, y0c, x1c - x0c, y1c - y0c)
-        if self.zoom == 0:
+        if self.zoom == 0 and s.texts is not None:
+            s.text(sx, sy + (6 if occupied else 3), text, (255, 255, 255),
+                   (0, 0, 0), scale=SMALL, align='center')
+        elif self.zoom == 0:
             y = sy + (6 if occupied else 3)
             tiny_text(s, sx + 1, y + 1, text, (0, 0, 0), 'center')
             tiny_text(s, sx, y, text, (255, 255, 255), 'center')
         else:
             y = sy + self.csize // 2 + 1 if occupied else \
                 sy + g.dy // 2 - 11
-            img = s.text_image(text, (255, 255, 240), (0, 0, 0))
-            s.blit(img, sx - img.w // 2, y)
+            s.text(sx, y, text, (255, 255, 240), (0, 0, 0), align='center')
         s.set_clip()
 
     def flag(self, s, hx, side, vp):

@@ -1,9 +1,12 @@
 """The Kivy front end, for the Android app (where there is no Tk) or for
-anyone who asks for it with --kivy.  Like the Tk one it only shows the
-game's framebuffer, scaled to fit, and passes on keys and taps."""
+anyone who asks for it with --kivy.  Like the Tk one it shows the game's
+framebuffer, scaled to fit, with the game's text drawn over it in a
+smooth font, and passes on keys and taps."""
 
 import importlib
 import os
+
+from . import textfont
 
 W, H = 640, 480
 
@@ -43,7 +46,16 @@ class KivyShell:
         self.graphics = kivy('.graphics')
         self.App = kivy('.app').App
         self.Widget = kivy('.uix.widget').Widget
+        self.CoreLabel = kivy('.core.text').Label
         self.app = None
+        fs = textfont.spec(game.d)
+        self.family = fs['family']
+        self.fsize_factor = fs['size']
+        self.bold = fs['bold']
+        self.labels = {}            # (pixels, bold) -> a label to measure
+        self.textures = {}          # (text, pixels, bold) -> texture
+        self.scale = 1.0
+        game.measure = self.measure
 
     # ------------------------------------------------------------ drawing
 
@@ -82,9 +94,67 @@ class KivyShell:
             self.back = gr.Rectangle(pos=(0, 0), size=self.Window.size)
             gr.Color(1, 1, 1, 1)
             self.rect = gr.Rectangle(texture=tex, pos=(0, 0), size=(W, H))
+        self.text_group = gr.InstructionGroup()
+        root.canvas.add(self.text_group)
         self.root = root
         self.fit()
         return root
+
+    # ------------------------------------------------------ smooth text
+
+    def font(self, scale):
+        n = textfont.pixels(scale, self.scale, self.fsize_factor)
+        return n, self.bold or scale >= 2
+
+    def label(self, n, bold):
+        lb = self.labels.get((n, bold))
+        if lb is None:
+            kw = dict(font_size=n, bold=bold)
+            if self.family:
+                kw['font_name'] = self.family
+            lb = self.labels[(n, bold)] = self.CoreLabel(**kw)
+        return lb
+
+    def measure(self, s, scale):
+        """The width of s in the game's pixels."""
+        n, bold = self.font(scale)
+        return self.label(n, bold).get_extents(s)[0] / self.scale
+
+    def text_texture(self, t, n, bold):
+        key = (t, n, bold)
+        tex = self.textures.get(key)
+        if tex is None:
+            if len(self.textures) > 3000:
+                self.textures.clear()
+            kw = dict(text=t, font_size=n, bold=bold, color=(1, 1, 1, 1))
+            if self.family:
+                kw['font_name'] = self.family
+            lb = self.CoreLabel(**kw)
+            lb.refresh()
+            tex = self.textures[key] = lb.texture
+        return tex
+
+    def draw_texts(self, texts):
+        gr = self.graphics
+        grp = self.text_group
+        grp.clear()
+        s = self.scale
+        H = self.fsize[1]
+        for (x, y, t, col, shadow, scale) in texts or ():
+            n, bold = self.font(scale)
+            tex = self.text_texture(t, n, bold)
+            lift = n * (0.93 - textfont.CAPS)
+            X = self.ox + x * s
+            Y = self.oy + (H - y) * s + lift - tex.height
+            layers = []
+            if shadow:
+                d = max(1, round(s * (0.6 if scale < 1 else 1)))
+                layers.append((X + d, Y - d, shadow))
+            layers.append((X, Y, col))
+            for (lx, ly, c) in layers:
+                grp.add(gr.Color(c[0] / 255, c[1] / 255, c[2] / 255, 1))
+                grp.add(gr.Rectangle(texture=tex, pos=(lx, ly),
+                                     size=tex.size))
 
     def make_texture(self, w, h):
         tex = self.Texture.create(size=(w, h), colorfmt='rgb')
@@ -122,7 +192,9 @@ class KivyShell:
             self.fsize = (s.w, s.h)
             self.rect.texture = self.make_texture(s.w, s.h)
             self.fit()
+            s = self.g.frame()      # again, the text measured at the new size
         self.tex.blit_buffer(bytes(s.buf), colorfmt='rgb', bufferfmt='ubyte')
+        self.draw_texts(s.texts)
         self.root.canvas.ask_update()
 
     # -------------------------------------------------------------- input

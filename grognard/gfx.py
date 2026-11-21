@@ -131,6 +131,14 @@ class Image:
 
 _TEXT_CACHE = {}
 
+# Text left for the window to draw in a real font: (x, y, string, colour,
+# shadow, scale), x and y the top left in the surface's pixels.
+SMALL = 0.7         # the scale of small print (place names zoomed out)
+# the bitmap font's symbols, as a real font has them
+SYMBOLS = str.maketrans({'\x01': '\u2191', '\x02': '\u2192', '\x03': '\u2193',
+                         '\x04': '\u2190', '\x05': '\u2665', '\x06': '\u25cf',
+                         '\x07': '\u2620', '\x08': '/', '\x0b': '+'})
+
 
 class Surface:
     """An RGB framebuffer."""
@@ -140,6 +148,10 @@ class Surface:
         self.buf = bytearray(bytes(rgb(color)) * (w * h))
         self.clip = (0, 0, w, h)
         self._text_cache = _TEXT_CACHE      # shared: surfaces come and go
+        # None: text is drawn into the pixels with the bitmap font.  A
+        # list: text is only recorded there, for the window to draw in a
+        # smooth font over the picture (see tkshell.py)
+        self.texts = None
 
     # Clipping.
 
@@ -154,6 +166,22 @@ class Surface:
 
     def fill(self, color):
         self.buf[:] = bytes(rgb(color)) * (self.w * self.h)
+        if self.texts:
+            self.texts[:] = []
+
+    def cover(self, x, y, w, h):
+        """Something solid was drawn over x, y, w, h: recorded text under
+        it is hidden.  (Thin lines and small marks don't count.)"""
+        if not self.texts or w < 6 or h < 6:
+            return
+        x1, y1 = x + w, y + h
+        keep = []
+        for t in self.texts:
+            tx, ty, tw, th = text_box(t)
+            if tx < x1 and tx + tw > x and ty < y1 and ty + th > y:
+                continue
+            keep.append(t)
+        self.texts[:] = keep
 
     def rect(self, x, y, w, h, color):
         cx0, cy0, cx1, cy1 = self.clip
@@ -161,6 +189,8 @@ class Surface:
         x1, y1 = min(x + w, cx1), min(y + h, cy1)
         if x0 >= x1 or y0 >= y1:
             return
+        if self.texts:
+            self.cover(x0, y0, x1 - x0, y1 - y0)
         row = bytes(rgb(color)) * (x1 - x0)
         W3 = self.w * 3
         n = len(row)
@@ -234,6 +264,8 @@ class Surface:
     def put(self, x, y, w, h, data):
         """Copy an opaque w x h block of rgb bytes (no clipping beyond the
         surface itself)."""
+        if self.texts:
+            self.cover(x, y, w, h)
         W3 = self.w * 3
         n = w * 3
         for j in range(h):
@@ -245,6 +277,10 @@ class Surface:
     def blit(self, img, x, y):
         cx0, cy0, cx1, cy1 = self.clip
         x, y = int(x), int(y)
+        if self.texts:
+            self.cover(max(x, cx0), max(y, cy0),
+                       min(x + img.w, cx1) - max(x, cx0),
+                       min(y + img.h, cy1) - max(y, cy0))
         W3 = self.w * 3
         buf = self.buf
         for j, runs in enumerate(img.rows):
@@ -306,11 +342,26 @@ class Surface:
 
     def text(self, x, y, s, color, shadow=None, scale=1, align='left'):
         """Draw s with its top-left (or top-centre, top-right) at x, y and
-        return its width."""
+        return its width.  When the surface records text (self.texts), it
+        is only noted down, if it falls inside the clip."""
         if not s:
             return 0
         color = rgb(color)
         shadow = rgb(shadow) if shadow else None
+        if self.texts is not None:
+            w = _font.width(s, scale)
+            if align == 'center':
+                x -= w // 2
+            elif align == 'right':
+                x -= w
+            cx0, cy0, cx1, cy1 = self.clip
+            mx, my = x + w / 2, y + _font.HEIGHT * scale / 2
+            if cx0 <= mx < cx1 and cy0 <= my < cy1:
+                self.texts.append((int(x), int(y), s.translate(SYMBOLS),
+                                   color, shadow, scale))
+            return w
+        if scale != int(scale):         # small print: the nearest we have
+            scale = 1
         img = self.text_image(s, color, shadow, scale)
         if align == 'center':
             x -= img.w // 2
@@ -321,3 +372,9 @@ class Surface:
 
     def ppm(self):
         return b'P6 %d %d 255 ' % (self.w, self.h) + bytes(self.buf)
+
+
+def text_box(t):
+    """The rectangle a recorded text covers: x, y, w, h."""
+    x, y, s, color, shadow, scale = t
+    return x, y, _font.width(s, scale) + 1, int(_font.HEIGHT * scale) + 1

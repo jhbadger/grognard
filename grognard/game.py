@@ -857,6 +857,10 @@ class Game:
         self.rng = random.Random(seed)
         self.view = MapView(self)
         self.style = getattr(gdef, 'STYLE', 'nato')
+        # text in a smooth font: the window says how to measure it (Tk and
+        # Kivy can; screenshots and tests keep the bitmap font)
+        self.measure = None
+        self.smooth_text = True
         self.controllers = {s: 'human' for s in self.e.side_ids}
         self.skill = 1
         self.speed = 1
@@ -1202,6 +1206,9 @@ class Game:
                       ('Counters: %s   P' % ('pictures' if self.style ==
                                              'pictures' else 'NATO'),
                        self.toggle_style),
+                      ('Text: %s' % ('smooth' if self.smooth_text else
+                                     'pixels'),
+                       self.toggle_text if self.measure else None),
                       ('Find selected   C', self.find_selected),
                       ('Upright screen' if not self.portrait else
                        'Wide screen', self.toggle_portrait)]),
@@ -1260,6 +1267,10 @@ class Game:
     def toggle_grid(self):
         self.view.grid = not self.view.grid
         self.view.arts = {}
+        self.save_settings()
+
+    def toggle_text(self):
+        self.smooth_text = not self.smooth_text
         self.save_settings()
 
     def toggle_style(self):
@@ -1389,6 +1400,10 @@ class Game:
     def render(self):
         L = self.layout
         s = Surface(L.W, L.H, ch(self, 'bg'))
+        smooth = self.smooth_text and self.measure is not None
+        font.set_metrics(self.measure if smooth else None)
+        if smooth:
+            s.texts = []
         first = 0
         for i, m in enumerate(self.modes):
             if m.covers:
@@ -1560,6 +1575,7 @@ class Game:
             return
         self.view.zoom = d.get('zoom', self.view.zoom)
         self.style = d.get('style', self.style)
+        self.smooth_text = d.get('smooth_text', True)
         self.view.grid = d.get('grid', True)
         self.speed = d.get('speed', self.speed)
         self.skill = d.get('skill', self.skill)
@@ -1570,6 +1586,7 @@ class Game:
         try:
             with open(self.settings_path, 'w') as fh:
                 json.dump(dict(zoom=self.view.zoom, style=self.style,
+                               smooth_text=self.smooth_text,
                                grid=self.view.grid, speed=self.speed,
                                skill=self.skill, sound=self.sound.on), fh)
         except OSError:

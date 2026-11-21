@@ -12,7 +12,10 @@ play at one screen.
 It's a sibling of the [tilerpgs](../tilerpgs) and of
 [blobber](../blobberrpg), and is built the same way: the whole screen is
 drawn into one framebuffer in pure Python, and the front end only shows
-the result, so a Kivy front end for Android is a few dozen lines.
+the result, so a Kivy front end for Android is a few dozen lines. The one
+exception is text: the window draws it over the picture in a real font,
+so it stays smooth however big the window is (View, Text: pixels brings
+back the bitmap font).
 
 ```bash
 ./crossroads
@@ -139,9 +142,25 @@ the map on top and the panels in columns underneath.
 | `widgets.py` | the panels, each a widget, and how they're laid out wide and upright |
 | `game.py` | the menu bar, the modes (title, play, dialogs, menus, charts), input, animation, the computer's turns, saving and settings |
 | `gfx.py`, `font.py`, `png.py` | the framebuffer, the bitmap font and PNG screenshots (from blobber) |
+| `textfont.py` | the size of the smooth font the windows draw text in |
 | `sound.py` | synthesized effects (blobber's players) |
 | `tkshell.py`, `kivyshell.py` | the Tk and Kivy windows |
 | `build.py` | the icon, the macOS app and the Android project |
+
+### Text
+
+The game lays out its text in its own 640×480 pixels. When the window
+can draw text itself (Tk and Kivy both can), the framebuffer doesn't draw
+text into its pixels; it records each string, where it goes, its colour
+and its shadow, and the window draws them over the scaled-up picture in
+a real font (Tk's default font, Roboto on Kivy), sized so capitals are
+about 7 of the game's pixels tall. The window also measures text for the
+game, so wrapping and centring fit the font. A box drawn over recorded
+text (a dialog over the map) hides it, as it would hide pixels. The
+counters' tiny numbers stay pixels: they're part of the counter.
+Screenshots (`--shot`) and the tests without a window use the bitmap
+font. A game can choose a font with `FONT = dict(family='Georgia',
+size=1.0, bold=False)`.
 
 ### The rules
 
@@ -255,7 +274,8 @@ A game is a script that defines a handful of names and calls
   with `@grognard.pattern('name')` and NATO symbols with
   `@grognard.symbol('name')`.
 - `STYLE = 'pictures'` for little pictures on the counters instead of
-  NATO symbols; `ZOOM` for the zoom a game starts at.
+  NATO symbols; `ZOOM` for the zoom a game starts at; `FONT` for the
+  smooth text's font.
 
 ### Testing
 

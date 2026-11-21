@@ -160,11 +160,33 @@ def glyph(ch):
     return g
 
 
+# A window drawing text in a real font measures it instead (set_metrics).
+_metrics = None
+_widths = {}
+
+
+def set_metrics(fn):
+    """Measure text with fn(s, scale) -> width in screen pixels from now on,
+    or with the bitmap font again if fn is None."""
+    global _metrics
+    if fn is not _metrics:
+        _metrics = fn
+        _widths.clear()
+
+
 def width(s, scale=1):
     """The width of s in pixels."""
     if not s:
         return 0
-    return (sum(glyph(c)[0] + 1 for c in s) - 1) * scale
+    if _metrics is not None:
+        key = (s, scale)
+        w = _widths.get(key)
+        if w is None:
+            if len(_widths) > 5000:
+                _widths.clear()
+            w = _widths[key] = int(round(_metrics(s, scale)))
+        return w
+    return int((sum(glyph(c)[0] + 1 for c in s) - 1) * scale)
 
 
 def wrap(text, maxw, scale=1):
