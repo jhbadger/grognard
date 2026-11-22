@@ -17,11 +17,12 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are four games so far: a Second World War battle, a raid in a
+There are five games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
-American Civil War, and the storming of Chapultepec in the
-Mexican-American War.
+American Civil War, the storming of Chapultepec in the
+Mexican-American War, and a dawn rising in the streets of Belém in
+Brazil's war of independence.
 
 ```bash
 ./crossroads
@@ -37,6 +38,10 @@ Mexican-American War.
 
 ```bash
 ./chapultepec
+```
+
+```bash
+./belem
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -175,6 +180,52 @@ it and the western gates.
   victory, and a castle that holds a clear one. Computer against
   computer the castle always falls, and the Americans force a gate a
   little more often than not.
+
+## Belém: the rising of 14 April 1823
+
+The fifth game, and the smallest: a morning's street fight between
+companies. Brazil has declared its independence, but Grão-Pará, at the
+mouth of the Amazon, stays loyal to Lisbon. A hundred conspirators meet
+at João Baptista Balbi's house on the night of 13 April; at dawn they
+take the artillery park and march to the Largo das Mercês to proclaim
+Dom Pedro. The governor knew of the plot, and by full daylight his
+colonels had the rebels surrounded.
+
+- **Ten turns** of half an hour, from half past four in the morning.
+  The Patriots move first. For the first two turns it's dark: units see
+  only the next hex and every attack loses a column.
+- **The city**: the Campina in the north, with the park, the Mercês and
+  the barracks of the 3rd regiment; the Cidade Velha in the south, with
+  the Forte do Castelo, the palace and the regiments' barracks; and the
+  Piri swamp between them, crossed by the street along the river at
+  the Ver-o-Peso or by going round its east end. Houses shift attacks a
+  column, and so does the walled park; the palace and the fort two.
+  Their defenders lose a step rather than retreat. Two companies to a hex in the
+  streets.
+- **The third regiment**: on each of turns 2 to 4 one of its companies
+  turns out of its barracks, for the Patriots one time in four, plus
+  one in four for each of the park and the Mercês they hold, less one
+  if Loyalists stand next to the barracks; otherwise for the governor.
+- **The Patriots**: Loureiro Barreto's men and the guns in the park,
+  Boaventura Ferreira da Silva's soldiers and townsmen, Balbi's and Dias
+  Cardoso's conspirators, Costa Rocha's men of the 3rd regiment and the
+  crowd at the Mercês. At first light they lose a column attacking the
+  regiments (Boaventura told his men to hold their fire).
+- **The Loyalists**: the governor's guard, the fort's garrison and
+  guns, Lieutenant-Colonel Nunes's gun, the 1st and 2nd regiments
+  under Moura, Villaça and Barata (kept in barracks until turn 3), and
+  sailors and a gun from the Arsenal.
+- **Winning**: the palace or the fort in Patriot hands at the end is a
+  Patriot victory (Pará declares for Dom Pedro four months early); the
+  park and the Mercês both a marginal one; one of the two a marginal
+  Loyalist victory, and neither (what happened) a Loyalist victory.
+  Computer against computer the Patriots win about one game in four,
+  always the marginal way.
+
+The record of the rising is thin: who led it and roughly what happened,
+but not the strength of the units or where in the city the park and the
+barracks stood. The order of battle and the map are a reasonable guess
+at a city of some twelve thousand people, not a survey.
 
 ## Playing
 
@@ -410,10 +461,12 @@ one with the optional rules, its own unit types, NATO symbols drawn with
 `@grognard.symbol`, counter pictures, terrain with a hovercraft movement
 class, and its own panel colours; `pickett` for walls, fences, held
 units, its own combat table, combat shifts and a turn hook (ammunition
-running short), and its own font; and `chapultepec` for a fortress
+running short), and its own font; `chapultepec` for a fortress
 terrain, cliffs, a walled grove worked out in code, a side that gets
 stronger when an objective falls, and victory decided by ground rather
-than points.
+than points; and `belem` for units that join whichever side is
+winning (two copies of each, one brought on by `ON_TURN`) and weather
+that changes how far units see.
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)

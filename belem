@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""Belém: the rising of 14 April 1823.  A sample game for the Grognard
+engine.
+
+Brazil has declared its independence, but Grão-Pará still answers to
+Lisbon.  On the night of 13 April a hundred conspirators meet at João
+Baptista Balbi's house in Belém; at dawn they take the artillery park,
+send up rockets, and march to the Largo das Mercês to proclaim Dom Pedro.
+Will the regiments come out for them, or for the governor?  Play either
+side against the computer, or against a friend at the same screen.
+
+Run it with ./belem (Python 3 with Tk, nothing else).  The game is saved
+to ~/.belem.json.  ./belem --selftest checks the map and plays a game
+between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import hexgrid                           # noqa: E402
+
+ID = 'belem'
+TITLE = 'Belém'
+SUBTITLE = 'The rising of 14 April 1823'
+
+INTRO = [
+    "April 1823. Seven months ago Dom Pedro declared Brazil independent "
+    "of Portugal. The south and the centre follow him; Bahia is at war. "
+    "But Grão-Pará, at the mouth of the Amazon, is nearer Lisbon than Rio "
+    "de Janeiro, and its governing junta and garrison stay loyal to "
+    "King João VI.",
+
+    "In Belém the friends of independence have had enough. Tonight, the "
+    "13th, about a hundred of them, officers, soldiers and townsmen, meet "
+    "at João Baptista Balbi's house. At first light Antonio de Loureiro "
+    "Barreto, passing himself off as a colonel, will walk into the "
+    "artillery park and take it, and rockets will call the city out.",
+
+    "Then the march to the Largo das Mercês to proclaim Dom Pedro. Men "
+    "of the third regiment have promised to join. But the governor knows "
+    "of the plot: he has ordered his officers to keep to their barracks, "
+    "and by full daylight Colonels Villaça and Barata will be in the "
+    "streets.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='pat', name='Patriots', adj='Patriot', colour='#5c9a4e',
+         ink='#fff4a0', posture='attack',
+         about='Hold the artillery park and the Largo das Mercês, bring '
+               'the third regiment over, and take the palace or the fort '
+               'if you can.'),
+    dict(id='pt', name='Loyalists', adj='Loyalist', colour='#5a74b0',
+         ink='#f8f8f8', posture='defend',
+         about='Keep the palace and the fort, and retake the artillery '
+               'park and the Largo das Mercês before the morning is out.'),
+]
+ORDER = ['pat', 'pt']
+
+TURNS = 10
+
+
+def TURN_NAME(t):
+    """Half-hour turns from half past four in the morning."""
+    m = 4 * 60 + 30 + (t - 1) * 30
+    return ('14 Apr 1823', '%d:%02d AM' % (m // 60, m % 60))
+
+
+STACK = 2               # narrow streets
+DEFENSIVE_FIRE = 1
+STEP_VP = 1
+
+WEATHER = {1: 'night', 3: 'dawn', 5: 'overcast'}
+WEATHER_TYPES = {
+    'night': dict(name='Dark', icon='cloud', air=False, spot=1),
+    'dawn': dict(name='Dawn', icon='fog', air=False),
+}
+
+PARK = hexgrid.parse('0903')
+MERCES = hexgrid.parse('0504')
+PALACE = hexgrid.parse('0612')
+FORT = hexgrid.parse('0410')
+QUARTEL3 = hexgrid.parse('1105')        # the third regiment's barracks
+RELEASE = 3             # the governor's order: stay in barracks till dawn
+WAVER = (2, 3, 4)       # the turns the third regiment's companies decide
+
+
+def ON_TURN(e, side):
+    """The third regiment wavers.  On each of turns 2 to 4, at the start
+    of the Patriots' turn, one of its companies turns out: for the
+    Patriots with a chance of one in four, and one more in four for each
+    of the artillery park and the Largo das Mercês they hold, one fewer
+    if a Loyalist unit stands next to the barracks.  Otherwise it turns
+    out for the governor, at the start of the Loyalists' turn."""
+    if side != 'pat' or e.turn not in WAVER:
+        return
+    k = WAVER.index(e.turn)
+    pat, pt = e.units['r3%d_pat' % k], e.units['r3%d_pt' % k]
+    if pat.status != 'pending' or pt.status != 'pending':
+        return
+    chance = 1 + sum(e.control.get(h) == 'pat' for h in (PARK, MERCES))
+    if any(u.side == 'pt' for n in hexgrid.neighbours(QUARTEL3)
+           for u in e.at(n)):
+        chance -= 1
+    if e.rng.random() * 4 < chance:
+        pat.arrive = e.turn
+        e.say('%s turns out for Dom Pedro!' % pat.long)
+        e.arrivals('pat')
+    else:
+        pt.arrive = e.turn
+        e.say('%s stays loyal to the King.' % pt.long)
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """In the dark nobody knows who is friend and who is foe: attacks
+    before first light lose a column.  Rebels attacking their own
+    officers hesitate: a Patriot attack on a hex with a Loyalist
+    regiment in it loses a column until full daylight (Boaventura told
+    his men to hold their fire)."""
+    out = []
+    if e.weather()['id'] == 'night':
+        out.append((-1, 'darkness'))
+    elif e.side == 'pat' and e.weather()['id'] == 'dawn' and \
+            any(u.spec.get('regular') for u in e.at(target)):
+        out.append((-1, 'hold your fire'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'K': 'fort', 'P': 'park', 'G': 'palace', 'Q': 'barracks',
+          'A': 'arsenal', 'l': 'largo'}
+
+TERRAIN = {
+    'clear':  dict(name='Open ground', colour='#b8b47a', ink='#989458',
+                   edge='#7a7848'),
+    'fields': dict(name='Roças', colour='#a4b46a', ink='#6e8444',
+                   edge='#6a7a3e'),
+    'woods':  dict(name='Forest', colour='#2e5a2a', ink='#1a3a18',
+                   edge='#0e260c', pattern='pines',
+                   move={'foot': 2, 'track': 3, 'wheel': None}),
+    'marsh':  dict(name='Piri swamp', colour='#6e9a78', ink='#3e6a8e',
+                   edge='#3e6a5a', shift=0,
+                   move={'foot': 3, 'track': None, 'wheel': None}),
+    'town':   dict(name='Houses', colour='#d0c0a0', ink='#a04a2e',
+                   edge='#6a5040', shift=-1),
+    'largo':  dict(name='Largo', colour='#d8ccaa', ink='#b8a884',
+                   pattern='grass', edge='#8a7a5a', z=1),
+    'fort':   dict(name='Forte do Castelo', colour='#b0a690', ink='#6a5040',
+                   pattern='city', edge='#3a3028', z=10, shift=-1,
+                   stand=True, los=False, open=False,
+                   move={'foot': 2, 'track': 2, 'wheel': 2}),
+    'park':   dict(name='Artillery park', colour='#c4b496', ink='#7a5a3a',
+                   pattern='city', edge='#4a3a2a', z=9, shift=-1,
+                   stand=True, los=False, open=False, stack=3),
+    'palace': dict(name='Palace', colour='#e0d4b8', ink='#8a6a4a',
+                   pattern='city', edge='#5a4a38', z=9, shift=-1,
+                   stand=True, los=False, open=False),
+    'barracks': dict(name='Barracks', colour='#c8b494', ink='#8a4a32',
+                     pattern='town', edge='#5a4030', z=8, shift=-1,
+                     los=False, open=False, stack=4),
+    'arsenal': dict(name='Arsenal', colour='#bcae98', ink='#6a5a52',
+                    pattern='town', edge='#4a4038', z=8, shift=-1,
+                    los=False, open=False),
+}
+
+MAP = [
+    '~~~ttttt:t::::ff',
+    '~~~ttttttt:::ff:',
+    '~~~ttttPtt.::::f',
+    '~~~tltttttt:::f:',
+    '~~~tttttttQ::::f',
+    '~~~tttttttl::::f',
+    '~~~lttttttt:::f:',
+    '~~~.mmmmmmmmm:::',
+    '~~~tmmmmmmmmmm::',
+    '~~~Kltttmmmmm.::',
+    '~~~tltttttttt:::',
+    '~~~ttGltttQtt::f',
+    '~~~ttttttttt.:::',
+    '~~~Attttttt::::f',
+    '~~~tttttt::::fff',
+]
+
+ROADS = [
+    ('road', ['0504', '0407', '0408', '0510', '0511']),  # along the river
+    ('road', ['0511', '0612', '1012', '1311']),        # Cidade Velha
+    ('road', ['0504', '0903', '1103', '1603']),         # the Nazaré road
+    ('road', ['0903', '1105', '1106']),                 # to the Pólvora
+    ('road', ['1106', '1410', '1311']),                 # round the swamp
+    ('trail', ['0504', '0706', '1106']),
+    ('trail', ['0414', '0612']),
+    ('trail', ['1311', '1614']),
+]
+
+LABELS = {
+    '0504': 'Largo das Mercês', '0903': 'Artillery park',
+    '0706': "Balbi's house", '1105': '3rd regiment',
+    '0407': 'Ver-o-Peso', '0410': 'Forte do Castelo',
+    '0612': 'Palace', '1012': 'Barracks', '0414': 'Arsenal',
+    '0909': 'Piri swamp', '1503': 'to Nazaré',
+}
+
+OBJECTIVES = {
+    '0903': dict(name='Park', vp=4, owner='pat', **{'for': 'pat'}),
+    '0504': dict(name='Mercês', vp=3, owner='pat', **{'for': 'pat'}),
+    '0612': dict(name='Palace', vp=6, owner='pt', shift=-1,
+                 works='walls', **{'for': 'pat'}),
+    '0410': dict(name='Fort', vp=6, owner='pt', shift=-1,
+                 works='walls', **{'for': 'pat'}),
+}
+
+SUPPLY = {
+    'pat': dict(**{'from': ['E', '0903'], 'range': 8}),
+    'pt':  dict(**{'from': ['0410', '0612', '0414', '1012'], 'range': 10}),
+}
+
+
+def VICTORY(e):
+    """What the plotters wanted was the province.  The palace or the fort
+    in Patriot hands at the end is a Patriot victory: the junta gives way
+    and Pará declares for Dom Pedro four months early.  The park and the
+    Largo das Mercês both held is a marginal one: the governor has to
+    treat.  One of them a Loyalist marginal victory, and neither (what
+    happened) a Loyalist victory."""
+    pat, pt = e.vp('pat'), e.vp('pt')
+    score = 'Patriots %d VP, Loyalists %d.' % (pat, pt)
+    ctl = e.control.get
+    if ctl(PALACE) == 'pat' or ctl(FORT) == 'pat':
+        return 'pat', ('Patriot victory. %s The junta gives way, and Pará '
+                       'declares for Dom Pedro.' % score)
+    held = [h for h in (PARK, MERCES) if ctl(h) == 'pat']
+    if len(held) == 2:
+        return 'pat', ('Patriot marginal victory. %s The rising holds out, '
+                       'and the governor must treat with it.' % score)
+    if held:
+        return 'pt', ('Loyalist marginal victory. %s The rising is broken, '
+                      'though not yet beaten.' % score)
+    return 'pt', ('Loyalist victory. %s The rising is crushed; its '
+                  'leaders are taken, to be shipped to Lisbon.' % score)
+
+
+# ----------------------------------------------------------------- units
+
+PAT = '#5c9a4e'         # soldiers who have come over
+PAT_CIV = '#7cae64'     # townsmen
+PAT_GUNS = '#94bc7c'
+PT = '#5a74b0'          # the regiments
+PT_GUARD = '#7488be'    # the governor's guard and garrisons
+PT_GUNS = '#8c9ccc'
+
+
+def unit(uid, side, a, d, hx, long, colour, steps=2, m=3, **kw):
+    """A company: attack, defence, and the hex it starts in (None to
+    arrive later, with arrive and at)."""
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kw.pop('type', 'infantry'), size=kw.pop('size', 'I'),
+                a=a, d=d, m=m, steps=steps, hex=hx, long=long,
+                colour=colour)
+    spec.update(kw)
+    return spec
+
+
+def guns(uid, side, a, rng, hx, long, colour, m=2, **kw):
+    return unit(uid, side, a, 2, hx, long, colour, steps=1, m=m,
+                type='artillery', range=rng, size='***', **kw)
+
+
+def third(k, name):
+    """A company of the third regiment, in two copies: one for each side
+    it might come out for (see ON_TURN)."""
+    out = []
+    for side, colour in (('pat', PAT), ('pt', PT)):
+        out.append(unit('r3%d_%s' % (k, side), side, 3, 3, None,
+                        '%s company of the 3rd regiment' % name, colour,
+                        name='3/%s' % name[0], arrive=99, at='1105',
+                        regular=side == 'pt', formation='3rd regiment'))
+    return out
+
+
+UNITS = [
+    # ---- the conspiracy
+    unit('barreto', 'pat', 3, 3, '0903',
+         "Loureiro Barreto's men, who took the park", PAT, name='BARRTO',
+         formation='The artillery park'),
+    guns('parkguns', 'pat', 4, 3, '0903', 'The guns of the artillery park',
+         PAT_GUNS, m=1, name='PARK', formation='The artillery park'),
+    unit('boavent', 'pat', 3, 2, '0804',
+         "Boaventura Ferreira da Silva's soldiers and townsmen", PAT,
+         name='BOAVNT', formation='The rising'),
+    unit('balbi', 'pat', 2, 2, '0706', "Balbi's conspirators", PAT_CIV,
+         steps=1, name='BALBI', formation='The rising'),
+    unit('cardoso', 'pat', 2, 2, '1004', "Dias Cardoso's party", PAT_CIV,
+         steps=1, name='CARDSO', formation='The rising'),
+    unit('povo', 'pat', 1, 2, '0504', 'The crowd at the Mercês', PAT_CIV,
+         name='POVO', formation='The rising'),
+    unit('rocha', 'pat', 3, 3, '0604',
+         "Costa Rocha's men of the 3rd regiment", PAT, name='ROCHA',
+         formation='3rd regiment'),
+] + third(0, 'First') + third(1, 'Second') + third(2, 'Third') + [
+    # ---- the governor's men
+    unit('guard', 'pt', 2, 3, '0612', "The governor's guard", PT_GUARD,
+         name='GUARD', formation='The palace'),
+    unit('fortgar', 'pt', 2, 3, '0410', 'The garrison of the Castelo',
+         PT_GUARD, name='CASTLO', formation='Forte do Castelo'),
+    guns('fortguns', 'pt', 4, 4, '0410', 'The guns of the Castelo',
+         PT_GUNS, m=0, name='CASTLO', formation='Forte do Castelo'),
+    guns('nunes', 'pt', 3, 3, '1106', "Lt-Col Nunes's gun", PT_GUNS, m=2,
+         name='NUNES', formation='Artillery'),
+    unit('moura', 'pt', 4, 3, '1012',
+         "Moura's grenadiers (the 1st regiment)", PT, name='MOURA',
+         release=RELEASE, regular=True, formation='1st regiment',
+         posture=('attack', RELEASE)),
+    unit('villaca', 'pt', 4, 3, '1012', "Colonel Villaça's battalion",
+         PT, name='VILACA', release=RELEASE, regular=True,
+         formation='1st regiment', posture=('attack', RELEASE)),
+    unit('barata', 'pt', 4, 3, '1112', "Colonel Barata's battalion", PT,
+         name='BARATA', release=RELEASE, regular=True,
+         formation='2nd regiment', posture=('attack', RELEASE)),
+    unit('r2b', 'pt', 3, 3, '0912', 'A company of the 2nd regiment', PT,
+         name='2/2', release=RELEASE, regular=True,
+         formation='2nd regiment', posture=('attack', RELEASE)),
+    unit('marinha', 'pt', 2, 2, None, 'Sailors from the Arsenal', PT_GUARD,
+         name='MARINH', arrive=4, at='0414', formation='The Arsenal'),
+    guns('arsgun', 'pt', 2, 3, None, 'A field gun from the Arsenal',
+         PT_GUNS, name='ARSNL', arrive=5, at='0414',
+         formation='The Arsenal'),
+]
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#16201a', panel='#24322a', light='#6a8a6e',
+              dark='#060a08', accent='#f4d860', button='#3a5442',
+              button_hi='#7a9e80', button_lo='#16201a', red='#b83a22')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE RISING. The Patriots move first. They start with the artillery "
+    "park and the Largo das Mercês. Before first light (two turns) "
+    "everyone sees only the next hex and every attack loses a column; "
+    "at first light, Patriots attacking the regiments lose another "
+    "(their men are loath to fire on their own officers).",
+
+    "THE THIRD REGIMENT. On turns 2, 3 and 4 a company of the 3rd "
+    "regiment comes out of its barracks in the Campina. It joins the "
+    "Patriots one time in four, plus one in four for each of the park "
+    "and the Mercês they hold, less one if Loyalists stand next to the "
+    "barracks. Otherwise it joins the governor.",
+
+    "THE GOVERNOR. The regiments in the Cidade Velha are under orders to "
+    "keep to their barracks: they're held until turn 3. Sailors and a gun "
+    "come from the Arsenal later. The Piri swamp divides the old city "
+    "from the Campina: the river street by the Ver-o-Peso, or round the "
+    "swamp's east end. The park, the palace and the fort are strong: "
+    "their defenders lose a step rather than retreat.",
+
+    "WINNING. The palace or the fort in Patriot hands at the end is a "
+    "Patriot victory; the park and the Mercês both a marginal one. One "
+    "of the two is a marginal Loyalist victory, and neither a Loyalist "
+    "victory. The score (the palace and the fort 6, the park 4, the "
+    "Mercês 3, and each step destroyed) is kept for the record.",
+]
+
+ICON = 'belem'
+
+
+@grognard.icon('belem')
+def draw_icon(p, n):
+    """A rocket bursting over the walls of the artillery park, and a gun
+    in the gateway."""
+    import math
+    p.fill('#1e2a48')
+    for x, y, c in ((0.3, 0.2, '#f4d860'), (0.7, 0.16, '#7ccc6a'),
+                    (0.52, 0.3, '#f8f0c0')):
+        for k in range(8):
+            a = k * math.pi / 4
+            p.line(n * x, n * y, n * (x + math.cos(a) * 0.1),
+                   n * (y + math.sin(a) * 0.1), c, max(1, n // 40))
+    p.rect(0, n * 0.55, n, n * 0.45, '#c4b496')
+    for k in range(6):
+        p.rect(n * (0.02 + k * 0.17), n * 0.49, n * 0.1, n * 0.07,
+               '#c4b496')
+    p.rect(n * 0.34, n * 0.66, n * 0.32, n * 0.34, '#3a2a1a')
+    p.rect(n * 0.36, n * 0.76, n * 0.3, n * 0.06, '#1a1a1a')
+    p.disc(n * 0.44, n * 0.88, n * 0.07, '#6a4a2a')
+    p.rect(n * 0.0, n * 0.95, n, n * 0.05, '#7a6a50')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])
