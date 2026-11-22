@@ -1593,6 +1593,13 @@ class Game:
             for hx in list(p.reach) + ([u.hex] if u else []):
                 if hx in shown:
                     v.restore(s, hx)
+            # a map too dark for darkening to show (space) tints what can
+            # be reached instead: REACH = colour
+            lit = getattr(self.d, 'REACH', None)
+            if lit:
+                for hx in p.reach:
+                    if hx in shown:
+                        v.tint(s, hx, lit, 0.3)
             if u:
                 for hx in p.reach:
                     if hx in shown and hx in e.enemy_hexes(u.side):

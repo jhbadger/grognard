@@ -645,6 +645,8 @@ player.
 - `STYLE = 'pictures'` for little pictures on the counters instead of
   NATO symbols; `ZOOM` for the zoom a game starts at; `FONT` for the
   smooth text's font.
+- `REACH = colour` tints the hexes a selected unit can reach, for a
+  map too dark for the usual darkening of the rest to show (Far Suns).
 - A terrain's `glyph`, `fn(surface, cx, cy, scale, hex)`, draws a
   picture in the middle of each of its hexes (Far Suns' suns), and
   `DRAW_MAP(game, surface)` draws over the map every frame (what a side

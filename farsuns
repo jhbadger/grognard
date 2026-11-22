@@ -1154,6 +1154,7 @@ CHROME = dict(bg='#06080e', panel='#141a2a', light='#4a5a80',
               red='#e05040')
 STYLE = 'pictures'
 ZOOM = 1
+REACH = '#3a8ae8'       # where a ship can go: lit blue (dark won't show)
 
 HELP = [
     "THE STARS. Your homeworld and a few ships start somewhere in a "
