@@ -351,6 +351,12 @@ front end (`grognard/kivyshell.py`); `--kivy` runs that on the desktop
 too, if Kivy is installed. Held upright, a phone gets the upright layout:
 the map on top and the panels in columns underneath.
 
+The APK is signed with a debug key kept in
+`~/.android-keys/org.grognard.<game>/` (shared with blobber and the
+tilerpgs, one folder per app), made by the game's first build and used by
+every one after, so a new build installs over the old. Back that folder up: with a different key,
+a phone won't take the new build without uninstalling the old one first.
+
 ## The engine
 
 `grognard/` holds the engine, which knows nothing about any one game:

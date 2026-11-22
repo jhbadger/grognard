@@ -228,23 +228,57 @@ ANDROID_BUILD = r'''#!/bin/sh
 #                       compiled, shared by every project built this way.
 #   tar                 this folder's tar, over the image's own, which can't
 #                       unpack under Intel emulation on a Mac.
-#   .android            this folder's, as the container's ~/.android: the
-#                       debug key the APK is signed with.  Keep it, or the
-#                       next build won't install over this one.
+#   ~/.android-keys/<package.domain>.<package.name>
+#                       the container's ~/.android (at /root too, since
+#                       under Colima the build runs as root and Java looks
+#                       there): the debug key the APK is signed with, one
+#                       folder per app, named by its Android id and shared
+#                       by every engine's build.sh.  It's kept out of this
+#                       folder so that deleting this can't lose the key: a
+#                       phone refuses an update signed with a different key
+#                       ("App not installed"), and the app must then be
+#                       uninstalled, saved game and all.  Back it up.  A
+#                       key an older build.sh left in .android moves there.
 set -e
 cd "$(dirname "$0")"
 [ $# -gt 0 ] || set -- -v android debug
+APP="$(sed -n 's/^package\.domain *= *//p' buildozer.spec).$(sed -n 's/^package\.name *= *//p' buildozer.spec)"
+KEYS="$HOME/.android-keys/$APP"
+mkdir -p "$KEYS"
+if [ -f .android/debug.keystore ]; then
+    if [ ! -f "$KEYS/debug.keystore" ]; then
+        mv .android/debug.keystore "$KEYS/"
+    elif cmp -s .android/debug.keystore "$KEYS/debug.keystore"; then
+        rm .android/debug.keystore
+    else
+        echo "build.sh: .android/debug.keystore and $KEYS/debug.keystore" \
+             "are different keys; keep the one your installed app was" \
+             "signed with and remove the other" >&2
+        exit 1
+    fi
+fi
 exec docker run --rm --platform linux/amd64 \
     -v buildozer-home:/home/user/.buildozer \
     -v "$PWD":/home/user/hostcwd \
     -v buildozer-platform:/home/user/hostcwd/.buildozer/android/platform \
     -v "$PWD/tar":/usr/local/bin/tar:ro \
-    -v "$PWD/.android":/home/user/.android \
-    -v "$PWD/.android":/root/.android \
+    -v "$KEYS":/home/user/.android \
+    -v "$KEYS":/root/.android \
     --entrypoint /bin/bash kivy/buildozer -c \
     'rm -rf /home/user/hostcwd/.buildozer/android/platform/build-*/build/venv
      exec /usr/local/bin/entrypoint.sh "$@"' build "$@"
 '''
+
+
+def android_title(title):
+    """The title as Buildozer's spec should give it.  python-for-android
+    writes it unescaped into the app's strings.xml, where Android's
+    resource compiler refuses a bare ' or " (and a leading @ or ?), so
+    they're escaped here; % is doubled for the spec's own interpolation."""
+    t = title.replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"')
+    if t[:1] in ('@', '?'):
+        t = '\\' + t
+    return t.replace('%', '%%')
 
 
 def build_android(gdef, dest):
@@ -268,5 +302,6 @@ def build_android(gdef, dest):
     spec = os.path.join(dest, 'buildozer.spec')
     if not os.path.exists(spec):
         with open(spec, 'w') as fh:
-            fh.write(ANDROID_SPEC % {'title': gdef.TITLE, 'id': gdef.ID})
+            fh.write(ANDROID_SPEC % {'title': android_title(gdef.TITLE),
+                                     'id': gdef.ID})
     return dest
