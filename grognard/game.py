@@ -427,7 +427,7 @@ class PlayMode(Mode):
             if u.disabled:
                 flags.append('dis')
             spent = self.human() and u.side == e.side and (
-                (e.moving and u.mp <= 0) or
+                (e.moving and u.mp <= 0 < u.max_mp) or
                 (e.phase == 'combat' and (u.attacked or u.fired)))
             s.blit(counters.counter(u, side, self.STRIP_C, g.style,
                                     dim=spent, flags=tuple(flags)), cx, cy)
@@ -1580,7 +1580,7 @@ class Game:
         dims = set()
         if p.human():
             for u in e.alive(e.side):
-                if (e.moving and (u.mp <= 0)) or \
+                if (e.moving and u.mp <= 0 < u.max_mp) or \
                         (e.phase == 'combat' and (u.attacked or u.fired)):
                     dims.add(u.id)
         # ghosts: enemy units last seen here
