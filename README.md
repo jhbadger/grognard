@@ -17,12 +17,12 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are five games so far: a Second World War battle, a raid in a
+There are six games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
-Mexican-American War, and a dawn rising in the streets of Belém in
-Brazil's war of independence.
+Mexican-American War, a dawn rising in the streets of Belém in
+Brazil's war of independence, and a battle at sea: Trafalgar.
 
 ```bash
 ./crossroads
@@ -42,6 +42,10 @@ Brazil's war of independence.
 
 ```bash
 ./belem
+```
+
+```bash
+./trafalgar
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -227,6 +231,45 @@ but not the strength of the units or where in the city the park and the
 barracks stood. The order of battle and the map are a reasonable guess
 at a city of some twelve thousand people, not a survey.
 
+## Trafalgar: Nelson's last battle, 21 October 1805
+
+The sixth game, and the first at sea. Off Cape Trafalgar the Combined
+Fleet of France and Spain, 33 ships of the line under Villeneuve,
+straggles north towards Cádiz in a ragged crescent. Nelson's 27 ships
+come down on it from the west in two columns, to break the line in two
+places and fight it out ship against ship.
+
+- **Thirteen turns** of half an hour, from 11:30 to 5:30. The British
+  move first. Every counter is a ship, named, one to a hex: the
+  Victory, the Royal Sovereign, the Santísima Trinidad, the Bucentaure,
+  the Redoutable and the rest.
+- **The wind** blows from the west. Sailing north-east or south-east,
+  before it, costs 1 a hex; north or south, with the wind on the beam,
+  1½; north-west and south-west, into it, can't be done. British ships
+  move 3; the Combined Fleet, barely making steerage way, 1. A swell
+  from 4:00 slows everyone. There are no zones of control: ships sail
+  past one another, and through the gaps in the enemy line.
+- **The fight**: ships next to each other fire, each once a turn, and
+  several can gang up on one. Hits knock out steps; a ship that loses
+  her last strikes her colours. A British ship firing from directly
+  ahead of or astern of a Combined ship (the hex north or south of
+  her) rakes her: a column. A British ship that didn't fire in her own
+  turn is bow-on or turning and can't reply, so Combined attacks on her
+  gain a column.
+- **The fleets**: the British fire faster and harder (a British 74 is
+  4-4, a French 74 3-3, a Spanish 2-3), but the French and Spanish ships
+  are big and take a battering before they strike. Dumanoir's ten ships
+  in the van wait for a signal until 1:30. The Africa comes down from
+  the north on her own.
+- **Winning**: the Combined ships taken, less two for each British ship
+  lost. 18 or more (what Nelson got) is a decisive British victory, 16
+  a British victory, 10 a marginal Combined victory, and fewer a
+  Combined victory. Computer against computer the British win about
+  three games in five.
+
+The game starts with counters drawn as little ships; `P` switches to
+NATO-style symbols.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -351,13 +394,17 @@ The rules are the classic ones, and each part can be changed by a game:
 
 - **Sequence**: each turn every side in `ORDER` has a player turn:
   reinforcements arrive, supply is traced, it moves, then it attacks.
-  `ON_TURN(engine, side)` and `ON_END_TURN(engine)` hook in.
+  `ON_TURN(engine, side)` and `ON_END_TURN(engine)` hook in, and can
+  keep their own state in `engine.flags`, a dict that's saved with the
+  game.
 - **Movement**: movement points, terrain costs by movement class, roads
   at their own cost (and over rivers: bridges), rivers adding to the cost
   of crossing (or forbidding it), weather multiplying costs off the
   roads. A unit may always move one hex if it hasn't moved. Entering an
   enemy zone of control ends a move; moving from one to another isn't
   allowed; friendly units cancel enemy zones where they stand.
+  `ENTER_COST(engine, unit, a, b, cost)` can change the cost of any
+  step, or forbid it with None (Trafalgar's wind).
 - **Stacking**: `STACK` units a hex (HQs don't count), or the terrain's
   own `stack`.
 - **Combat**: adjacent units attack one hex together, each once a turn,
@@ -464,9 +511,11 @@ units, its own combat table, combat shifts and a turn hook (ammunition
 running short), and its own font; `chapultepec` for a fortress
 terrain, cliffs, a walled grove worked out in code, a side that gets
 stronger when an objective falls, and victory decided by ground rather
-than points; and `belem` for units that join whichever side is
+than points; `belem` for units that join whichever side is
 winning (two copies of each, one brought on by `ON_TURN`) and weather
-that changes how far units see.
+that changes how far units see; and `trafalgar` for a game at sea:
+ships on a map of open water, the wind worked out in `ENTER_COST`, its
+own widget (the wind) and its own counter symbol and picture.
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)

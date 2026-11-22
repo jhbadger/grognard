@@ -1,0 +1,467 @@
+#!/usr/bin/env python3
+"""Trafalgar: Nelson's last battle, 21 October 1805.  A sample game for
+the Grognard engine, and its first at sea.
+
+Off Cape Trafalgar the Combined Fleet of France and Spain, 33 ships of
+the line under Villeneuve, straggles north in a ragged crescent, back
+towards Cádiz.  Down on it from the west, before a light wind, come 27
+British ships in two columns: Nelson's in the Victory, Collingwood's in
+the Royal Sovereign, to break the line in two places and fight it out
+ship against ship.  Play either side against the computer, or against a
+friend at the same screen.
+
+Run it with ./trafalgar (Python 3 with Tk, nothing else).  The game is
+saved to ~/.trafalgar.json.  ./trafalgar --selftest checks the map and
+plays a game between two computer players.
+"""
+
+import math
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import hexgrid                           # noqa: E402
+from grognard.gfx import rgb                           # noqa: E402
+from grognard.widgets import panel, fit, ch           # noqa: E402
+
+ID = 'trafalgar'
+TITLE = 'Trafalgar'
+SUBTITLE = "Nelson's last battle, 21 October 1805"
+
+INTRO = [
+    "October 1805. For two years the British have hunted the French "
+    "fleet across the Atlantic and back. Now Admiral Villeneuve, with "
+    "eighteen French and fifteen Spanish ships of the line, has come out "
+    "of Cádiz, and Vice-Admiral Lord Nelson has caught him at sea off "
+    "Cape Trafalgar.",
+
+    "The wind is light, from the west, and a long swell is rolling in. "
+    "Villeneuve has turned his fleet back north towards Cádiz; his line "
+    "has sagged into a ragged crescent five miles long, the ships "
+    "bunched two and three abreast in places, gaps in others.",
+
+    "Nelson does not form a line of his own. His 27 ships come down "
+    "before the wind in two columns, his own and Collingwood's, to cut "
+    "the enemy line in two places and overwhelm its centre and rear "
+    "before the van can turn back to help. The leading ships must sail "
+    "into the enemy's broadsides for half an hour without firing a "
+    "shot. At a quarter to twelve the Victory hoists a signal: England "
+    "expects that every man will do his duty.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='gb', name='British', adj='British', colour='#c8b070',
+         ink='#101010', posture='attack', singular=False,
+         about='Break the enemy line, rake its ships as you pass, and '
+               'take as many as you can before dark.'),
+    dict(id='cf', name='Combined Fleet', adj='Combined', colour='#4a6ab0',
+         ink='#f8f8f8', posture='defend', singular=True,
+         about='Hold together, make the British pay for every ship, and '
+               'bring the van back south into the fight.'),
+]
+ORDER = ['gb', 'cf']
+
+TURNS = 13
+
+
+def TURN_NAME(t):
+    """Half-hour turns from half past eleven."""
+    m = 11 * 60 + 30 + (t - 1) * 30
+    h = m // 60
+    return ('21 Oct 1805', '%d:%02d %s' % ((h - 1) % 12 + 1, m % 60,
+                                           'AM' if h < 12 else 'PM'))
+
+
+STACK = 1               # one ship a hex
+ZOC = False             # ships sail past one another
+FOG = False             # the whole fleet in plain sight
+STEP_VP = 0             # what counts is the ships taken
+
+WEATHER = {1: 'light', 10: 'swell'}
+WEATHER_TYPES = {
+    'light': dict(name='Light airs', icon='cloud', air=False),
+    'swell': dict(name='Swell rising', icon='rain', air=False, move=1.5),
+}
+
+# ------------------------------------------------------------ the wind
+
+WIND = 'W'              # where the wind blows from
+
+# What it costs to sail each way with the wind in the west, by the
+# direction sailed (hexgrid.DIR_NAMES): before the wind on a broad reach
+# (north-east and south-east) is quickest; with the wind on the beam
+# (north and south) slower; and nothing sails into it (north-west and
+# south-west, 30 degrees off the wind).
+SAILING = {'NE': 1, 'SE': 1, 'N': 1.5, 'S': 1.5, 'NW': None, 'SW': None}
+
+
+def ENTER_COST(e, unit, a, b, c):
+    """Ships go where the wind lets them."""
+    if getattr(unit, 'move_class', None) != 'sail':
+        return c
+    k = SAILING[hexgrid.DIR_NAMES[hexgrid.direction(a, b)]]
+    return None if k is None else c * k
+
+
+# ------------------------------------------------------------ the fight
+
+CRT = {
+    'columns': ['1:3', '1:2', '1:1', '1.5:1', '2:1', '3:1', '4:1'],
+    'rows': [
+        ['A1', 'A1', 'A1', 'EX', 'EX', 'D1', 'D1'],
+        ['A1', 'A1', '-', '-', 'D1', 'D1', 'D2'],
+        ['-', '-', '-', 'D1', 'D1', 'D1', 'D2'],
+        ['-', '-', 'D1', 'D1', 'D1', 'D2', 'D2'],
+        ['-', 'D1', 'D1', 'D1', 'D2', 'D2', 'D2'],
+        ['D1', 'D1', 'D1', 'D2', 'D2', 'D2', 'DE'],
+    ],
+}
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Raking: a broadside fired into a ship's bow or stern runs the
+    length of her decks.  The Combined Fleet is sailing north, so a
+    British ship attacking from the hex directly ahead of (north of) or
+    astern of (south of) a Combined ship gains a column.  And a British
+    ship that didn't fire in her own turn is still coming down bow-on,
+    or turning, and can't reply: Combined attacks on her gain a
+    column."""
+    out = []
+    defenders = [u for u in e.at(target) if u.side != e.side]
+    if not defenders:
+        return out
+    if e.side == 'gb':
+        ahead = {hexgrid.neighbour(target, 0), hexgrid.neighbour(target, 3)}
+        if any(u.hex in ahead for u in attackers):
+            out.append((1, 'raking'))
+    elif not any(u.attacked for u in defenders):
+        out.append((1, 'bow-on'))
+    return out
+
+
+def ON_END_TURN(e):
+    """The moment the Victory is in close action, a marksman in the
+    enemy's tops may find Nelson."""
+    v = e.units['victory']
+    if v.alive and v.attacked and not e.flags.get('nelson') and \
+            e.rng.random() < 0.5:
+        e.flags['nelson'] = e.turn
+        e.say('A marksman in the enemy tops shoots Nelson on the '
+              "Victory's quarterdeck. He is carried below; Hardy fights "
+              'on.')
+
+
+def ON_TURN(e, side):
+    if e.turn == 1 and side == 'gb':
+        e.say('The Victory signals: England expects that every man will '
+              'do his duty.')
+    if e.turn == VAN_TURN and side == 'cf':
+        e.say('Villeneuve signals the van to come about and join the '
+              'battle.')
+
+
+# --------------------------------------------------------------- the map
+
+COLS, ROWS = 37, 31
+LEGEND = {'.': 'sea'}
+TERRAIN = {
+    'sea': dict(name='Sea', colour='#3a6a9a', ink='#5a8abc',
+                pattern='water', edge='#24486e', z=0, shift=0,
+                move={'sail': 1}, open=True, los=True),
+}
+MAP = ['.' * COLS] * ROWS
+
+LABELS = {
+    '1801': 'to Cádiz', '3330': 'to Cape Trafalgar',
+}
+
+# The Combined Fleet's line, van (north) to rear (south): how many ships
+# abreast in each row (a 2 is a ship with another to leeward of her; a 0
+# a gap).  The line bows to leeward in the middle.
+LINE = [1, 2, 0, 2, 1, 0, 2, 2, 0, 1, 2, 0, 2, 1, 0, 2, 2, 0, 1, 2, 0,
+        2, 2, 0, 1, 2, 0, 2, 1]
+
+
+def line_hexes():
+    out = []
+    for k, n in enumerate(LINE):
+        c = 21 + round(2 * math.sin(math.pi * k / (len(LINE) - 1)))
+        for j in range(n):
+            out.append(hexgrid.hid((c + j, k + 1)))
+    return out
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'ship': dict(name='Ship of the line', symbol='ship', move='sail',
+                 zoc=False, fate='strikes her colours'),
+}
+
+GB = '#c8b070'          # black and yellow, the Nelson chequer
+GB_FLAG = '#e0c880'
+FR = '#4a6ab0'
+SP = '#b84a3a'
+
+# guns: (attack, defence, steps, value) for each nation's ships.  The
+# British fire faster and straighter; the French and Spanish ships are
+# big and stoutly built, and take a battering before they strike.
+RATES = {
+    'gb': {64: (3, 4, 2, 4), 74: (4, 4, 3, 4), 80: (5, 5, 3, 4),
+           98: (5, 6, 4, 6), 100: (6, 6, 4, 6)},
+    'fr': {74: (3, 3, 4, 4), 80: (4, 4, 4, 4)},
+    'sp': {64: (2, 2, 3, 4), 74: (2, 3, 4, 4), 80: (3, 4, 4, 4),
+           100: (4, 5, 5, 6), 112: (5, 5, 5, 6), 136: (6, 6, 6, 8)},
+}
+
+
+def ship(uid, nation, guns, hx, long, name=None, flag=None, **kw):
+    a, d, steps, vp = RATES[nation][guns]
+    side = 'gb' if nation == 'gb' else 'cf'
+    colour = {'gb': GB_FLAG if flag else GB, 'fr': FR, 'sp': SP}[nation]
+    spec = dict(id=uid, name=name or uid.upper()[:6], side=side,
+                type='ship', size='', a=a, d=d, m=3 if side == 'gb' else 1,
+                steps=steps, hex=hx, colour=colour,
+                vp=vp + (2 if flag else 0),
+                long='%s (%d guns)%s' % (long, guns,
+                                         ', ' + flag if flag else ''))
+    spec.update(kw)
+    return spec
+
+
+# The Combined Fleet, van to rear.  Dumanoir's van is waiting for a
+# signal: held until VAN_TURN.
+VAN_TURN = 5
+COMBINED = [
+    ('neptuno', 'sp', 80, 'Neptuno'), ('scipion', 'fr', 74, 'Scipion'),
+    ('intrepide', 'fr', 74, 'Intrépide'),
+    ('formidable', 'fr', 80, 'Formidable', "Dumanoir's flagship"),
+    ('duguay', 'fr', 74, 'Duguay-Trouin'),
+    ('montblanc', 'fr', 74, 'Mont-Blanc'), ('rayo', 'sp', 100, 'Rayo'),
+    ('sanfran', 'sp', 74, 'San Francisco de Asís'),
+    ('sanagustin', 'sp', 74, 'San Agustín'), ('heros', 'fr', 74, 'Héros'),
+    ('trinidad', 'sp', 136, 'Santísima Trinidad'),
+    ('bucentaure', 'fr', 80, 'Bucentaure', "Villeneuve's flagship"),
+    ('neptune', 'fr', 80, 'Neptune'), ('redoutable', 'fr', 74, 'Redoutable'),
+    ('sanleandro', 'sp', 64, 'San Leandro'),
+    ('sanjusto', 'sp', 74, 'San Justo'),
+    ('indomptable', 'fr', 80, 'Indomptable'),
+    ('santaana', 'sp', 112, 'Santa Ana', "Álava's flagship"),
+    ('fougueux', 'fr', 74, 'Fougueux'), ('monarca', 'sp', 74, 'Monarca'),
+    ('pluton', 'fr', 74, 'Pluton'),
+    ('algesiras', 'fr', 74, 'Algésiras', "Magon's flagship"),
+    ('bahama', 'sp', 74, 'Bahama'), ('aigle', 'fr', 74, 'Aigle'),
+    ('swiftsurefr', 'fr', 74, 'Swiftsure', None, 'SWIFTF'),
+    ('argonaute', 'fr', 74, 'Argonaute'),
+    ('montanes', 'sp', 74, 'Montañés'),
+    ('argonauta', 'sp', 80, 'Argonauta'), ('berwick', 'fr', 74, 'Berwick'),
+    ('nepomuceno', 'sp', 74, 'San Juan Nepomuceno'),
+    ('sanildef', 'sp', 74, 'San Ildefonso'),
+    ('achillefr', 'fr', 74, 'Achille', None, 'ACHILF'),
+    ('principe', 'sp', 112, 'Príncipe de Asturias', "Gravina's flagship"),
+]
+
+WEATHER_COLUMN = [
+    ('victory', 100, 'Victory', "Nelson's flagship"),
+    ('temeraire', 98, 'Temeraire'), ('neptunegb', 98, 'Neptune', None,
+                                     'NEPTUN'),
+    ('leviathan', 74, 'Leviathan'), ('conqueror', 74, 'Conqueror'),
+    ('britannia', 100, 'Britannia', "Northesk's flagship"),
+    ('ajax', 74, 'Ajax'), ('agamemnon', 64, 'Agamemnon'),
+    ('orion', 74, 'Orion'), ('minotaur', 74, 'Minotaur'),
+    ('spartiate', 74, 'Spartiate'),
+]
+LEE_COLUMN = [
+    ('royalsov', 100, 'Royal Sovereign', "Collingwood's flagship",
+     'RSOVRN'),
+    ('belleisle', 74, 'Belleisle'), ('mars', 74, 'Mars'),
+    ('tonnant', 80, 'Tonnant'), ('bellerophon', 74, 'Bellerophon'),
+    ('colossus', 74, 'Colossus'), ('achille', 74, 'Achille'),
+    ('dreadnought', 98, 'Dreadnought'), ('polyphemus', 64, 'Polyphemus'),
+    ('revenge', 74, 'Revenge'), ('swiftsure', 74, 'Swiftsure'),
+    ('defiance', 74, 'Defiance'), ('thunderer', 74, 'Thunderer'),
+    ('defence', 74, 'Defence'), ('prince', 98, 'Prince'),
+]
+
+
+def _units():
+    out = []
+    line = line_hexes()
+    row = {}
+    for i, (h, s) in enumerate(zip(line, COMBINED)):
+        uid, nation, guns, long = s[:4]
+        flag = s[4] if len(s) > 4 else None
+        name = s[5] if len(s) > 5 else None
+        out.append(ship(uid, nation, guns, h, long, name=name, flag=flag,
+                        formation=("Dumanoir's van" if i < 10 else
+                                   "Villeneuve's centre" if i < 17 else
+                                   "Gravina's rear"),
+                        release=VAN_TURN if i < 10 else 0))
+        row[uid] = hexgrid.parse(h)[1]
+    # Nelson's column steers for the Bucentaure, Collingwood's for the
+    # Santa Ana; the Royal Sovereign is well ahead of her column.
+    for col, (target, head, gaps) in (
+            (WEATHER_COLUMN, ('bucentaure', 13, ())),
+            (LEE_COLUMN, ('santaana', 16, (1,)))):
+        r = row[target] - 1
+        c = head
+        for k, s in enumerate(col):
+            uid, guns, long = s[:3]
+            flag = s[3] if len(s) > 3 else None
+            name = s[4] if len(s) > 4 else None
+            if k in gaps:
+                c -= 1
+            out.append(ship(uid, 'gb', guns, hexgrid.hid((c, r)), long,
+                            name=name, flag=flag,
+                            formation=("Nelson's column" if col is
+                                       WEATHER_COLUMN else
+                                       "Collingwood's column")))
+            c -= 1
+    out.append(ship('africa', 'gb', 64, '1602', 'Africa',
+                    formation='Detached to the north'))
+    return out
+
+
+UNITS = _units()
+
+# ----------------------------------------------------------- winning
+
+def struck(e, side):
+    return [u for u in e.units.values() if u.side == side and
+            u.status == 'dead']
+
+
+def VICTORY(e):
+    """Nelson wanted annihilation, not a victory.  Count the Combined
+    ships taken, less two for every British ship lost."""
+    cf, gb = struck(e, 'cf'), struck(e, 'gb')
+    n = len(cf) - 2 * len(gb)
+    score = '%d French and Spanish ships taken, %d British.' % (
+        len(cf), len(gb))
+    if n >= 18:
+        return 'gb', ('British decisive victory. %s The Combined Fleet is '
+                      'destroyed; there will be no invasion.' % score)
+    if n >= 16:
+        return 'gb', ('British victory. %s The Combined Fleet limps back '
+                      'into Cádiz, broken.' % score)
+    if n >= 10:
+        return 'cf', ('Combined Fleet marginal victory. %s A bloody day, '
+                      'but the fleet survives to fight again.' % score)
+    return 'cf', ('Combined Fleet victory. %s The British attack has '
+                  'failed, and Villeneuve is a hero.' % score)
+
+
+# ------------------------------------------------- the wind widget
+
+@grognard.widget('wind')
+class Wind(grognard.Widget):
+    """A compass card with the wind arrow."""
+
+    def height(self, g, w):
+        return 44
+
+    def draw(self, g, s, r):
+        x, y, w, h = r
+        panel(g, s, r)
+        cx, cy, rr = x + w // 2, y + 4 + (h - 17) // 2, (h - 17) // 2
+        s.rect(x + 4, y + 4, w - 8, h - 17, rgb('#2a4a6a'))
+        ink = rgb('#e8e0c8')
+        s.line(cx - rr - 6, cy, cx + rr + 6, cy, ink)
+        for k in range(1, 3):
+            s.line(cx + rr + 6 - k, cy - k, cx + rr + 6 - k, cy + k, ink)
+        for k in (-3, 3):
+            s.line(cx - rr - 6, cy + k, cx - rr - 2, cy, ink)
+        s.text(x + w // 2, y + h - 12, fit('Wind from W', w - 4),
+               ch(g, 'text'), align='center')
+
+
+@grognard.symbol('ship')
+def s_ship(p, x, y, w, h, c):
+    """A ship of the line: a hull and three masts under plain sail."""
+    base = y + h - 3
+    p.rect(x + 1, base, w - 2, 1, c)
+    p.rect(x + 2, base + 1, w - 4, 1, c)
+    sw = max(1, w // 9)
+    for k in (0.28, 0.5, 0.72):
+        mx = int(x + (w - 1) * k)
+        p.rect(mx, y + 1, 1, base - y - 1, c)
+        p.rect(mx - sw, y + 2, 2 * sw + 1, max(1, (base - y - 3) // 2), c)
+
+
+grognard.counters.PICTURES['ship'] = [
+    '...#..#..#.', '..###.##.##', '..###.##.##', '...#..#..#.',
+    '#.###.##.##', '###########', '.#+#+#+#+#.', '..#######..']
+
+PANELS = dict(
+    right=['date', 'wind', 'victory', 'phase', 'minimap', 'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#101820', panel='#1c2a38', light='#5a7a98',
+              dark='#04080c', accent='#f0d070', button='#2c4660',
+              button_hi='#6a8ab0', button_lo='#101820', red='#b83a22')
+FONT = dict(family='Georgia')
+ZOOM = 1
+STYLE = 'pictures'
+
+HELP = [
+    "THE WIND blows from the west. A ship sailing north-east or "
+    "south-east has it behind her: 1 a hex. North or south, with the "
+    "wind on the beam: 1½. Nothing sails north-west or south-west, into "
+    "the wind. A heavy swell from 4:00 makes everything slower. British "
+    "ships move 3; the Combined Fleet, barely making steerage way, 1. "
+    "One ship a hex; ships sail past one another (no zones of control).",
+
+    "THE FIGHT. Ships next to each other fight; each fires once a turn, "
+    "and several may fire on one target. Hits knock out steps (a pale "
+    "band); a ship that loses her last strikes her colours. Raking: a "
+    "British ship firing from directly ahead of or astern of a Combined "
+    "ship (the hex north or south of her) gains a column. Bow-on: a "
+    "British ship that hasn't yet reached the enemy line can't reply, "
+    "and Combined attacks on her gain a column.",
+
+    "THE VAN. Dumanoir's ten ships at the head of the line wait for a "
+    "signal: they can't move or fire until 1:30 (turn 5).",
+
+    "WINNING. Count the Combined ships taken, less two for every British "
+    "ship lost: 18 or more is a decisive British victory, 16 a British "
+    "victory, 10 a marginal Combined victory, and fewer a Combined "
+    "victory. On the day the British took or destroyed 18 and lost "
+    "none. The score panel counts the ships' values (a 74 is 4, a "
+    "three-decker 6, the Santísima Trinidad 8, a flagship 2 more).",
+]
+
+ICON = 'trafalgar'
+
+
+@grognard.icon('trafalgar')
+def draw_icon(p, n):
+    """A ship of the line under sail, with powder smoke."""
+    p.fill('#8ab0d0')
+    p.rect(0, n * 0.7, n, n * 0.3, '#2a5a8a')
+    for x, r in ((0.15, 0.12), (0.85, 0.14), (0.75, 0.1)):
+        p.disc(n * x, n * 0.62, n * r, '#e8e8e0')
+    p.rect(n * 0.18, n * 0.6, n * 0.64, n * 0.1, '#1a1208')
+    p.rect(n * 0.22, n * 0.63, n * 0.56, n * 0.025, '#e0c060')
+    p.rect(n * 0.24, n * 0.7, n * 0.52, n * 0.04, '#1a1208')
+    for k, mx in enumerate((0.32, 0.5, 0.68)):
+        p.rect(n * (mx - 0.01), n * 0.12, n * 0.02, n * 0.48, '#3a2a1a')
+        for j, (yy, ww) in enumerate(((0.16, 0.1), (0.28, 0.13),
+                                      (0.42, 0.15))):
+            p.rect(n * (mx - ww / 2 - 0.0), n * yy, n * ww, n * 0.1,
+                   '#f4f0e0')
+    p.rect(n * 0.5, n * 0.06, n * 0.08, n * 0.05, '#c02020')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

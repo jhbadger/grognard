@@ -293,6 +293,7 @@ class Engine:
                         self.board.objectives.items()}
         self.bonus = {s: 0 for s in self.side_ids}     # exits and the like
         self.lost = {s: 0 for s in self.side_ids}      # steps lost
+        self.flags = {}             # a game's own state, kept in saves
         self.exited = {s: 0 for s in self.side_ids}    # steps off the map
         self.hit = set()            # hexes attacked this phase
         self.over = False
@@ -310,6 +311,7 @@ class Engine:
             turn=self.turn, active=self.active, phase=self.phase,
             control={hid(h): s for h, s in self.control.items()},
             bonus=self.bonus, lost=self.lost, exited=self.exited,
+            flags=self.flags,
             hit=[hid(h) for h in self.hit], over=self.over,
             winner=self.winner, result=self.result,
             messages=self.messages[-60:],
@@ -322,6 +324,7 @@ class Engine:
         self.control = {parse(h): s for h, s in d['control'].items()}
         self.bonus, self.lost = d['bonus'], d['lost']
         self.exited = d.get('exited', {s: 0 for s in self.side_ids})
+        self.flags = d.get('flags', {})
         self.hit = {parse(h) for h in d.get('hit', [])}
         self.over, self.winner, self.result = d['over'], d['winner'], \
             d['result']
@@ -498,6 +501,9 @@ class Engine:
             if rc is None:
                 return None
             c += rc
+        hook = getattr(self.d, 'ENTER_COST', None)
+        if hook:                        # the wind, or the like
+            c = hook(self, unit, a, b, c)
         return c
 
     def reachable(self, unit, mp=None):
@@ -1061,7 +1067,8 @@ class Engine:
             for e in self.enemies(u.side):
                 self.bonus[e] += u.spec['vp']
         self.events.append(('die', u.id, u.hex))
-        self.say('%s is destroyed.' % u.long)
+        self.say('%s %s.' % (u.long, u.spec.get(
+            'fate', u.type.get('fate', 'is destroyed'))))
         u.hex = None
         self.changed()
 
