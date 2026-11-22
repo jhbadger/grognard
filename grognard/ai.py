@@ -5,7 +5,9 @@ person, one action at a time, so the screen can show each move:
 
     ai = AI(engine, 'de')
     ai.next_action()      ('move', unit id, hex), ('attack', hex,
-                          [attacker ids], [artillery ids]) or ('end',)
+                          [attacker ids], [artillery ids]) or ('end',);
+                          a game's own player may also return ('build',
+                          kind, hex) and ('act', unit id, key)
     ai.choose_advance(result)   the units to send into a hex it took
 
 It sees only what its side can see (fog of war), remembering where it
@@ -32,6 +34,12 @@ import random
 from .hexgrid import neighbours, distance, within
 
 
+def ai_class(gdef):
+    """The computer player a game uses: its own AI_CLASS (a subclass of
+    AI, for a game the stock one can't play), or AI."""
+    return getattr(gdef, 'AI_CLASS', None) or AI
+
+
 class AI:
     def __init__(self, engine, side, skill=1.0, seed=None):
         self.e = engine
@@ -43,8 +51,10 @@ class AI:
         self.posture = spec.get('posture', 'attack')
         # enemy unit id -> last hex seen; it starts knowing where the
         # enemy began (the briefing)
+        # (unless the game says there's no briefing: BRIEFING = False)
         self.memory = {u.id: u.hex for u in engine.alive()
-                       if u.side != side}
+                       if u.side != side} if getattr(engine.d, 'BRIEFING',
+                                                     True) else {}
         self.key = None
         self.done = set()           # units already moved this phase
         self.fields = {}

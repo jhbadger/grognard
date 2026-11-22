@@ -14,7 +14,7 @@ import random
 from .gfx import Surface, rgb, mix
 from . import font
 from .rules import Engine
-from .ai import AI
+from .ai import ai_class
 from .view import MapView
 from .hexgrid import hid, parse, distance
 from . import widgets
@@ -235,7 +235,7 @@ class TitleMode(Mode):
         opts = []
         if g.has_save():
             opts.append(('Continue the saved game', 'continue'))
-        for sid in e.side_ids:
+        for sid in e.order:
             opts.append(('Play the %s' % e.side_name(sid), 'play:' + sid))
         opts += [('Two players, one screen', 'hotseat'),
                  ('Watch the computer play itself', 'watch'),
@@ -258,7 +258,7 @@ class TitleMode(Mode):
         # counters scattered across the title
         e = g.e
         by_side = [[u for u in e.units.values() if u.side == sid]
-                   for sid in e.side_ids]
+                   for sid in e.order]
         units = [u for grp in zip(*by_side) for u in grp][:12]
         import random as _r
         rr = _r.Random(3)
@@ -370,8 +370,8 @@ class PlayMode(Mode):
         e = g.e
         vis = e.visible(g.viewer())
         us = [u for u in e.at(h, side) if u.id in vis]
-        us.sort(key=lambda u: (u.id not in self.sel, u.supports,
-                               -u.attack - u.defense, u.id))
+        us.sort(key=lambda u: (u.id not in self.sel, bool(u.type.get(
+            'under')), u.supports, -u.attack - u.defense, u.id))
         return us
 
     # ------------------------------------------------- the stack strip
@@ -393,7 +393,8 @@ class PlayMode(Mode):
         us = [x for x in e.at(u.hex) if x.id in vis]
         if len(us) < 2:
             return None, None
-        us.sort(key=lambda x: (x.supports, -x.attack - x.defense, x.id))
+        us.sort(key=lambda x: (bool(x.type.get('under')), x.supports,
+                               -x.attack - x.defense, x.id))
         mx, my, mw, mh = g.view.rect
         w = 8 + len(us) * self.STRIP_STEP - (self.STRIP_STEP - self.STRIP_C)
         h = self.STRIP_C + 9
@@ -467,9 +468,18 @@ class PlayMode(Mode):
         if e.moving:
             u = self.selected_unit()
             many = u is not None and len(e.at(u.hex, u.side)) > 1
-            return [('Next unit', 'next'), ('Undo', 'undo', bool(self.undo)),
-                    ('Whole stack', 'stack', many and len(self.sel) < 2),
-                    ('End turn' if e.last_phase() else 'End move', 'end')]
+            out = [('Next unit', 'next'), ('Undo', 'undo', bool(self.undo)),
+                   ('Whole stack', 'stack', many and len(self.sel) < 2)]
+            if u is not None and u.side == e.side:
+                # the game's own orders, and building where there's a yard
+                out += [(label, 'act:' + k, not why)
+                        for label, k, why in e.actions(u)]
+                if getattr(g.d, 'BUILDS', None) and \
+                        e.phase == e.phases[0] and \
+                        u.hex in e.build_sites(e.side):
+                    out.append(('Build...', 'build'))
+            return out + [('End turn' if e.last_phase() else 'End move',
+                           'end')]
         if self.target is not None:
             o = self.planned_odds()
             return [('Attack!', 'attack', o is not None and o['final'] >= 0),
@@ -490,6 +500,18 @@ class PlayMode(Mode):
                 self.select([x for x in e.at(u.hex, u.side) if x.mp > 0])
         elif v == 'end':
             g.end_phase_request()
+        elif v == 'build':
+            u = self.selected_unit()
+            if u:
+                g.push(BuildMenu(u.hex))
+        elif v.startswith('act:'):
+            u = self.selected_unit()
+            if u and e.act(u, v[4:]):
+                self.undo = []
+                g.sound.play('select')
+                g.after_engine()
+                live = [x for x in e.at(u.hex, u.side)] if u.alive else []
+                self.select([u] if u.alive else live[:1])
         elif v == 'attack':
             self.attack()
         elif v == 'cancel':
@@ -841,6 +863,17 @@ class PlayMode(Mode):
                 g.view.show(u.hex)
             g.after_engine()
             return seen
+        if act[0] in ('build', 'act'):
+            if act[0] == 'build':
+                u = e.build(act[1], act[2])
+            else:
+                u = e.units[act[1]]
+                e.act(u, act[2])
+            seen = viewer is None or u.side == viewer
+            if seen and u.alive:
+                g.view.show(u.hex)
+            g.after_engine()
+            return seen
         if act[0] == 'attack':
             target = act[1]
             att = [e.units[i] for i in act[2]]
@@ -953,7 +986,7 @@ class Game:
         # Kivy can; screenshots and tests keep the bitmap font)
         self.measure = None
         self.smooth_text = True
-        self.controllers = {s: 'human' for s in self.e.side_ids}
+        self.controllers = {s: 'human' for s in self.e.order}
         self.skill = 1
         self.speed = 1
         self.ais = {}
@@ -1013,7 +1046,7 @@ class Game:
         """Whose eyes the map is seen through: the one human side, the side
         moving in a two-player game, or nobody (everything shows) when the
         computer plays itself."""
-        humans = [s for s in self.e.side_ids
+        humans = [s for s in self.e.order
                   if self.controllers.get(s) == 'human']
         if len(humans) == 1:
             return humans[0]
@@ -1027,8 +1060,8 @@ class Game:
     def ai_for(self, side):
         ai = self.ais.get(side)
         if ai is None:
-            ai = self.ais[side] = AI(self.e, side, SKILLS[self.skill][1],
-                                     seed=self.rng.random())
+            ai = self.ais[side] = ai_class(self.d)(
+                self.e, side, SKILLS[self.skill][1], seed=self.rng.random())
         ai.skill = SKILLS[self.skill][1]
         return ai
 
@@ -1050,7 +1083,7 @@ class Game:
         if v == 'quit':
             self.quit = True
             return
-        sides = self.e.side_ids
+        sides = self.e.order
         if v.startswith('play:'):
             me = v[5:]
             ctl = {s: ('human' if s == me else 'ai') for s in sides}
@@ -1065,10 +1098,12 @@ class Game:
         self.controllers = controllers
         self.ais = {}
         self.memory = {}
-        for s in self.e.side_ids:
-            # each side knows where the other began (the briefing)
+        for s in self.e.order:
+            # each side knows where the other began (the briefing), unless
+            # the game keeps that secret (BRIEFING = False)
             self.memory[s] = {u.id: u.hex for u in self.e.alive()
-                              if u.side != s}
+                              if u.side != s} if \
+                getattr(self.d, 'BRIEFING', True) else {}
         self.play = PlayMode(self)
         self.modes = [self.play]
         self.anims = []
@@ -1140,7 +1175,7 @@ class Game:
                 self.flash('%s %s: %s' % (d, part, e.side_name(ev[1])),
                            2.2)
                 self.sound.play('turn')
-                humans = [s for s in e.side_ids
+                humans = [s for s in e.order
                           if self.controllers.get(s) == 'human']
                 if len(humans) > 1 and e.fog:
                     self.push(Covering('%s %s' % (d, part), [
@@ -1156,6 +1191,11 @@ class Game:
                 self.sound.play('select')
             elif kind == 'arrive':
                 pass
+            elif kind == 'build':
+                u = e.units[ev[1]]
+                if viewer is None or u.side == viewer:
+                    self.sound.play('select')
+                    self.anims.append(Popup(ev[2], 'built', rgb('#80e0ff')))
             elif kind == 'over':
                 self.sound.play('bugle')
                 self.save()
@@ -1167,7 +1207,7 @@ class Game:
 
     def remember(self):
         e = self.e
-        for s in e.side_ids:
+        for s in e.order:
             mem = self.memory.setdefault(s, {})
             vis = e.visible(s)
             mine = [u.hex for u in e.alive(s)]
@@ -1414,7 +1454,7 @@ class Game:
         e = self.e
         opts = [('%s: %s' % (e.side_name(s), 'computer' if
                              self.controllers[s] == 'ai' else 'player'), s)
-                for s in e.side_ids]
+                for s in e.order]
 
         def pick(v):
             if v in self.controllers:
@@ -1436,17 +1476,23 @@ class Game:
         self.push(Dialog(self.d.TITLE, pages, width=440))
 
     def show_log(self):
-        lines = self.e.messages[-24:]
+        lines = self.e.log(self.viewer(), 24)
         self.push(Dialog('Log', '\n'.join(lines) or 'Nothing yet.',
                          width=460))
 
     def show_score(self):
         e = self.e
         lines = []
-        for s in e.side_ids:
+        # a game that keeps the score secret (HIDDEN_SCORE) shows only
+        # your own until the end
+        secret = getattr(self.d, 'HIDDEN_SCORE', False) and not e.over \
+            and self.viewer() is not None
+        for s in e.order:
+            if secret and s != self.viewer():
+                continue
             lines.append('%s: %d VP' % (e.side_name(s), self.vp(s)))
         lines.append('')
-        for s in e.side_ids:
+        for s in e.order:
             lines.append('%s steps lost: %d' % (e.side_name(s, 'adj'),
                                                 e.lost[s]))
             if e.exited.get(s):
@@ -1456,7 +1502,7 @@ class Game:
         for h, o in e.board.objectives.items():
             held.setdefault(e.control.get(h), []).append(
                 '%s (%d)' % (o['name'], o['vp']))
-        for s in e.side_ids:
+        for s in e.order:
             if held.get(s):
                 lines.append('%s %s: %s' % (
                     e.side_name(s), e.verb(s, 'hold'), ', '.join(held[s])))
@@ -1573,6 +1619,9 @@ class Game:
         # objectives
         for h, o in e.board.objectives.items():
             v.flag(s, h, e.control.get(h), o['vp'])
+        hook = getattr(self.d, 'DRAW_MAP', None)
+        if hook:                        # what a side knows of the map
+            hook(self, s)
         # units
         moving = {a.uid for a in self.anims if isinstance(a, MoveAnim)}
         vis = e.visible(viewer)
@@ -1705,6 +1754,95 @@ class Game:
                                skill=self.skill, sound=self.sound.on), fh)
         except OSError:
             pass
+
+
+# ----------------------------------------------------------- building
+
+class BuildMenu(Mode):
+    """Building at a shipyard (a game with BUILDS): what can be built
+    there, what each costs and what it is, and the treasury.  Tap one to
+    build it (as many as there's money for); Done closes."""
+
+    def __init__(self, hx):
+        self.hx = hx
+        self.rects = []
+
+    def rows(self, g):
+        e = g.e
+        from .units import Unit
+        out = []
+        for kind, b in getattr(g.d, 'BUILDS', {}).items():
+            probe = Unit(dict(b['unit'], side=e.side, id='?'), e.types)
+            out.append((kind, b, probe, e.build_reason(kind, self.hx)))
+        return out
+
+    def box(self, g, n):
+        W, H = g.layout.W, g.layout.H
+        w = min(420, W - 16)
+        h = min(H - 20, 24 + n * 24 + 26)
+        return (W - w) // 2, (H - h) // 2, w, h
+
+    def draw(self, g, s):
+        e = g.e
+        rows = self.rows(g)
+        x, y, w, h = self.box(g, len(rows))
+        s.rect(x + 4, y + 4, w, h, (0, 0, 0))
+        s.rect(x, y, w, h, ch(g, 'panel'))
+        s.bevel(x, y, w, h, ch(g, 'light'), ch(g, 'dark'), 2)
+        s.rect(x + 2, y + 2, w - 4, 14, ch(g, 'bar'))
+        s.text(x + w // 2, y + 4, fit('Build at %s' % e.place(self.hx),
+                                      w - 120), ch(g, 'bar_text'),
+               align='center')
+        s.text(x + w - 8, y + 4, '%s %d' % (
+            getattr(g.d, 'RESOURCE', 'Points'), e.treasury[e.side]),
+            ch(g, 'accent'), align='right')
+        self.rects = []
+        yy = y + 22
+        tw = w - 24 - 62
+        for i, (kind, b, probe, why) in enumerate(rows):
+            if yy + 22 > y + h - 24:
+                break
+            self.rects += draw_buttons(g, s, [('Build', kind, not why)],
+                                       x + 10, yy + 2, 56, 15)
+            s.text(x + 74, yy, fit('%d. %s  (%d)   %s' % (
+                i + 1, b.get('name', kind), b.get('cost', 0),
+                probe.values()), tw), ch(g, 'text') if not why
+                else ch(g, 'dim'))
+            note = b.get('about', '')
+            if why and not why.startswith('costs'):
+                note = why[:1].upper() + why[1:] + '.'
+            s.text(x + 74, yy + 10, fit(note, tw),
+                   ch(g, 'red') if why and not why.startswith('costs')
+                   else ch(g, 'dim'))
+            yy += 24
+        self.rects += draw_buttons(g, s, [('Done', '_done')],
+                                   x + (w - 90) // 2, y + h - 22, 90, 15)
+
+    def build(self, g, kind):
+        u = g.e.build(kind, self.hx)
+        if u is None:
+            g.sound.play('nope')
+            return
+        g.after_engine()
+        g.play.select([u])
+
+    def key(self, g, k):
+        if k in ('esc', 'enter', 'space', 'd'):
+            g.pop(self)
+        elif k.isdigit():
+            rows = self.rows(g)
+            i = int(k) - 1
+            if 0 <= i < len(rows):
+                self.build(g, rows[i][0])
+
+    def tap(self, g, x, y):
+        v = hit(self.rects, x, y)
+        if v == '_done':
+            g.sound.play('click')
+            g.pop(self)
+        elif v is not None:
+            self.build(g, v)
+        g.dirty = True
 
 
 # ---------------------------------------------------------------- charts

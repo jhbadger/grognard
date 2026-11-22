@@ -344,7 +344,8 @@ def size_marks(px, w, cx, y, size, ink):
 def counter(unit, side, size, style='nato', dim=False, flags=()):
     """The counter for unit, size pixels square (plus a pixel of shadow
     right and below)."""
-    key = (unit.id, unit.steps, size, style, dim, tuple(flags))
+    key = (unit.id, unit.steps, unit.values(), side.get('colour'), size,
+           style, dim, tuple(flags))
     img = _cache.get(key)
     if img is not None:
         return img

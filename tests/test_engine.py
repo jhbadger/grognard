@@ -429,5 +429,100 @@ class WallsAndOrders(unittest.TestCase):
         self.assertEqual(b2.mp, b2.max_mp)
 
 
+def production(**changes):
+    """The tiny scenario with production: a yard that builds infantry
+    for 4, an income of 3 a turn, an order that digs a unit in, and a
+    third side that never moves (natives), dealt out by SETUP."""
+    def setup(e):
+        e.spawn(dict(id='n1', side='n', type='infantry', a=0, d=2, m=0,
+                     hex='0501'))
+        e.flags['setup'] = True
+
+    def dig(e, u, key):
+        u.spec['dug'] = True
+
+    d = util.tiny(
+        SIDES=util.tiny().SIDES + [dict(id='n', name='Natives',
+                                        colour='#60a060')],
+        ORDER=['b', 'r'], BRIEFING=False, SETUP=setup,
+        TREASURY={'b': 5},
+        UNIT_TYPES={'yard': dict(name='Yard', factory=True, move='foot',
+                                 under=True, stack=0)},
+        INCOME=lambda e, side: 3,
+        BUILDS={'inf': dict(name='Infantry', cost=4, unit=dict(
+            type='infantry', a=2, d=2, m=3))},
+        ACTIONS=lambda e, u: [('Dig in', 'dig', None if u.kind ==
+                               'infantry' else 'only infantry')],
+        ACT=dig)
+    d.UNITS = d.UNITS + [dict(id='byard', side='b', type='yard', a=0, d=2,
+                              m=0, hex='0102')]
+    for k, v in changes.items():
+        setattr(d, k, v)
+    return d
+
+
+class Production(unittest.TestCase):
+    def test_income_and_building(self):
+        e = Engine(production(), seed=1)
+        self.assertEqual(e.treasury['b'], 5 + 3)        # paid on turn 1
+        self.assertEqual(e.build_sites('b'), [parse('0102')])
+        self.assertIsNone(e.build_reason('inf', parse('0102')))
+        self.assertIsNotNone(e.build_reason('inf', parse('0103')))
+        u = e.build('inf', parse('0102'))
+        self.assertEqual((u.side, u.hex, u.mp), ('b', parse('0102'), 3))
+        self.assertEqual(e.treasury['b'], 4)
+        self.assertIsNotNone(e.move(u, parse('0202')))  # moves at once
+        self.assertIsNotNone(e.build('inf', parse('0102')))
+        self.assertEqual(e.build_reason('inf', parse('0102')), 'costs 4')
+        e.treasury['b'] = 10
+        e.end_phase()                       # no building in combat
+        self.assertIsNotNone(e.build_reason('inf', parse('0102')))
+        # only blue reads what it built
+        self.assertIn('Infantry built at 0102.', e.log('b'))
+        self.assertNotIn('Infantry built at 0102.', e.log('r'))
+
+    def test_spawned_units_saved(self):
+        e = Engine(production(), seed=1)
+        u = e.build('inf', parse('0102'))
+        e.move(u, parse('0202'))
+        d = e.to_json()
+        e2 = Engine(production(), seed=2)
+        e2.from_json(d)
+        self.assertEqual(e2.units[u.id].hex, parse('0202'))
+        self.assertEqual(e2.treasury, e.treasury)
+        self.assertEqual(sorted(e2.units), sorted(e.units))
+
+    def test_actions(self):
+        e = Engine(production(), seed=1)
+        b1 = e.units['b1']
+        self.assertEqual(e.actions(b1), [('Dig in', 'dig', None)])
+        self.assertTrue(e.act(b1, 'dig'))
+        self.assertTrue(b1.spec.get('dug'))
+        self.assertFalse(e.act(e.units['byard'], 'dig'))
+        self.assertEqual(e.actions(e.units['r1']), [])  # not its turn
+
+    def test_natives_and_no_briefing(self):
+        e = Engine(production(FOG=True), seed=1)
+        self.assertTrue(e.flags['setup'])
+        self.assertEqual(AI(e, 'b').memory, {})
+        # natives are everybody's enemy, and never take a turn
+        self.assertIn('n', e.enemies('b'))
+        for _ in range(6):
+            self.assertIn(e.side, ('b', 'r'))
+            e.end_phase()
+        # the computer plays the game with them in it
+        from grognard import play_out
+        self.assertTrue(play_out(production(), seed=2).over)
+
+    def test_worlds_lose_last(self):
+        """A unit that's 'under' (a world beneath its fleet) takes its
+        losses after the others in its hex."""
+        e = Engine(production(), seed=1)
+        yard = e.units['byard']
+        u = e.build('inf', parse('0102'))
+        e.take_losses([yard, u], 1)
+        self.assertEqual((yard.steps, u.steps), (2, 1))
+
+
 if __name__ == '__main__':
     unittest.main()

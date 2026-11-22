@@ -1,0 +1,1218 @@
+#!/usr/bin/env python3
+"""Far Suns: a game of exploration, settlement and conquest among the
+stars, for the Grognard engine.
+
+Two star-faring empires begin, each on its homeworld, somewhere in a
+cluster of forty suns; neither knows where the other is.  Industry on
+every world you hold pays for ships: scouts to explore, colony ships to
+settle the worlds they find, warships to clear the natives off the best
+of them and, in the end, to find and conquer the enemy's homeworld.
+Play either empire against the computer, or against a friend at the
+same screen.
+
+Run it with ./farsuns (Python 3 with Tk, nothing else).  The game is
+saved to ~/.farsuns.json.  ./farsuns --selftest checks the map and plays
+a game between two computer players.
+"""
+
+import os
+import random
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import hexgrid, font                     # noqa: E402
+from grognard.hexgrid import hid, parse, distance      # noqa: E402
+from grognard.gfx import rgb, mix                      # noqa: E402
+from grognard.widgets import panel, fit, ch            # noqa: E402
+from grognard.terrain import Canvas, hsh, TILE         # noqa: E402
+from grognard.counters import picture                  # noqa: E402
+from grognard.ai import AI as StockAI                             # noqa: E402
+
+ID = 'farsuns'
+TITLE = 'Far Suns'
+SUBTITLE = 'Exploration and conquest among the stars'
+
+INTRO = [
+    "Two empires have learned to cross the dark between the stars. Each "
+    "holds one world, its home, somewhere in a cluster of forty suns. "
+    "Neither knows where the other lies.",
+
+    "Every world you hold works for you: its people and its ore pay "
+    "for ships. Scouts go out to look at the stars, and bring back word "
+    "of the worlds that circle them: gardens and oceans, jungles and "
+    "deserts, ice and bare rock. Colony ships carry settlers to the "
+    "best of them, and a colony grows, and pays in its turn.",
+
+    "Some worlds are already taken. Their peoples (mammals, birds, "
+    "reptiles, sea-dwellers, insect hives, even machines) won't be "
+    "settled among until your warships have pacified them.",
+
+    "Sooner or later your scouts will find the enemy, and the enemy "
+    "will find you. The war ends when one homeworld falls.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='cc', name='Concord', adj='Concord', colour='#3a74c8',
+         ink='#f4f6ff', posture='attack', singular=True,
+         about='Explore, settle the best worlds you find, and build a '
+               'fleet strong enough to find and take the Kesh homeworld '
+               'before they take yours.'),
+    dict(id='kd', name='Kesh', adj='Kesh', colour='#c0502a',
+         ink='#fff4e8', posture='attack', singular=False,
+         about='Explore, settle the best worlds you find, and build a '
+               'fleet strong enough to find and take the Concord '
+               'homeworld before they take yours.'),
+    # the natives never move: they're there to be pacified
+    dict(id='nat', name='Natives', adj='Native', colour='#6e8a3a',
+         ink='#f4f0d8'),
+]
+ORDER = ['cc', 'kd']
+PLAYERS = ORDER
+
+TURNS = 40
+
+
+def TURN_NAME(t):
+    return ('Turn %d' % t, '')
+
+
+STACK = 10              # ships a hex (a colony doesn't count)
+ZOC = False             # space is wide: ships fly past one another
+FOG = True              # you see only what your ships and worlds see
+BRIEFING = False        # and nobody knows where the other began
+HIDDEN_SCORE = True     # nor how big the other's empire has grown
+STEP_VP = 0
+RESOURCE = 'Industry'
+TREASURY = {'cc': 10, 'kd': 10}
+GROWTH = 3              # every third turn, each colony grows
+
+# ---------------------------------------------------------- the combat
+
+# No retreats: ships stand and fight, and worlds can't run.
+CRT = {
+    'columns': ['1:2', '1:1', '3:2', '2:1', '3:1', '4:1', '5:1', '6:1'],
+    'rows': [
+        ['A1', 'A1', 'A1', 'EX', 'EX', 'D1', 'D2', 'D2'],
+        ['A1', 'A1', 'EX', 'D1', 'D1', 'D2', 'D2', 'D3'],
+        ['A1', 'EX', 'D1', 'D1', 'D2', 'D2', 'D3', 'D3'],
+        ['-', 'D1', 'D1', 'D2', 'D2', 'D3', 'D3', 'D4'],
+        ['-', 'D1', 'D2', 'D2', 'D3', 'D3', 'D4', 'D4'],
+        ['D1', 'D2', 'D2', 'D3', 'D3', 'D4', 'D4', 'DE'],
+    ],
+}
+
+# ------------------------------------------------------------- the map
+
+COLS, ROWS = 34, 26
+
+# Where a homeworld may be.  Each game two of these, far apart, are
+# dealt to the empires; the rest are ordinary yellow suns.
+HOME_SPOTS = [(3, 3), (30, 3), (3, 22), (30, 22), (16, 2), (17, 23),
+              (2, 12), (31, 13)]
+HOME_APART = 19
+
+STAR_NAMES = [
+    'Achernar', 'Aldebaran', 'Algol', 'Alcor', 'Altair', 'Antares',
+    'Arcturus', 'Bellatrix', 'Betelgeuse', 'Canopus', 'Capella', 'Castor',
+    'Deneb', 'Diphda', 'Elnath', 'Enif', 'Fomalhaut', 'Gienah', 'Hadar',
+    'Hamal', 'Izar', 'Kochab', 'Markab', 'Menkar', 'Merak', 'Mira',
+    'Mirach', 'Mizar', 'Nunki', 'Phecda', 'Polaris', 'Pollux', 'Procyon',
+    'Regulus', 'Rigel', 'Sabik', 'Scheat', 'Shaula', 'Sirius', 'Spica',
+    'Thuban', 'Vega', 'Wezen', 'Zosma',
+]
+
+# the colour of a sun: (map letter, terrain, share of the sky)
+STAR_KINDS = [('Y', 'yellow', 30), ('O', 'orange', 25), ('R', 'red', 25),
+              ('W', 'white', 12), ('B', 'blue', 8)]
+
+
+def _sky():
+    """The cluster: forty suns, never closer than three hexes, and a few
+    nebulae between them.  The same every game (the worlds round them
+    are dealt afresh)."""
+    rng = random.Random(1977)
+    stars = {h: 'Y' for h in HOME_SPOTS}
+    tries = 0
+    while len(stars) < 40 and tries < 20000:
+        tries += 1
+        h = (rng.randrange(1, COLS - 1), rng.randrange(1, ROWS - 1))
+        if all(distance(h, s) >= 3 for s in stars):
+            k = rng.randrange(100)
+            for letter, _, share in STAR_KINDS:
+                if k < share:
+                    break
+                k -= share
+            stars[h] = letter
+    nebula = set()
+    for _ in range(5):
+        while True:
+            c = (rng.randrange(4, COLS - 4), rng.randrange(4, ROWS - 4))
+            if all(distance(c, s) >= 5 for s in HOME_SPOTS):
+                break
+        for h in hexgrid.within(c, 2):
+            if (distance(h, c) <= 1 or rng.random() < 0.45) and \
+                    0 <= h[0] < COLS and 0 <= h[1] < ROWS and \
+                    h not in stars:
+                nebula.add(h)
+    rows = []
+    for r in range(ROWS):
+        row = ''
+        for c in range(COLS):
+            row += stars.get((c, r)) or ('n' if (c, r) in nebula else '.')
+        rows.append(row)
+    names = list(STAR_NAMES)
+    rng.shuffle(names)
+    labels = {hid(h): names[i] for i, h in enumerate(sorted(stars))}
+    return rows, labels
+
+
+MAP, LABELS = _sky()
+STARS = sorted(parse(h) for h in LABELS)
+LEGEND = {'.': 'space', 'n': 'nebula'}
+LEGEND.update({letter: name for letter, name, _ in STAR_KINDS})
+
+
+def star_glyph(colour, size):
+    """A sun in the middle of its hex: a white-hot core in a glow."""
+    def draw(s, cx, cy, sc, h):
+        R = max(1.5, size * sc)
+        for rf, f in ((2.3, 0.86), (1.7, 0.66), (1.25, 0.35), (1.0, 0.0),
+                      (0.5, -0.7)):
+            col = mix(colour, '#ffffff', -f) if f < 0 else \
+                mix(colour, SPACE, f)
+            r = R * rf
+            ir = int(r + 0.5)
+            for yy in range(-ir, ir + 1):
+                w = int((r * r - yy * yy) ** 0.5 + 0.5) if r * r >= yy * yy \
+                    else -1
+                if w >= 0:
+                    s.rect(int(cx - w), int(cy + yy), 2 * w + 1, 1, col)
+        if size >= 4:                       # bright suns have spikes
+            sp = mix(colour, SPACE, 0.4)
+            n = int(R * 2.8)
+            s.rect(int(cx - n), int(cy), 2 * n + 1, 1, sp)
+            s.rect(int(cx), int(cy - n), 1, 2 * n + 1, sp)
+    return draw
+
+
+SPACE = '#0a0e1c'
+STAR_LOOK = {'yellow': ('#ffd860', 3.5, 'Yellow sun'),
+             'orange': ('#ff9a40', 3.2, 'Orange sun'),
+             'red': ('#e8483a', 2.6, 'Red dwarf'),
+             'white': ('#eef0ff', 3.8, 'White sun'),
+             'blue': ('#8ab0ff', 4.2, 'Blue giant')}
+
+TERRAIN = {
+    'space': dict(name='Deep space', colour=SPACE, ink='#c8d0f0',
+                  pattern='void', edge=SPACE, z=0, shift=0,
+                  move={'space': 1}, open=True, los=True),
+    'nebula': dict(name='Nebula', colour='#24163a', ink='#6a3a7a',
+                   pattern='nebula', edge='#2e1e48', z=2, shift=-1,
+                   move={'space': 2}, open=False, los=False),
+}
+for _name, (_col, _size, _long) in STAR_LOOK.items():
+    TERRAIN[_name] = dict(name=_long, colour=SPACE, ink='#c8d0f0',
+                          pattern='void', edge=SPACE, z=0, shift=0,
+                          move={'space': 1}, open=True, los=True,
+                          glyph=star_glyph(_col, _size), star=True)
+
+
+@grognard.pattern('void')
+def p_void(t, s):
+    """Deep space: black, with faint far stars."""
+    c = Canvas(t['colour'])
+    c.speckle(mix(t['colour'], t['ink'], 0.3), 0.007, 41)
+    c.speckle(mix(t['colour'], t['ink'], 0.75), 0.0015, 43)
+    return c
+
+
+@grognard.pattern('nebula')
+def p_nebula(t, s):
+    """Glowing dust: soft clouds that wrap round the tile."""
+    c = Canvas(t['colour'])
+    n = 4                                   # coarse grid of cloud
+    cell = TILE // n
+    for y in range(TILE):
+        for x in range(TILE):
+            gx, gy = x / cell, y / cell
+            i, j = int(gx), int(gy)
+            fx, fy = gx - i, gy - j
+            fx, fy = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy)
+
+            def v(a, b):
+                return hsh(a % n, b % n, 5)
+            k = (v(i, j) * (1 - fx) + v(i + 1, j) * fx) * (1 - fy) + \
+                (v(i, j + 1) * (1 - fx) + v(i + 1, j + 1) * fx) * fy
+            k += (hsh(x, y, 9) - 0.5) * 0.12
+            c.set(x, y, mix(t['colour'], t['ink'], max(0.0, min(1.0, k))))
+    c.speckle(mix(t['colour'], '#ffffff', 0.5), 0.002, 47)
+    return c
+
+
+# ------------------------------------------------------------ the worlds
+
+# kind: (name, most people, ore, colour on the map)
+WORLDS = {
+    'terran': ('Garden world', 8, 1, '#4ab04a'),
+    'ocean': ('Ocean world', 6, 0, '#3a7ae0'),
+    'jungle': ('Jungle world', 5, 1, '#2a7a3a'),
+    'desert': ('Desert world', 4, 2, '#d0a860'),
+    'ice': ('Ice world', 3, 2, '#d8e8f0'),
+    'rock': ('Barren rock', 2, 3, '#8a8478'),
+}
+HOME = ('Homeworld', 10, 2)
+
+# what circles each colour of sun (out of 100; the rest have none fit
+# to live on)
+CHANCES = {
+    'yellow': dict(terran=30, ocean=20, jungle=15, desert=12, ice=5,
+                   rock=6),
+    'orange': dict(terran=14, ocean=14, jungle=20, desert=20, ice=10,
+                   rock=10),
+    'red': dict(desert=14, ice=25, rock=30),
+    'white': dict(terran=10, ocean=10, desert=18, ice=20, rock=20),
+    'blue': dict(ice=20, rock=40),
+}
+NATIVE_CHANCE = dict(terran=55, ocean=45, jungle=55, desert=30, ice=15,
+                     rock=10)
+
+# race: (name, defence, steps, where they may live, picture)
+RACES = {
+    'mammalian': ('Mammalian', 4, 2, 'terran jungle desert', 'n_mammal'),
+    'avian': ('Avian', 3, 2, 'terran jungle desert ice', 'n_avian'),
+    'reptilian': ('Reptilian', 5, 2, 'jungle desert terran', 'n_reptile'),
+    'aquatic': ('Aquatic', 4, 2, 'ocean', 'n_aquatic'),
+    'insectoid': ('Insectoid hive', 6, 3, 'terran jungle desert',
+                  'n_insect'),
+    'robotic': ('Robotic', 8, 3, 'ice rock desert terran', 'n_robot'),
+}
+
+
+def planets(e):
+    return e.flags['planets']
+
+
+def world(e, h):
+    """The world at star h (a dict: kind, natives, pacified, home), or
+    None if there's none fit to live on."""
+    p = planets(e).get(hid(h))
+    return p if p and p.get('kind') else None
+
+
+def most(p):
+    return HOME[1] if p.get('home') else WORLDS[p['kind']][1]
+
+
+def ore(p):
+    return HOME[2] if p.get('home') else WORLDS[p['kind']][2]
+
+
+def world_name(p):
+    return HOME[0] if p.get('home') else WORLDS[p['kind']][0]
+
+
+def worth(p):
+    """What a world is worth having: its people and its ore."""
+    return most(p) + 1.5 * ore(p)
+
+
+def colony_at(e, h):
+    for u in e.at(h):
+        if u.kind == 'colony':
+            return u
+    return None
+
+
+def natives_at(e, h):
+    for u in e.at(h):
+        if u.side == 'nat':
+            return u
+    return None
+
+
+def explored(e, side):
+    """The stars side has looked at: {hex id: turn}."""
+    return e.flags['explored'].setdefault(side, {})
+
+
+def explore(e, side, hexes, r):
+    ex = explored(e, side)
+    for h in hexes:
+        for s in STARS:
+            if distance(h, s) <= r and hid(s) not in ex:
+                ex[hid(s)] = e.turn
+
+
+def SETUP(e):
+    """Deal out the cluster: whose home is where, and what circles every
+    other sun."""
+    rng = e.rng
+    pairs = [(a, b) for a in HOME_SPOTS for b in HOME_SPOTS
+             if a != b and distance(a, b) >= HOME_APART]
+    homes = dict(zip(ORDER, rng.choice(pairs)))
+    e.flags['home'] = {s: hid(h) for s, h in homes.items()}
+    e.flags['explored'] = {s: {} for s in ORDER}
+    e.flags['built'] = {}
+    ps = e.flags['planets'] = {}
+    for h in STARS:
+        colour = e.board.terrain_name(h)
+        if h in homes.values():
+            ps[hid(h)] = dict(kind='terran', home=True)
+            continue
+        k = rng.randrange(100)
+        kind = None
+        for name, share in CHANCES[colour].items():
+            if k < share:
+                kind = name
+                break
+            k -= share
+        p = dict(kind=kind)
+        if kind and rng.randrange(100) < NATIVE_CHANCE[kind]:
+            races = [r for r, spec in RACES.items() if kind in spec[3]]
+            p['natives'] = rng.choice(races)
+        ps[hid(h)] = p
+    # a fair start: each empire's nearest suns hold a free world or two
+    for side, home in homes.items():
+        near = sorted((s for s in STARS if s not in homes.values()),
+                      key=lambda s: (distance(s, home), s))
+        for s in near[:2]:
+            p = ps[hid(s)]
+            if not p.get('kind') or p.get('natives'):
+                p.clear()
+                p['kind'] = rng.choice(['ocean', 'jungle', 'desert'])
+        p = ps[hid(near[2])]           # and one worth fighting for
+        if not p.get('kind') or not p.get('natives'):
+            p.clear()
+            p['kind'] = 'terran'
+            p['natives'] = rng.choice(['mammalian', 'avian', 'reptilian'])
+    for h in STARS:
+        p = ps[hid(h)]
+        if p.get('natives'):
+            name, d, steps, _, pic = RACES[p['natives']]
+            e.spawn(dict(id='nat-' + hid(h), side='nat',
+                         type='n_' + p['natives'], name=e.place(h),
+                         long='%s natives of %s' % (name, e.place(h)),
+                         a=0, d=d, m=0, steps=steps, hex=hid(h)))
+    for side, h in homes.items():
+        found(e, side, h, 8)
+        for kind in ('scout', 'scout', 'colony_ship', 'escort'):
+            u = e.spawn(dict(BUILDS[kind]['unit'], side=side, type=kind,
+                             hex=hid(h), id='%s-%s%d' % (side, kind,
+                                                       e.serial + 1)))
+            e.serial += 1
+            ON_BUILD(e, u)
+        explore(e, side, [h], 1)
+
+
+def found(e, side, h, pop):
+    """A new colony (or the homeworld) at star h."""
+    p = world(e, h)
+    home = p.get('home')
+    e.serial += 1
+    u = e.spawn(dict(
+        id='col%d' % e.serial, side=side, type='colony', name=e.place(h),
+        long=('%s, the %s homeworld' % (e.place(h), e.side_name(side))
+              if home else '%s colony (%s)' % (e.place(h),
+                                              world_name(p).lower())),
+        a=0, d=12 if home else most(p), m=0, steps=most(p), hex=hid(h),
+        home=bool(home)))
+    u.steps = min(pop, most(p))
+    return u
+
+
+# ------------------------------------------------------------- the ships
+
+UNIT_TYPES = {
+    'scout': dict(name='Scout', symbol='scout', move='space', zoc=False,
+                  spot=3, explore=2),
+    'colony_ship': dict(name='Colony ship', symbol='colonyship',
+                        move='space', zoc=False),
+    'escort': dict(name='Escort', symbol='escort', move='space'),
+    'cruiser': dict(name='Cruiser', symbol='cruiser', move='space'),
+    'dreadnought': dict(name='Dreadnought', symbol='dread', move='space'),
+    'starbase': dict(name='Starbase', symbol='starbase', move='space'),
+    'colony': dict(name='Colony', symbol='colony', move='space', zoc=False,
+                   under=True, stack=0, fate='falls',
+                   values=lambda u: '%d-%d' % (u.steps, u.max_steps)),
+}
+for _race, (_name, _d, _steps, _where, _pic) in RACES.items():
+    UNIT_TYPES['n_' + _race] = dict(name='%s natives' % _name, symbol=_pic,
+                                    move='space', zoc=False,
+                                    fate='are pacified')
+
+# kind: what it costs, what it is
+BUILDS = {
+    'scout': dict(name='Scout', cost=4, about='Fast and far-sighted: '
+                  'explores the stars.',
+                  unit=dict(name='SC', a=0, d=1, m=6, steps=1)),
+    'colony_ship': dict(name='Colony ship', cost=8, about='Settlers for '
+                        'a new colony, or to swell one.',
+                        unit=dict(name='CS', a=0, d=1, m=3, steps=1)),
+    'escort': dict(name='Escort', cost=6, upkeep=1, about='A light '
+                   'warship. Upkeep 1.',
+                   unit=dict(name='ES', a=2, d=2, m=5, steps=1)),
+    'cruiser': dict(name='Cruiser', cost=12, upkeep=2, about='The line of '
+                    'battle. Upkeep 2.',
+                    unit=dict(name='CR', a=4, d=4, m=4, steps=2)),
+    'dreadnought': dict(name='Dreadnought', cost=24, upkeep=4,
+                        about='Slow and mighty; a yard of 6. Upkeep 4.',
+                        unit=dict(name='DN', a=8, d=8, m=3, steps=3)),
+    'starbase': dict(name='Starbase', cost=10, upkeep=1, about='Guards a '
+                     'world, never moves; two a world. Upkeep 1.',
+                     unit=dict(name='SB', a=3, d=6, m=0, steps=2)),
+}
+SHIPYARD = 3            # people a world needs to build ships
+
+
+def BUILD_SITES(e, side):
+    return sorted(u.hex for u in e.alive(side)
+                  if u.kind == 'colony' and u.steps >= SHIPYARD)
+
+
+def blockaded(e, c):
+    """A world with enemy warships next to it is blockaded: it pays
+    nothing, builds nothing and doesn't grow."""
+    for n in hexgrid.neighbours(c.hex):
+        for u in e.at(n):
+            if u.side != c.side and u.side in ORDER and u.attack > 0 and \
+                    u.max_mp > 0:
+                return True
+    return False
+
+
+def CAN_BUILD(e, side, kind, h):
+    c = colony_at(e, h)
+    if c is not None and blockaded(e, c):
+        return 'blockaded'
+    if kind == 'dreadnought' and (c is None or c.steps < 6):
+        return 'needs a yard of 6 people'
+    if kind == 'starbase' and sum(1 for u in e.at(h, side)
+                                  if u.kind == 'starbase') >= 2:
+        return 'two starbases here already'
+    return None
+
+
+def ON_BUILD(e, u):
+    """Number each kind of ship as it's built: the Concord's third
+    cruiser is CR3."""
+    built = e.flags.setdefault('built', {})
+    key = '%s:%s' % (u.side, u.kind)
+    built[key] = n = built.get(key, 0) + 1
+    u.name = u.spec['name'] = '%s%d' % (BUILDS[u.kind]['unit']['name'], n)
+    u.long = u.spec['long'] = '%s %s %d' % (
+        e.side_name(u.side, 'adj'), BUILDS[u.kind]['name'].lower(), n)
+    u.formation = u.spec['formation'] = '%s fleet' % e.side_name(
+        u.side, 'adj')
+    explore(e, u.side, [u.hex], u.type.get('explore', 1))
+
+
+def upkeep(e, side):
+    return sum(BUILDS[u.kind].get('upkeep', 0) for u in e.alive(side)
+               if u.kind in BUILDS)
+
+
+def INCOME(e, side):
+    """Every world pays: its people, and its ore; every warship and
+    starbase costs its upkeep.  (The treasury never goes below 0.)"""
+    n = -upkeep(e, side)
+    for u in e.alive(side):
+        if u.kind == 'colony' and not blockaded(e, u):
+            n += u.steps + ore(world(e, u.hex))
+    return max(n, -e.treasury[side])
+
+
+# --------------------------------------------------------------- orders
+
+def ACTIONS(e, u):
+    if u.kind != 'colony_ship':
+        return []
+    if not e.moving:
+        return []
+    if u.hex not in STARS:
+        return [('Colonize', 'colonize', 'only at a star')]
+    p = world(e, u.hex)
+    if p is None:
+        return [('Colonize', 'colonize', 'no world here fit to live on')]
+    c = colony_at(e, u.hex)
+    if c is not None:
+        return [('Settle', 'settle', None if c.steps < c.max_steps
+                 else 'the colony is full')]
+    return [('Colonize', 'colonize', None)]
+
+
+def ACT(e, u, key):
+    h = u.hex
+    p = world(e, h)
+    if key == 'colonize':
+        c = found(e, u.side, h, 2 if p.get('pacified') else 1)
+        e.say('%s %s a colony at %s.' % (e.side_name(u.side), e.verb(
+            u.side, 'found'), e.place(h)), u.side)
+    else:
+        c = colony_at(e, h)
+        c.steps += 1
+        e.say('Settlers swell the colony at %s.' % e.place(h), u.side)
+    e.remove(u)
+    e.events.append(('capture', h, c.side))
+
+
+def ON_MOVE(e, u, path):
+    explore(e, u.side, path, u.type.get('explore', 1))
+
+
+def ON_TURN(e, side):
+    """Colonies grow, every third turn, and whatever is near a star
+    looks at it."""
+    if e.turn % GROWTH == 0:
+        for u in e.alive(side):
+            if u.kind == 'colony' and u.steps < u.max_steps and \
+                    not blockaded(e, u):
+                u.steps += 1
+        e.changed()
+    for u in e.alive(side):
+        explore(e, side, [u.hex], u.type.get('explore', 1))
+
+
+def ON_ELIMINATE(e, u, where):
+    if u.side == 'nat':
+        planets(e)[hid(where)]['pacified'] = True
+        return
+    if u.kind == 'colony' and u.spec.get('home') and not e.over:
+        win = [s for s in ORDER if s != u.side][0]
+        e.finish(win, 'The %s %s %s, the %s homeworld. %s' % (
+            e.side_name(win, 'adj'), 'fleet conquers', e.place(where),
+            e.side_name(u.side, 'adj'),
+            'The stars belong to the %s.' % e.side_name(win)))
+
+
+# ------------------------------------------------------------ the score
+
+def empire(e, side):
+    cols = [u for u in e.alive(side) if u.kind == 'colony']
+    return len(cols), sum(u.steps for u in cols)
+
+
+def SCORE(e, side):
+    """Population, everywhere you rule."""
+    return empire(e, side)[1]
+
+
+def VICTORY(e):
+    """No homeworld fell: the bigger empire wins."""
+    (wa, pa), (wb, pb) = empire(e, 'cc'), empire(e, 'kd')
+    tally = 'The Concord rules %d world%s and %d billion people; the ' \
+        'Kesh %d world%s and %d billion.' % (wa, '' if wa == 1 else 's',
+                                             pa, wb, '' if wb == 1 else 's',
+                                             pb)
+    if pa == pb:
+        return None, 'Neither homeworld fell, and neither empire is the ' \
+            'greater. %s' % tally
+    win = 'cc' if pa > pb else 'kd'
+    return win, 'Neither homeworld fell, but the %s empire is the ' \
+        'greater. %s' % (e.side_name(win, 'adj'), tally)
+
+
+# ------------------------------------------------ the computer player
+
+class Strategist(StockAI):
+    """Plays Far Suns, where the stock computer player (which knows
+    objectives and battle lines) wouldn't know what to do: it builds,
+    sends scouts to the nearest stars nobody has looked at, colony ships
+    to the best free worlds it knows, and warships on missions: to
+    defend a threatened colony, to pacify natives on a world worth
+    having, to raid an enemy colony or, once it's strong enough, to take
+    the enemy homeworld.  A mission's ships gather two hexes from the
+    target, where they can see what's there, until enough have come up,
+    and then go in together."""
+
+    WAR = ('escort', 'cruiser', 'dreadnought')
+    going = None            # the targets its fleets have gone in on
+
+    def begin(self):
+        StockAI.begin(self)
+        e = self.e
+        self.enemy_side = [s for s in ORDER if s != self.side][0]
+        self.planned = False
+        self.target = {}
+        known = explored(e, self.side)
+        self.known = {parse(h) for h in known}
+        self.unexplored = [s for s in STARS if s not in self.known]
+        seen = self.enemies()
+        self.foe_ships = [(u, h) for u, h in seen
+                          if u.side == self.enemy_side and u.kind in
+                          self.WAR + ('starbase',)]
+        self.foe_cols = [(u, h) for u, h in seen if u.kind == 'colony']
+        self.natives = {h: u for u, h in seen if u.side == 'nat'}
+        self.home = parse(e.flags['home'][self.side])
+        if self.going is None:
+            self.going = set()
+
+    # ------------------------------------------------------- what's what
+
+    def free_worlds(self):
+        """Known worlds a colony ship could settle: (value, hex)."""
+        e = self.e
+        taken = {h for _, h in self.foe_cols} | set(self.natives) | \
+            {u.hex for u in e.alive(self.side) if u.kind == 'colony'}
+        out = []
+        for h in self.known:
+            p = world(e, h)
+            if p is None or h in taken or p.get('home'):
+                continue
+            out.append((worth(p) + (1 if p.get('pacified') else 0), h))
+        return out
+
+    def danger(self, h, reach=4):
+        return sum(u.attack for u, fh in self.foe_ships
+                   if distance(h, fh) <= reach and u.max_mp > 0)
+
+    def count(self, kind):
+        return sum(1 for u in self.e.alive(self.side) if u.kind == kind)
+
+    # ---------------------------------------------------------- building
+
+    def wishes(self):
+        e = self.e
+        t = e.turn
+        sites = e.build_sites(self.side)
+        if not sites:
+            return []
+        yard = max(sites, key=lambda h: (colony_at(e, h).steps, h))
+        # warships from the yard nearest the enemy's home, once it's known
+        foe = [h for u, h in self.foe_cols if u.spec.get('home')]
+        front = min(sites, key=lambda h: (distance(h, foe[0]), h)) \
+            if foe else yard
+        big = [h for h in sites if colony_at(e, h).steps >= 6]
+        dread_yard = min(big, key=lambda h: (distance(h, foe[0]), h)) \
+            if foe and big else yard
+        out = []
+        scouts = self.count('scout')
+        if self.unexplored and scouts < min(3, 1 + len(self.unexplored) //
+                                            8):
+            out.append(('scout', yard))
+        free = sorted(self.free_worlds(), reverse=True)
+        ships = self.count('colony_ship')
+        if free and ships < min(len(free), 3 if t < 20 else 1):
+            best = free[0][1]
+            near = min(sites, key=lambda h: (distance(h, best), h))
+            out.append(('colony_ship', near))
+            if e.treasury[self.side] < BUILDS['colony_ship']['cost'] and \
+                    t < 25:
+                return out          # save up for it
+        bases = sum(1 for u in e.at(self.home, self.side)
+                    if u.kind == 'starbase')
+        if colony_at(e, self.home) and (
+                (self.danger(self.home, 7) and bases < 2) or
+                (t >= 18 and bases < 1)):
+            out.append(('starbase', self.home))
+        # warships, while there's income to keep them
+        cash = e.treasury[self.side]
+        spare = INCOME(e, self.side) + upkeep(e, self.side) - \
+            upkeep(e, self.side) * 1.15
+        if t >= 10 and cash >= BUILDS['dreadnought']['cost'] and \
+                spare >= 4:
+            out.append(('dreadnought', dread_yard))
+        if cash >= BUILDS['cruiser']['cost'] and spare >= 2 and \
+                (t < 10 or cash < 24 or t % 2):
+            out.append(('cruiser', front))
+        if t < 8 and self.count('escort') < 3 and spare >= 1:
+            out.append(('escort', front))
+        return out
+
+    def next_build(self):
+        e = self.e
+        for kind, h in self.wishes():
+            if e.build_reason(kind, h) is None:
+                return ('build', kind, h)
+        return None
+
+    # ------------------------------------------------------- settling
+
+    def next_act(self):
+        e = self.e
+        for u in e.alive(self.side):
+            if u.kind != 'colony_ship':
+                continue
+            goal = self.target.get(u.id, (None,))[0]
+            if goal not in (None, u.hex) and colony_at(e, u.hex) is None:
+                continue
+            for label, key, why in e.actions(u):
+                if key == 'colonize' and not why:
+                    return ('act', u.id, key)
+        return None
+
+    # ---------------------------------------------------------- missions
+
+    def plan(self):
+        """Who goes where this turn: self.target[unit id] = (hex, how
+        close to stop)."""
+        e = self.e
+        self.target = {}
+        mine = e.alive(self.side)
+        # scouts: the nearest stars nobody has looked at
+        left = list(self.unexplored)
+        for u in sorted((u for u in mine if u.kind == 'scout'),
+                        key=lambda u: u.id):
+            if not left:
+                self.target[u.id] = (self.home, 2)
+                continue
+            s = min(left, key=lambda s: (distance(u.hex, s), s))
+            left.remove(s)
+            self.target[u.id] = (s, 1)
+        # colony ships: the best world for the trip
+        free = self.free_worlds()
+        for u in sorted((u for u in mine if u.kind == 'colony_ship'),
+                        key=lambda u: u.id):
+            if not free:
+                self.target[u.id] = (self.home, 0)
+                continue
+            v, h = max(free, key=lambda vh: (
+                vh[0] - 0.6 * distance(u.hex, vh[1]) / max(1, u.max_mp),
+                vh[1]))
+            free.remove((v, h))
+            self.target[u.id] = (h, 0)
+        # warships: missions, the most pressing first
+        self.filling = {}
+        war = [u for u in mine if u.kind in self.WAR]
+        strength = sum(u.attack for u in war)
+        # (hex, strength needed, stop, all in, from how far)
+        missions = []
+        # the homeworld first, from anywhere near
+        d = self.danger(self.home, 3)
+        if d:
+            missions.append((self.home, d, 0, False, 8))
+        # then the enemy's, if it's known and there's strength enough
+        foe_home = None
+        for u, h in self.foe_cols:
+            if u.spec.get('home'):
+                foe_home = h
+                guard = sum(x.defense for x, fh in self.foe_ships if fh == h)
+                need = (u.defense + guard) * 2 + 2
+                if strength >= need:        # strong enough: all in
+                    missions.append((h, need, 1, True, None))
+        # then colonies in danger, from ships close by
+        for c in sorted((u for u in mine if u.kind == 'colony' and
+                         not u.spec.get('home')),
+                        key=lambda c: (-c.steps, c.id)):
+            d = self.danger(c.hex, 3)
+            if d and c.steps >= 3:
+                missions.append((c.hex, d * 0.7, 0, False, 5))
+        # raids on enemy colonies, the nearest first
+        for u, h in sorted(self.foe_cols, key=lambda uh: (
+                distance(self.home, uh[1]), uh[1])):
+            if not u.spec.get('home'):
+                guard = sum(x.defense for x, fh in self.foe_ships
+                            if fh == h)
+                missions.append((h, (u.defense + guard) * 2 + 2, 1, False,
+                                 12))
+        pacify = []
+        for h, u in self.natives.items():
+            p = world(e, h)
+            if p and not any(fh == h for _, fh in self.foe_cols):
+                pacify.append((worth(p) - 0.3 * distance(self.home, h), h,
+                               u))
+        pacify.sort(reverse=True)
+        for _, h, u in pacify[:2]:
+            missions.append((h, u.defense * 2 + 1, 1, False, None))
+        for h, need, stop, all_in, radius in missions:
+            free_war = [u for u in war if u.id not in self.target and
+                        (radius is None or distance(u.hex, h) <= radius)]
+            if sum(u.attack for u in free_war) < need:
+                continue
+            free_war.sort(key=lambda u: (distance(u.hex, h), u.id))
+            got = 0
+            group = []
+            for u in free_war:
+                if got >= need and not all_in:
+                    break
+                group.append(u)
+                got += u.attack
+            # muster in a stack or two, a turn's move away, until enough
+            # have come up; then all go in together (and keep at it while
+            # there's half enough left)
+            near = sum(u.attack for u in group
+                       if distance(u.hex, h) <= MUSTER)
+            go = stop == 0 or near >= need or \
+                (hid(h) in self.going and near >= need * 0.5)
+            if go and stop:
+                self.going.add(hid(h))
+            else:
+                self.going.discard(hid(h))
+            spots = self.muster_hexes(h) if not go else []
+            for u in group:
+                if go or not spots:
+                    self.target[u.id] = (h, stop)
+                    continue
+                spot = spots[0]
+                self.target[u.id] = (spot, 0)
+                self.filling[spot] = self.filling.get(spot, 0) + 1
+                if self.filling[spot] >= STACK:
+                    spots.pop(0)
+        # the rest wait where they can strike: near the enemy's home if
+        # it's known, or at their own
+        spots = self.muster_hexes(foe_home) if foe_home else []
+        for u in war:
+            if u.id in self.target:
+                continue
+            if spots:
+                spot = spots[0]
+                self.target[u.id] = (spot, 0)
+                self.filling[spot] = self.filling.get(spot, 0) + 1
+                if self.filling[spot] >= STACK and len(spots) > 1:
+                    spots.pop(0)
+            else:
+                self.target[u.id] = (self.home, 0)
+
+    def muster_hexes(self, h):
+        """Where a fleet gathers to strike at h: hexes MUSTER away, on
+        the side nearest home, out of nebulae, with room."""
+        e = self.e
+        out = []
+        for x in hexgrid.ring(h, MUSTER):
+            t = e.board.terrain(x)
+            if t is None or t.get('los') is False or \
+                    x in e.enemy_hexes(self.side) or \
+                    self.filling.get(x, 0) >= STACK:
+                continue
+            out.append(x)
+        out.sort(key=lambda x: (distance(x, self.home), x))
+        return out
+
+    def best_hex(self, u):
+        e = self.e
+        if u.id not in self.target:
+            self.plan()
+        goal, stop = self.target.get(u.id, (u.hex, 0))
+        f = self.field([goal], u.move_class)
+        reach = e.reachable(u)
+        unarmed = u.attack == 0
+        best, best_s = None, None
+        for h in list(reach) + [u.hex]:
+            d = f.get(h, 99)
+            s = -(d - stop) if d >= stop else -(stop - d) * 1.5
+            if unarmed:
+                s -= self.danger(h, 3) * 0.5
+            elif stop and d == stop:
+                # going in: together, not spread round the target
+                s += 0.4 * sum(1 for x in e.at(h, self.side)
+                               if x.kind in self.WAR)
+            if h == u.hex:
+                s += 0.05
+            s += self.rng.uniform(0, 0.02)
+            if best_s is None or s > best_s:
+                best, best_s = h, s
+        return best
+
+    def next_move(self):
+        e = self.e
+        if e.phase == e.phases[0]:
+            b = self.next_build()
+            if b:
+                return b
+        if not self.planned:
+            self.plan()
+            self.planned = True
+        a = self.next_act()
+        if a:
+            return a
+        units = [u for u in e.alive(self.side)
+                 if u.id not in self.done and u.mp > 0]
+        units.sort(key=lambda u: (u.kind not in self.WAR, u.id))
+        for u in units:
+            self.done.add(u.id)
+            dest = self.best_hex(u)
+            if dest is not None and dest != u.hex:
+                return ('move', u.id, dest)
+        return ('end',)
+
+    # ---------------------------------------------------------- fighting
+
+    def step_value(self, u):
+        """What one step of u is worth, in industry."""
+        if u.kind == 'colony':
+            return 14 if u.spec.get('home') else 4
+        if u.side == 'nat':
+            p = world(self.e, u.hex)
+            return (worth(p) * 1.2 if p else 3) / u.max_steps
+        b = BUILDS.get(u.kind)
+        return b['cost'] / max(1, u.max_steps) if b else 3
+
+    def expected(self, target, attackers, support):
+        e = self.e
+        o = e.odds(target, attackers, support)
+        if o['final'] < 0:
+            return -99, o
+        defenders = [x for x in e.at(target) if x.side != self.side]
+        dsteps = sum(x.steps for x in defenders)
+        asteps = sum(x.steps for x in attackers)
+        dval = sum(self.step_value(x) * x.steps for x in defenders) / \
+            max(1, dsteps)
+        aval = sum(self.step_value(x) * x.steps for x in attackers) / \
+            max(1, asteps)
+        prize = 0
+        for x in defenders:
+            if x.kind == 'colony' and x.spec.get('home'):
+                prize += 500
+            elif x.side == 'nat' or x.kind == 'colony':
+                prize += 4
+        total = 0.0
+        for res in e.outcomes(o['final']):
+            dl = dsteps if res['de'] else min(res['d'], dsteps)
+            al = asteps if res['ae'] else min(res['a'], asteps)
+            v = dl * dval - al * aval
+            if dl >= dsteps:
+                v += prize
+            total += v
+        return total / len(e.outcomes(o['final'])) / 3, o
+
+
+AI_CLASS = Strategist
+MUSTER = 2              # how far off a fleet gathers before it goes in
+                        # (near enough to see what it's going in against)
+
+# ----------------------------------------------------- what's shown
+
+def DRAW_MAP(g, s):
+    """A dot by each star a side has explored: the colour of its world
+    (grey for none fit to live on)."""
+    e = g.e
+    v = g.view
+    viewer = g.viewer()
+    known = None if viewer is None else explored(e, viewer)
+    shown = set(v.visible_hexes())
+    geo = v.geo
+    r = (1, 2, 3)[v.zoom]
+    x0, y0, x1, y1 = v.clip()
+    s.set_clip(x0, y0, x1 - x0, y1 - y0)
+    for h in STARS:
+        if h not in shown or (known is not None and hid(h) not in known):
+            continue
+        sx, sy = v.to_screen(h)
+        px, py = int(sx - geo.dx * 0.42), int(sy - geo.dy * 0.28)
+        p = world(e, h)
+        if p is None:
+            s.rect(px, py, 1, 1, rgb('#707070'))
+            continue
+        col = rgb('#ffffff') if p.get('home') else rgb(WORLDS[p['kind']][3])
+        s.rect(px - r, py - r + 1, 2 * r + 1, 2 * r - 1, (0, 0, 0))
+        s.rect(px - r + 1, py - r, 2 * r - 1, 2 * r + 1, (0, 0, 0))
+        s.rect(px - r + 1, py - r + 1, 2 * r - 1, 2 * r - 1, col)
+    s.set_clip()
+
+
+@grognard.widget('empire')
+class Empire(grognard.Widget):
+    """Your empire: worlds, people and the stars explored (the enemy's
+    are secret, unless the computer plays both)."""
+
+    def sides(self, g):
+        v = g.viewer()
+        return [v] if v else list(ORDER)
+
+    def height(self, g, w):
+        return 14 + 31 * len(self.sides(g))
+
+    def draw(self, g, s, r):
+        x, y, w, h = r
+        panel(g, s, r, 'Empire')
+        yy = y + 13
+        for sid in self.sides(g):
+            worlds, pop = empire(g.e, sid)
+            s.rect(x + 5, yy + 1, 7, 7, rgb(g.e.sides[sid]['colour']))
+            s.frame(x + 5, yy + 1, 7, 7, (0, 0, 0))
+            s.text(x + 15, yy, fit('%d world%s' % (worlds, '' if worlds == 1
+                                                   else 's'), w - 18),
+                   ch(g, 'text'))
+            s.text(x + 5, yy + 10, fit('pop %d' % pop, w - 8), ch(g, 'dim'))
+            s.text(x + 5, yy + 20, fit('stars %d/%d' % (
+                len(explored(g.e, sid)), len(STARS)), w - 8), ch(g, 'dim'))
+            yy += 31
+
+
+@grognard.widget('system')
+class System(grognard.Widget):
+    """The star tapped (or the selected unit's): its sun, its world, its
+    natives and its colony, as far as your side knows them."""
+    flex = True
+
+    def height(self, g, w):
+        return 80
+
+    def lines(self, g):
+        e = g.e
+        play = g.play
+        if play is None:
+            return []
+        u = play.selected_unit()
+        h = u.hex if u is not None else play.cursor
+        if h is None or h not in STARS:
+            return [('dim', 'Tap a star to see what you know of it.')]
+        viewer = g.viewer()
+        out = [('accent', e.place(h)),
+               ('dim', e.board.terrain(h)['name'])]
+        if viewer is not None and hid(h) not in explored(e, viewer):
+            out.append(('text', 'Unexplored. Send a ship near it.'))
+            return out
+        p = world(e, h)
+        if p is None:
+            out.append(('text', 'No world fit to live on.'))
+            return out
+        out.append(('text', world_name(p)))
+        out.append(('text', 'Up to %d people, ore %d.' % (most(p), ore(p))))
+        vis = e.visible(viewer)
+        c = colony_at(e, h)
+        if c is not None and (c.id in vis or viewer is None):
+            out.append(('accent', '%s colony, %d people.' % (
+                e.side_name(c.side, 'adj'), c.steps)))
+        n = natives_at(e, h)
+        if n is not None:
+            out.append(('red', '%s, defence %d. Pacify them first.' % (
+                n.type['name'], n.defense)))
+        elif p.get('natives') and p.get('pacified'):
+            out.append(('dim', 'The %s natives are pacified.' %
+                        RACES[p['natives']][0].lower()))
+        if c is None and n is None and not p.get('home'):
+            out.append(('dim', 'Free to settle.'))
+        return out
+
+    def draw(self, g, s, r):
+        x, y, w, h = r
+        panel(g, s, r, 'Star')
+        yy = y + 13
+        for col, text in self.lines(g):
+            for ln in font.wrap(text, w - 8):
+                if yy + 9 > y + h:
+                    return
+                s.text(x + 4, yy, ln, ch(g, col))
+                yy += 10
+
+
+# --------------------------------------------------------- the counters
+
+grognard.counters.PICTURES.update({
+    'scout': ['.....#.....', '....###....', '....#+#....', '...#####...',
+              '..##.#.##..', '.#...#...#.', '...........', '...........'],
+    'colonyship': ['...........', '...######..', '.##++++++#.',
+                   '###++++++##', '.##++++++#.', '...######..',
+                   '...........', '...........'],
+    'escort': ['...........', '#.........#', '##...#...##', '.#########.',
+               '##...#...##', '#.........#', '...........', '...........'],
+    'cruiser': ['...........', '.....##....', '..#######..', '###########',
+                '..#######..', '.....##....', '...........', '...........'],
+    'dread': ['##.........', '#####......', '#########..', '###########',
+              '#########..', '#####......', '##.........', '...........'],
+    'starbase': ['...#####...', '..#.....#..', '.#..###..#.', '####+++####',
+                 '.#..###..#.', '..#.....#..', '...#####...', '...........'],
+    'colony': ['....###....', '..##+++##..', '.#+++++++#.', '.#+++++++#.',
+               '.#########.', '..#######..', '....###....', '...........'],
+    'n_mammal': ['..#.....#..', '..##...##..', '...#####...', '..#+###+#..',
+                 '..#######..', '...#.#.#...', '....###....', '...........'],
+    'n_avian': ['#.........#', '##.......##', '.###.#.###.', '..#######..',
+                '....###....', '....#.#....', '...........', '...........'],
+    'n_insect': ['.#.......#.', '..#.....#..', '...#####...', '#.#######.#',
+                 '.#########.', '#.#######.#', '...#####...', '..#.....#..'],
+    'n_reptile': ['...........', '.......###.', '......##+##', '#....#####.',
+                  '.#######...', '..#.#.#....', '...........', '...........'],
+    'n_aquatic': ['...........', '.##.....#..', '####...###.', '.#########.',
+                  '####...###.', '.##.....#..', '...........', '...........'],
+    'n_robot': ['.....#.....', '..#######..', '..#+###+#..', '..#######..',
+                '...#####...', '.#########.', '.#.#####.#.', '...#...#...'],
+})
+
+
+def _symbol(name):
+    @grognard.symbol(name)
+    def draw(p, x, y, w, h, c):
+        picture(p, name, x, y, w, h, c, c)
+    return draw
+
+
+for _pic in ('scout', 'colonyship', 'escort', 'cruiser', 'dread',
+             'starbase', 'colony', 'n_mammal', 'n_avian', 'n_insect',
+             'n_reptile', 'n_aquatic', 'n_robot'):
+    _symbol(_pic)
+
+UNITS = []          # everything is dealt out by SETUP
+
+PANELS = dict(
+    right=['date', 'treasury', 'empire', 'phase', 'system', 'minimap'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#06080e', panel='#141a2a', light='#4a5a80',
+              dark='#000000', accent='#ffd25a', button='#2a3858',
+              button_hi='#5a6c98', button_lo='#06080e', bar='#000000',
+              red='#e05040')
+STYLE = 'pictures'
+ZOOM = 1
+
+HELP = [
+    "THE STARS. Your homeworld and a few ships start somewhere in a "
+    "cluster of forty suns; so does the enemy's, and neither of you "
+    "knows where the other is. A star a ship of yours has passed (next "
+    "to it, or two hexes away for a scout) is explored: a dot by it "
+    "shows the colour of its world (grey: nothing fit to live on). Tap "
+    "a star to see what you know of it.",
+
+    "INDUSTRY. At the start of every turn each of your worlds pays its "
+    "people and its ore. Select a world of 3 people or more and tap "
+    "Build to spend it: scouts (4), colony ships (8), escorts (6), "
+    "cruisers (12), dreadnoughts (24, from a world of 6) and starbases "
+    "(10, which guard a world and never move). New ships can move at "
+    "once.",
+
+    "SETTLING. Fly a colony ship to a star with a free world and tap "
+    "Colonize: a colony of 1 (2 on a world whose natives you pacified). "
+    "Every third turn each colony grows by 1, up to what its world can "
+    "hold. A colony ship at one of your own colonies can Settle instead, "
+    "adding 1. A world's counter shows its people and the most it can "
+    "hold.",
+
+    "NATIVES. Many worlds have people already. Ships can't enter their "
+    "star; warships must attack them from next door until they're "
+    "pacified. They don't fight back except in defence.",
+
+    "WAR. Warships next to an enemy hex may attack it in the combat "
+    "phase, together, each once a turn: odds and a die, as on the chart "
+    "(T). There are no retreats. A world under a fleet loses people "
+    "only once the ships over it are gone. Space is wide: ships fly "
+    "past one another. Nebulae cost 2 to cross, hide what's in them and "
+    "make it harder to hit.",
+
+    "WINNING. Take the enemy's homeworld (destroy its last person) and "
+    "you win at once. If neither falls in 40 turns, the empire with "
+    "more people wins.",
+]
+
+ICON = 'farsuns'
+
+
+@grognard.icon('farsuns')
+def draw_icon(p, n):
+    """A ringed world before a yellow sun."""
+    p.fill('#0a0e1c')
+    for i in range(40):
+        x, y = hsh(i, 1, 3) * n, hsh(i, 2, 3) * n
+        p.rect(x, y, max(1, n // 64), max(1, n // 64), '#c8d0f0')
+    p.disc(n * 0.78, n * 0.22, n * 0.2, '#806010')
+    p.disc(n * 0.78, n * 0.22, n * 0.15, '#ffd860')
+    p.disc(n * 0.78, n * 0.22, n * 0.07, '#fff8e0')
+    p.disc(n * 0.42, n * 0.6, n * 0.3, '#1e4a8a')
+    p.disc(n * 0.4, n * 0.57, n * 0.26, '#3a74c8')
+    p.disc(n * 0.32, n * 0.5, n * 0.08, '#4ab04a')
+    p.disc(n * 0.48, n * 0.66, n * 0.06, '#4ab04a')
+    p.line(n * 0.02, n * 0.74, n * 0.84, n * 0.44, '#d8c890',
+           max(1, n // 24))
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

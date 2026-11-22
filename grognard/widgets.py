@@ -214,13 +214,13 @@ class Weather(Widget):
 @widget('victory')
 class Victory(Widget):
     def height(self, g, w):
-        return 14 + 11 * len(g.e.side_ids)
+        return 14 + 11 * len(g.e.order)
 
     def draw(self, g, s, r):
         x, y, w, h = r
         panel(g, s, r, 'Victory')
         yy = y + 13
-        for sid in g.e.side_ids:
+        for sid in g.e.order:
             side = g.e.sides[sid]
             s.rect(x + 5, yy + 1, 7, 7, rgb(side['colour']))
             s.frame(x + 5, yy + 1, 7, 7, (0, 0, 0))
@@ -269,6 +269,34 @@ class Objectives(Widget):
             g.view.center_on(rows[i])
             g.dirty = True
         return True
+
+
+@widget('treasury')
+class Treasury(Widget):
+    """What there is to spend (a game with production): the treasury of
+    the side whose eyes the map is seen through, and what it earns each
+    turn; both sides' when the computer plays itself."""
+
+    def sides(self, g):
+        v = g.viewer()
+        return [v] if v else list(g.e.order)
+
+    def height(self, g, w):
+        return 14 + 11 * len(self.sides(g))
+
+    def draw(self, g, s, r):
+        x, y, w, h = r
+        panel(g, s, r, getattr(g.d, 'RESOURCE', 'Points'))
+        yy = y + 13
+        for sid in self.sides(g):
+            side = g.e.sides[sid]
+            s.rect(x + 5, yy + 1, 7, 7, rgb(side['colour']))
+            s.frame(x + 5, yy + 1, 7, 7, (0, 0, 0))
+            s.text(x + 15, yy, str(g.e.treasury.get(sid, 0)),
+                   ch(g, 'accent'))
+            s.text(x + w - 5, yy, '%+d' % g.e.income(sid), ch(g, 'text'),
+                   align='right')
+            yy += 11
 
 
 @widget('phase')
@@ -537,7 +565,9 @@ class UnitInfo(Widget):
 @widget('orders')
 class Orders(Widget):
     def width(self, g, h):
-        return 150
+        # wider for a game with its own orders (Build, Colonize)
+        extra = getattr(g.d, 'BUILDS', None) or getattr(g.d, 'ACTIONS', None)
+        return 186 if extra else 150
 
     def buttons(self, g):
         play = g.play
@@ -578,7 +608,7 @@ class Log(Widget):
         panel(g, s, r)
         n = max(1, (h - 6) // 10)
         lines = []
-        for m in g.e.messages[-12:]:
+        for m in g.e.log(g.viewer(), 12):
             lines += font.wrap(m, w - 10)
         lines = lines[-n:]
         yy = y + 3 + (n - len(lines)) * 10

@@ -17,12 +17,14 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are six games so far: a Second World War battle, a raid in a
+There are seven games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
 Mexican-American War, a dawn rising in the streets of Belém in
-Brazil's war of independence, and a battle at sea: Trafalgar.
+Brazil's war of independence, a battle at sea: Trafalgar, and Far
+Suns, a game of exploring, settling and conquering a cluster of stars,
+where you build your own units.
 
 ```bash
 ./crossroads
@@ -46,6 +48,10 @@ Brazil's war of independence, and a battle at sea: Trafalgar.
 
 ```bash
 ./trafalgar
+```
+
+```bash
+./farsuns
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -270,6 +276,47 @@ places and fight it out ship against ship.
 The game starts with counters drawn as little ships; `P` switches to
 NATO-style symbols.
 
+## Far Suns: exploration and conquest among the stars
+
+The seventh game, an original one, and the first where you build your
+own units. Two empires, the Concord and the Kesh, each begin on a
+homeworld somewhere in a cluster of forty suns, and neither knows
+where the other is.
+
+- **Forty turns**, the Concord moving first. The cluster is the same
+  every game, but what circles each sun is dealt afresh, and so are the
+  homeworlds: two of eight places far apart, so you don't know which
+  way the enemy lies.
+- **The stars**: yellow and orange suns often have good worlds, red
+  dwarfs and blue giants mostly ice and bare rock. A world is a garden,
+  ocean, jungle, desert, ice world or barren rock, with room for 2 to 8
+  billion people and some ore. A star is explored once a ship of yours
+  has passed next to it (two hexes off, for a scout); a coloured dot by
+  it shows its world, and the Star panel tells what you know. Nebulae
+  cost 2 to cross, hide what's in them, and make it harder to hit.
+- **Industry**: every turn each of your worlds pays its people and its
+  ore, less the upkeep of your warships. Select a world of 3 people or
+  more and *Build*: scouts, colony ships, escorts, cruisers,
+  dreadnoughts (from a world of 6) and starbases, which guard a world
+  and never move. New ships can move at once.
+- **Settling**: a colony ship at a star with a free world can
+  *Colonize* it: a colony of 1, growing by 1 every third turn up to
+  what the world holds. At one of your colonies it can *Settle*,
+  adding 1.
+- **Natives**: many worlds are inhabited (mammals, birds, reptiles,
+  sea-dwellers, insect hives, machines). Their star can't be entered
+  until warships have pacified them; a colony on a pacified world
+  starts with 2. They never attack, but fight back.
+- **War**: there are no zones of control and no retreats; warships next
+  to an enemy hex attack it together. A world loses people only once
+  the ships over it are gone, and a world with enemy warships next to
+  it is blockaded: it pays nothing, builds nothing and doesn't grow.
+- **Winning**: take the enemy's homeworld (its last person) and you win
+  at once. If neither falls, the empire with more people wins at the
+  end. Computer against computer the two sides win about equally
+  often, four games in five end with a homeworld taken, on turn 34 on
+  average.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -466,7 +513,34 @@ The rules are the classic ones, and each part can be changed by a game:
   destroyed, `EXITS` for units leaving by an edge, and `SUDDEN_DEATH`
   hexes; `VICTORY(engine)` decides, returning (winner, words), or the
   side with more VP wins. `SCORE(engine, side)` sets what the panels
-  show.
+  show; `HIDDEN_SCORE = True` shows the player only their own until
+  the end.
+- **Production** (Far Suns uses it): each side has a treasury
+  (`TREASURY` at the start), and `INCOME(engine, side)` is added to it
+  at the start of its turn. `BUILDS` names what can be built: each a
+  dict with `name`, `cost`, `about` and `unit`, the unit's spec. In
+  the first movement phase a side builds at its yards (any unit whose
+  type says `factory`, or `BUILD_SITES(engine, side)`), unless
+  `CAN_BUILD(engine, side, kind, hex)` gives a reason not to; the
+  orders panel shows *Build...* when a unit at a yard is selected, and
+  the `treasury` widget the money and the income. Built units can move
+  at once; `ON_BUILD(engine, unit)` can name them.
+- **Units made in play**: `engine.spawn(spec)` puts a new unit on the
+  map, and saves keep it; `SETUP(engine)` is called once at the start
+  of a new game to deal out a map afresh (Far Suns' worlds and
+  homeworlds, using `engine.rng`), and `engine.remove(unit)` takes one
+  off without a fight.
+- **A game's own orders**: `ACTIONS(engine, unit)` gives the active
+  side's unit buttons, `[(label, key, why not)]` (`why not` None when
+  it can), and `ACT(engine, unit, key)` carries one out (Colonize).
+- **Sides that never move**: a side in `SIDES` but not in `ORDER` has
+  no turns and no player (Far Suns' natives); its units are everyone's
+  enemy. `BRIEFING = False` keeps each side from knowing where the
+  other starts.
+- **Hooks**: `ON_MOVE(engine, unit, path)` after every move (exploring),
+  `ON_ELIMINATE(engine, unit, hex)` when a unit is destroyed (a
+  homeworld falling ends the game), and `engine.say(text, side)` for a
+  line in the log only that side reads.
 
 ### The computer player
 
@@ -492,6 +566,16 @@ fight (the second move) thinks first of getting clear. Attacking sides
 hunt enemy units worth 4 VP or more (Saltmarsh's convoys), and units
 whose job is to leave the map (`EXITS` with `types`) head steadily for
 the edge.
+
+Far Suns has its own computer player (`Strategist`, in the game's
+script): it builds what it lacks (scouts while there are stars to
+explore, colony ships while there are free worlds, warships while
+there's income to keep them), sends scouts to the nearest unexplored
+stars and colony ships to the best worlds for the trip, and gives its
+warships missions: defend the homeworld, then, once it's strong
+enough, take the enemy's; defend colonies, raid the enemy's, and
+pacify the natives on the best worlds. A fleet gathers two hexes from
+its target, where it can see what's there, and goes in together.
 
 A side's `posture` ('attack' or 'defend') sets the balance; a unit can
 have its own (the 4th Armored attacks while the rest of the Americans
@@ -519,9 +603,12 @@ terrain, cliffs, a walled grove worked out in code, a side that gets
 stronger when an objective falls, and victory decided by ground rather
 than points; `belem` for units that join whichever side is
 winning (two copies of each, one brought on by `ON_TURN`) and weather
-that changes how far units see; and `trafalgar` for a game at sea:
+that changes how far units see; `trafalgar` for a game at sea:
 ships on a map of open water, the wind worked out in `ENTER_COST`, its
-own widget (the wind) and its own counter symbol and picture.
+own widget (the wind) and its own counter symbol and picture; and
+`farsuns` for production, units made in play, a map dealt out by
+`SETUP`, its own orders, a side that never moves, and its own computer
+player.
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)
@@ -551,13 +638,23 @@ own widget (the wind) and its own counter symbol and picture.
   `SUPPLY`, `STACK`, `FOG`, `CRT`, `DEFENSIVE_FIRE`, `COMBAT_SHIFTS`
 - `PANELS`: the widgets on the right and along the bottom (`date`,
   `weather`, `victory`, `objectives`, `phase`, `scroll`, `minimap`,
-  `unit`, `orders`, `log`), and `CHROME`, their colours. A game can add
+  `treasury`, `unit`, `orders`, `log`), and `CHROME`, their colours. A game can add
   widgets of its own with `@grognard.widget('name')`, terrain patterns
   with `@grognard.pattern('name')` and NATO symbols with
   `@grognard.symbol('name')`.
 - `STYLE = 'pictures'` for little pictures on the counters instead of
   NATO symbols; `ZOOM` for the zoom a game starts at; `FONT` for the
   smooth text's font.
+- A terrain's `glyph`, `fn(surface, cx, cy, scale, hex)`, draws a
+  picture in the middle of each of its hexes (Far Suns' suns), and
+  `DRAW_MAP(game, surface)` draws over the map every frame (what a side
+  knows of each star). A unit type's `values(unit)` says what its
+  counter's numbers are (a world's people), and `under: True` puts it
+  beneath the other units in its hex, and last to take losses.
+- `AI_CLASS`: a computer player of the game's own, a subclass of
+  `grognard.ai.AI`, for a game the stock one can't play. Besides moves
+  and attacks its `next_action()` may return `('build', kind, hex)` and
+  `('act', unit id, key)`.
 
 ### Testing
 

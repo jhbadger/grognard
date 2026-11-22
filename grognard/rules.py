@@ -10,6 +10,8 @@ it the same way:
     odds(hex, attackers, support)   the odds and column shifts
     resolve(hex, attackers, support)  fight it out
     advance(units, hex)             take ground after a fight
+    build(kind, hex)                spend the treasury on a new unit
+    act(unit, key)                  a game's own order ('colonize')
     end_phase()                     movement -> combat -> the other side
 
 The sequence of play is the classic one.  Each game turn every side in
@@ -252,6 +254,8 @@ class Engine:
         self.board = Board(gdef)
         self.sides = {s['id']: dict(s) for s in gdef.SIDES}
         self.side_ids = [s['id'] for s in gdef.SIDES]
+        # the sides that take turns; any other side (natives, say) never
+        # moves, but can be attacked
         self.order = list(getattr(gdef, 'ORDER', self.side_ids))
         self.types = dict(UNIT_TYPES)
         for k, v in getattr(gdef, 'UNIT_TYPES', {}).items():
@@ -281,6 +285,8 @@ class Engine:
 
     def new(self):
         self.units = {}
+        self.spawned = []           # specs of the units made in the game
+        self.serial = 0
         for spec in self.d.UNITS:
             u = Unit(spec, self.types)
             if u.id in self.units:
@@ -295,6 +301,8 @@ class Engine:
         self.lost = {s: 0 for s in self.side_ids}      # steps lost
         self.flags = {}             # a game's own state, kept in saves
         self.exited = {s: 0 for s in self.side_ids}    # steps off the map
+        start = getattr(self.d, 'TREASURY', {})
+        self.treasury = {s: start.get(s, 0) for s in self.side_ids}
         self.hit = set()            # hexes attacked this phase
         self.over = False
         self.winner = None
@@ -303,6 +311,10 @@ class Engine:
         self.events = []            # for the screen: ('move', id, path)...
         self.version = 0
         self._cache = {}
+        hook = getattr(self.d, 'SETUP', None)
+        if hook:                    # a map dealt out afresh each game
+            hook(self)
+            self.events = []
         self.begin_player_turn()
 
     def to_json(self):
@@ -311,7 +323,8 @@ class Engine:
             turn=self.turn, active=self.active, phase=self.phase,
             control={hid(h): s for h, s in self.control.items()},
             bonus=self.bonus, lost=self.lost, exited=self.exited,
-            flags=self.flags,
+            flags=self.flags, treasury=self.treasury,
+            spawned=self.spawned, serial=self.serial,
             hit=[hid(h) for h in self.hit], over=self.over,
             winner=self.winner, result=self.result,
             messages=self.messages[-60:],
@@ -325,6 +338,14 @@ class Engine:
         self.bonus, self.lost = d['bonus'], d['lost']
         self.exited = d.get('exited', {s: 0 for s in self.side_ids})
         self.flags = d.get('flags', {})
+        self.treasury = d.get('treasury', self.treasury)
+        # the units made in that game, not the ones SETUP made in this one
+        for spec in self.spawned:
+            self.units.pop(spec['id'], None)
+        self.spawned = []
+        for spec in d.get('spawned', []):
+            self.spawn(spec)
+        self.serial = d.get('serial', 0)
         self.hit = {parse(h) for h in d.get('hit', [])}
         self.over, self.winner, self.result = d['over'], d['winner'], \
             d['result']
@@ -348,9 +369,132 @@ class Engine:
             v = self._cache[key] = fn()
         return v
 
-    def say(self, text):
-        self.messages.append(text)
+    def say(self, text, side=None):
+        """Add text to the log; with side, only that side reads it (what
+        it built, where it settled)."""
+        self.messages.append(text if side is None else [side, text])
         self.events.append(('say', text))
+
+    def log(self, viewer=None, n=None):
+        """The log as viewer may read it (None: all of it), the last n
+        lines."""
+        out = [m if isinstance(m, str) else m[1] for m in self.messages
+               if isinstance(m, str) or viewer is None or m[0] == viewer]
+        return out[-n:] if n else out
+
+    # ------------------------------------------------- units made in play
+
+    def spawn(self, spec):
+        """A new unit, made during the game (built, founded, dealt out by
+        SETUP): spec as in UNITS, with an id made up if it has none.  It's
+        kept in saves."""
+        spec = dict(spec)
+        if not spec.get('id'):
+            self.serial += 1
+            spec['id'] = '%s%d' % (spec.get('type', 'u')[:3], self.serial)
+            while spec['id'] in self.units:
+                self.serial += 1
+                spec['id'] = '%s%d' % (spec.get('type', 'u')[:3],
+                                       self.serial)
+        if spec['id'] in self.units:
+            raise ValueError('two units called %r' % spec['id'])
+        u = Unit(spec, self.types)
+        self.units[u.id] = u
+        self.spawned.append(spec)
+        self.changed()
+        return u
+
+    def remove(self, u):
+        """Take a unit off the map without a fight (a colony ship that
+        has settled): not lost, not scored."""
+        u.status = 'gone'
+        u.hex = None
+        self.changed()
+
+    # ------------------------------------------------------- production
+
+    def income(self, side):
+        """What side earns at the start of its turn: INCOME(engine,
+        side), if the game has production."""
+        fn = getattr(self.d, 'INCOME', None)
+        return fn(self, side) if fn else 0
+
+    def build_sites(self, side):
+        """Hexes where side may build: BUILD_SITES(engine, side), or
+        wherever it has a unit whose type says 'factory'."""
+        fn = getattr(self.d, 'BUILD_SITES', None)
+        if fn:
+            return list(fn(self, side))
+        return sorted({u.hex for u in self.alive(side)
+                       if u.type.get('factory')})
+
+    def build_reason(self, kind, h):
+        """Why the active side can't build kind at h now, or None if it
+        can."""
+        b = getattr(self.d, 'BUILDS', {}).get(kind)
+        side = self.side
+        if b is None:
+            return 'nothing called %s' % kind
+        if self.over or self.phase != self.phases[0] or not self.moving:
+            return 'only in the movement phase'
+        if h not in self.build_sites(side):
+            return 'no shipyard here'
+        if b.get('cost', 0) > self.treasury[side]:
+            return 'costs %d' % b.get('cost', 0)
+        fn = getattr(self.d, 'CAN_BUILD', None)
+        if fn:
+            why = fn(self, side, kind, h)
+            if why:
+                return why
+        spec = dict(b['unit'], side=side)
+        probe = Unit(dict(spec, id='?'), self.types)
+        if not self.room(h, probe):
+            return 'no room'
+        return None
+
+    def build(self, kind, h):
+        """Build kind at h for the active side, paying for it from its
+        treasury.  Returns the new unit (None if it can't): it may move
+        at once."""
+        if self.build_reason(kind, h):
+            return None
+        b = self.d.BUILDS[kind]
+        side = self.side
+        self.treasury[side] -= b.get('cost', 0)
+        spec = dict(b['unit'], side=side, hex=hid(h))
+        spec.setdefault('type', kind)
+        spec.pop('id', None)
+        self.serial += 1
+        spec['id'] = '%s-%s%d' % (side, kind, self.serial)
+        u = self.spawn(spec)
+        self.say('%s built at %s.' % (b.get('name', kind), self.place(h)),
+                 side)
+        self.events.append(('build', u.id, h))
+        hook = getattr(self.d, 'ON_BUILD', None)
+        if hook:
+            hook(self, u)
+        return u
+
+    # ----------------------------------------------------- unit orders
+
+    def actions(self, u):
+        """A game's own orders for u now: [(label, key, why not)], why
+        not None for those it can give (ACTIONS(engine, unit))."""
+        fn = getattr(self.d, 'ACTIONS', None)
+        if not fn or self.over or not u.alive or u.side != self.side:
+            return []
+        return list(fn(self, u))
+
+    def act(self, u, key):
+        """Carry out one of u's actions (ACT(engine, unit, key)).  True if
+        it was done."""
+        for label, k, why in self.actions(u):
+            if k == key and not why:
+                self.d.ACT(self, u, key)
+                self.changed()
+                self.events.append(('act', u.id, key))
+                return True
+        return False
 
     @property
     def side(self):
@@ -608,6 +752,9 @@ class Engine:
         for h in path[1:]:
             self.take(h, unit.side)
         self.events.append(('move', unit.id, path))
+        hook = getattr(self.d, 'ON_MOVE', None)
+        if hook:                        # exploring, or the like
+            hook(self, unit, path)
         return path
 
     def overrun(self, unit, path, reach):
@@ -695,6 +842,7 @@ class Engine:
         self.phase = self.phases[0]
         self.hit = set()
         self.arrivals(side)
+        self.treasury[side] += self.income(side)
         hook = getattr(self.d, 'ON_TURN', None)
         if hook:
             hook(self, side)
@@ -1034,7 +1182,7 @@ class Engine:
             'Barrage' if o['bombard'] else 'Attack', self.place(target),
             o['label'], roll, res['text']))
         if out['dlost'] or out['alost']:
-            loser = self.enemy(self.side)
+            loser = defenders[0].side
             self.say('%s %s %d step%s, %s %d.' % (
                 self.side_name(loser), self.verb(loser, 'lose'),
                 out['dlost'],
@@ -1051,7 +1199,10 @@ class Engine:
             live = [u for u in units if u.alive]
             if not live:
                 break
-            u = max(live, key=lambda u: (u.steps, u.attack + u.defense))
+            # the strongest first; what the others shield (a planet
+            # under its fleet: 'under') last
+            u = max(live, key=lambda u: (not u.type.get('under'), u.steps,
+                                         u.attack + u.defense))
             u.steps -= 1
             taken += 1
             self.lost[u.side] += 1
@@ -1069,8 +1220,12 @@ class Engine:
         self.events.append(('die', u.id, u.hex))
         self.say('%s %s.' % (u.long, u.spec.get(
             'fate', u.type.get('fate', 'is destroyed'))))
+        where = u.hex
         u.hex = None
         self.changed()
+        hook = getattr(self.d, 'ON_ELIMINATE', None)
+        if hook:
+            hook(self, u, where)
 
     def retreat(self, u, n, from_hexes):
         """Retreat u n hexes away from from_hexes.  Returns its path, or

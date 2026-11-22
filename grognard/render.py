@@ -68,6 +68,13 @@ class MapArt:
                 row = tile[y % T]
                 o = (x % T) * 3
                 buf[y * W3 + x * 3:y * W3 + (x + n) * 3] = row[o:o + n * 3]
+        # a picture in the middle of each hex of a terrain that has one
+        # (a star): 'glyph', fn(surface, cx, cy, scale, hex)
+        for h, tname in b.hexes.items():
+            fn = b.T[tname].get('glyph')
+            if fn:
+                cx, cy = g.center(h)
+                fn(s, cx, cy, sc, h)
         # the grid: darken the outline of every hex
         if self.grid:
             dark = bytes(int(i * 0.72) for i in range(256))

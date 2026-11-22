@@ -187,7 +187,12 @@ class Unit:
 
     def values(self):
         """What the counter's bottom line says: attack-defence-movement
-        (with the range in brackets, for units that fire from afar)."""
+        (with the range in brackets, for units that fire from afar), or
+        what the type's own 'values' function says (a planet's
+        population)."""
+        fn = self.type.get('values')
+        if fn:
+            return fn(self)
         if self.supports or self.range > 1:
             return '%d(%d)-%d-%d' % (self.attack, self.range, self.defense,
                                      self.max_mp)

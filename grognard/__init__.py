@@ -197,16 +197,25 @@ def play_out(gdef, seed=0, skill=1.0, turns=None, log=None):
     """Play a whole game between two computer players without a screen.
     Returns the Engine at the end."""
     from .rules import Engine
-    from .ai import AI
+    from .ai import ai_class
     e = Engine(gdef, seed=seed)
+    AI = ai_class(gdef)
     ais = {s: AI(e, s, skill=skill, seed=seed * 7 + i)
-           for i, s in enumerate(e.side_ids)}
+           for i, s in enumerate(e.order)}
     n = 0
     while not e.over and (turns is None or e.turn <= turns):
         act = ais[e.side].next_action()
         if act[0] == 'move':
             if e.move(e.units[act[1]], act[2]) is None:
                 raise RuntimeError('the computer tried an illegal move: %r'
+                                   % (act,))
+        elif act[0] == 'build':
+            if e.build(act[1], act[2]) is None:
+                raise RuntimeError('the computer tried an illegal build: %r'
+                                   % (act,))
+        elif act[0] == 'act':
+            if not e.act(e.units[act[1]], act[2]):
+                raise RuntimeError('the computer tried an illegal order: %r'
                                    % (act,))
         elif act[0] == 'attack':
             res = e.resolve(act[1], [e.units[i] for i in act[2]],
@@ -220,7 +229,7 @@ def play_out(gdef, seed=0, skill=1.0, turns=None, log=None):
         if n > 50000:
             raise RuntimeError('the game never ended')
     if log is not None:
-        log.extend(e.messages)
+        log.extend(e.log())
     return e
 
 
