@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+"""Chapultepec: the storming of the castle and the gates of Mexico City,
+12-13 September 1847.  A sample game for the Grognard engine.
+
+Winfield Scott's army has fought its way from Veracruz to the edge of
+Mexico City.  Between it and the western gates stands the hill of
+Chapultepec and the castle on top, home of the Military College.  A day
+of bombardment, then the storm: up through the cypress grove and over
+the walls with scaling ladders, then along the causeways across the wet
+meadows to the Belén and San Cosme gates.  Play either side against the
+computer, or against a friend at the same screen.
+
+Run it with ./chapultepec (Python 3 with Tk, nothing else).  The game is
+saved to ~/.chapultepec.json.  ./chapultepec --selftest checks the map
+and plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import hexgrid                           # noqa: E402
+
+ID = 'chapultepec'
+TITLE = 'Chapultepec'
+SUBTITLE = 'The storming of the castle, 12-13 September 1847'
+
+INTRO = [
+    "September 1847. General Winfield Scott's army has marched and "
+    "fought its way from the coast at Veracruz to the Valley of Mexico. "
+    "Five days ago it took the mills of Molino del Rey at a terrible "
+    "price. Mexico City is in sight.",
+
+    "Between the Americans and the city's western gates rises the hill "
+    "of Chapultepec, crowned by a castle that houses the Military "
+    "College. General Nicolás Bravo holds it with under a thousand men, "
+    "among them the college's young cadets. Santa Anna keeps most of his "
+    "army back to guard the southern gates.",
+
+    "Beyond the hill, two raised causeways run east across flooded "
+    "meadows to the city: one to the Belén gate, one to San Cosme. "
+    "Tomorrow the guns will pound the castle all day. The day after, the "
+    "infantry go up the hill with scaling ladders.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='us', name='Americans', adj='American', colour='#8298c6',
+         ink='#f8f8f8', posture='attack',
+         about='Take the castle, then push along the causeways and force '
+               'the Belén and San Cosme gates before dark.'),
+    dict(id='mx', name='Mexicans', adj='Mexican', colour='#86ac78',
+         ink='#101010', posture='defend',
+         about='Hold the castle as long as you can, then hold the gates. '
+               'Santa Anna may send help, late.'),
+]
+ORDER = ['us', 'mx']
+
+TURNS = 12
+
+
+def TURN_NAME(t):
+    """The 12th in two halves, the bombardment; then the 13th by hours."""
+    if t <= 2:
+        return ('12 Sep 1847', 'AM' if t == 1 else 'PM')
+    h = 8 + (t - 3)
+    return ('13 Sep 1847', '%d %s' % ((h - 1) % 12 + 1,
+                                      'AM' if h < 12 else 'PM'))
+
+
+STACK = 3
+FOG = False
+DEFENSIVE_FIRE = 2
+STEP_VP = 1
+
+CASTLE = hexgrid.parse('0707')
+RELEASE = 3             # the infantry go in on the morning of the 13th
+WORTH = 5               # Worth's division, once the castle is under attack
+RESERVE = 8             # Santa Anna's help, if it comes at all
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Scaling ladders: storming the castle without a storming party (the
+    pioneers who carried them) costs a column.  Guns firing from more than
+    4 hexes away lose a column.  And once the castle has fallen the
+    defenders are shaken: American attacks gain a column."""
+    out = []
+    if e.side == 'us' and e.control.get(CASTLE) == 'us':
+        out.append((1, 'Chapultepec has fallen'))
+    t = e.board.terrain(target)
+    near = [u for u in attackers if hexgrid.distance(u.hex, target) == 1]
+    if t.get('name') == 'Castle' and near and \
+            not any(u.kind == 'engineer' for u in near):
+        out.append((-1, 'no ladders'))
+    if not attackers and support and \
+            min(hexgrid.distance(u.hex, target) for u in support) > 4:
+        out.append((-1, 'long range'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'K': 'castle', 'G': 'gate'}
+
+TERRAIN = {
+    'clear':  dict(name='Fields', colour='#c4b27c', ink='#a8945c',
+                   edge='#8a7848'),
+    'fields': dict(name='Maguey', colour='#a8b070', ink='#6e8048',
+                   edge='#6a7040'),
+    'marsh':  dict(name='Wet meadow', colour='#8aa48a', ink='#4e7a8e',
+                   edge='#4a6a5a', shift=0,
+                   move={'foot': 3, 'track': None, 'wheel': None}),
+    'woods':  dict(name='Cypress grove', colour='#4a6e3e', ink='#2a4a24',
+                   edge='#1e3618', pattern='trees'),
+    'hills':  dict(name='Slope', colour='#a8946a', ink='#7a6440',
+                   edge='#6a5430', shift=-1,
+                   move={'foot': 2, 'track': 3, 'wheel': 3}),
+    'castle': dict(name='Castle', colour='#b8aa96', ink='#7a5a48',
+                   pattern='city', edge='#4a3a30', z=10, shift=-1,
+                   stand=True, los=False, open=False,
+                   move={'foot': 2, 'track': 3, 'wheel': 3}),
+    'town':   dict(name='Village', colour='#c0b49c', ink='#8a4a32',
+                   shift=-1),
+    'gate':   dict(name='Garita', colour='#c0b49c', ink='#8a4a32',
+                   pattern='town', edge='#5a4a3a', z=7, shift=0,
+                   los=False, open=False),
+    'city':   dict(name='Mexico City', colour='#b4aa9c', ink='#7a5848'),
+}
+HEXSIDES = {
+    'cliff': dict(name='Cliffs', colour='#5a4a3a', width=2,
+                  cost={'foot': None, 'track': None, 'wheel': None},
+                  halve=False),
+    'wall': dict(name='Park wall'),
+}
+
+MAP = [
+    '.:...:..m..mm.mm..CC',
+    '....:::.mmm..m....CC',
+    '..:.....mmm.t...G.CC',
+    ':.t.....m...mm....CC',
+    '........m.mm.m.m..CC',
+    '.t..fhhh.m.m.mm..mCC',
+    ':..ffhKhmm..mmmm.mCC',
+    '...fffh...m.m.mmmmCC',
+    '...fff......m...m.CC',
+    ':.......mm.m.m...GCC',
+    '.:......mm.m..mm..CC',
+    '........mm..m...mmCC',
+    '....:.t.m.m.m..mm.CC',
+    '........mm...m.mmmCC',
+]
+
+ROADS = [
+    ('road', ['0808', '1810']),                 # the Belén causeway
+    ('road', ['0806', '1203', '1703']),         # the San Cosme causeway
+    ('road', ['0713', '0708']),                 # from Tacubaya
+    ('road', ['0713', '0211', '0304']),         # Tacubaya to the mills
+    ('trail', ['0708', '0707']),                # the ramp up to the castle
+    ('trail', ['0304', '0405']),
+]
+
+GROVE = ['0507', '0407', '0508', '0408', '0608', '0509', '0609', '0409',
+         '0506']
+
+
+def _park_wall():
+    """A wall runs round the cypress grove at the foot of the hill: every
+    side of a grove hex that faces open country."""
+    grove = {hexgrid.parse(h) for h in GROVE}
+    hill = {hexgrid.parse('0707')} | set(hexgrid.neighbours(
+        hexgrid.parse('0707')))
+    out = []
+    for h in grove:
+        for n in hexgrid.neighbours(h):
+            if n not in grove and n not in hill and 0 <= n[0] < 20 and \
+                    0 <= n[1] < 14:
+                out.append((h, n))
+    return out
+
+
+RIVERS = [
+    ('cliff', ['0707:N,NE']),                   # the castle's sheer face
+    ('wall', _park_wall()),
+]
+
+LABELS = {
+    '0707': 'Chapultepec', '0304': 'Molino del Rey', '0206': 'Casa Mata',
+    '0713': 'Tacubaya', '1810': 'Belén gate', '1703': 'San Cosme gate',
+    '1303': 'La Verónica', '0409': 'Cypress grove', '1907': 'Mexico City',
+}
+
+OBJECTIVES = {
+    '0707': dict(name='Castle', vp=6, owner='mx', shift=-1,
+                 works='walls', **{'for': 'us'}),
+    '1810': dict(name='Belén', vp=4, owner='mx', shift=-1,
+                 works='gate', **{'for': 'us'}),
+    '1703': dict(name='S. Cosme', vp=4, owner='mx', shift=-1,
+                 works='gate', **{'for': 'us'}),
+    '1303': dict(name='Verónica', vp=1, owner='mx', **{'for': 'us'}),
+}
+
+
+def VICTORY(e):
+    """What Scott needed: the castle, and then the gates.  Both gates
+    forced is an American victory; one is a marginal one, unless the
+    Americans have lost more steps than they destroyed getting there.
+    The castle alone leaves the city in Mexican hands for the night: a
+    Mexican marginal victory.  A castle that holds is a Mexican victory."""
+    us, mx = e.vp('us'), e.vp('mx')
+    score = 'Americans %d VP, Mexicans %d.' % (us, mx)
+    castle = e.control.get(CASTLE) == 'us'
+    gates = [h for h in ('1810', '1703')
+             if e.control.get(hexgrid.parse(h)) == 'us']
+    if castle and len(gates) == 2:
+        return 'us', ('American victory. %s Both gates are forced; in the '
+                      'morning the city surrenders.' % score)
+    if castle and gates and e.lost['us'] <= e.lost['mx']:
+        return 'us', ('American marginal victory. %s A gate is forced and '
+                      'the army is in the city.' % score)
+    if castle:
+        return 'mx', ('Mexican marginal victory. %s Chapultepec has '
+                      'fallen, but the gates hold for tonight.' % score)
+    return 'mx', ('Mexican victory. %s Chapultepec holds, and the cadets '
+                  'are heroes of a victory.' % score)
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'horse': dict(name='Cavalry', symbol='recon', move='foot'),
+}
+
+US_REG = '#8298c6'      # regulars
+US_VOL = '#94a6cc'      # volunteers
+US_GUNS = '#a4b4d4'
+MX_LINE = '#86ac78'
+MX_GUARD = '#a0b88e'    # National Guard
+MX_GUNS = '#b0c4a2'
+
+
+def unit(uid, side, kind, a, d, hx, long, colour, steps=2, m=3, **kw):
+    """A unit: attack, defence, and the hex it starts in (None to arrive
+    later, with arrive and at)."""
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, size=kw.pop('size', 'X' if steps >= 3 else 'II'),
+                a=a, d=d, m=m, steps=steps, hex=hx, long=long,
+                colour=colour)
+    spec.update(kw)
+    return spec
+
+
+def guns(uid, side, a, rng, hx, long, colour, m=2, **kw):
+    return unit(uid, side, 'artillery', a, 2, hx, long, colour, steps=1,
+                m=m, range=rng, **kw)
+
+
+UNITS = [
+    # ---- Scott's army
+    unit('cadwal', 'us', 'infantry', 5, 4, '0305',
+         "Cadwalader's brigade", US_REG, steps=3, name='CADWAL',
+         formation="Pillow's division", release=RELEASE),
+    unit('pierce', 'us', 'infantry', 4, 4, '0204', "Pierce's brigade",
+         US_VOL, steps=3, formation="Pillow's division", release=RELEASE),
+    unit('volt', 'us', 'infantry', 4, 3, '0306', 'Regiment of Voltigeurs',
+         US_REG, m=4, name='VOLTIG', formation="Pillow's division",
+         release=RELEASE),
+    unit('shields', 'us', 'infantry', 5, 4, '0712',
+         "Shields's brigade (New York and South Carolina)", US_VOL, steps=3,
+         name='SHIELD', formation="Quitman's division", release=RELEASE),
+    unit('psmith', 'us', 'infantry', 4, 4, '0812',
+         "Persifor Smith's brigade", US_REG, steps=3, name='PSMITH',
+         formation="Quitman's division", release=RELEASE),
+    unit('marines', 'us', 'infantry', 3, 3, '0613',
+         'Battalion of Marines', US_REG, name='USMC',
+         formation="Quitman's division", release=RELEASE),
+    unit('casey', 'us', 'engineer', 4, 3, '0405',
+         "Casey's storming party, with ladders", US_REG, steps=1,
+         size='I', name='CASEY', formation="Worth's division",
+         release=RELEASE),
+    unit('ssmith', 'us', 'engineer', 4, 3, '0711',
+         "Major Twiggs's and Smith's storming party", US_REG, steps=1,
+         size='I', name='STORM', formation="Quitman's division",
+         release=RELEASE),
+    unit('garland', 'us', 'infantry', 5, 4, '0203', "Garland's brigade",
+         US_REG, steps=3, name='GARLND', formation="Worth's division",
+         release=WORTH),
+    unit('clarke', 'us', 'infantry', 5, 4, '0103', "Clarke's brigade",
+         US_REG, steps=3, name='CLARKE', formation="Worth's division",
+         release=WORTH),
+    guns('huger', 'us', 7, 5, '0610', "Huger's siege guns", US_GUNS, m=1,
+         formation='Siege train'),
+    guns('molino', 'us', 5, 5, '0304', 'The heavy battery at Molino',
+         US_GUNS, m=1, formation='Siege train', name='MOLINO'),
+    guns('drum', 'us', 3, 4, '0712', "Drum's battery", US_GUNS, m=4,
+         formation="Quitman's division"),
+    guns('magrud', 'us', 3, 4, '0205', "Magruder's battery", US_GUNS, m=3,
+         formation="Pillow's division", name='MAGRUD'),
+    guns('duncan', 'us', 3, 4, '0103', "Duncan's battery", US_GUNS, m=4,
+         formation="Worth's division"),
+
+    # ---- the defenders
+    unit('cadets', 'mx', 'infantry', 1, 2, '0707',
+         'The cadets of the Military College', MX_LINE, steps=1,
+         size='I', name='COLEG', formation="Bravo's garrison"),
+    unit('bravo', 'mx', 'infantry', 3, 4, '0707',
+         "Bravo's garrison: the Mina and Querétaro battalions", MX_GUARD,
+         name='BRAVO', formation="Bravo's garrison"),
+    guns('castle', 'mx', 3, 4, '0707', 'The castle guns', MX_GUNS, m=0,
+         formation="Bravo's garrison", name='CASTLE'),
+    unit('sanblas', 'mx', 'infantry', 3, 4, '0807',
+         'The San Blas battalion (Xicoténcatl)', MX_LINE, name='SNBLAS',
+         formation='Reinforcement'),
+    unit('grove', 'mx', 'infantry', 2, 3, '0507',
+         'Skirmishers in the cypress grove', MX_GUARD, name='BOSQUE',
+         formation="Bravo's garrison"),
+    unit('vero', 'mx', 'infantry', 2, 3, '1303',
+         'The post at La Verónica', MX_GUARD, name='VERON',
+         formation="Rangel's brigade"),
+    unit('rangel', 'mx', 'infantry', 3, 3, '1703',
+         "Rangel's brigade at the San Cosme gate", MX_LINE, steps=2,
+         name='RANGEL', formation="Rangel's brigade"),
+    guns('cosmeg', 'mx', 3, 3, '1703', 'Guns at the San Cosme gate',
+         MX_GUNS, m=0, name='GUNS', formation="Rangel's brigade"),
+    unit('terres', 'mx', 'infantry', 3, 3, '1810',
+         "Terrés's brigade at the Belén gate", MX_LINE, steps=2,
+         name='TERRES', formation="Terrés's brigade"),
+    guns('beleng', 'mx', 3, 3, '1810', 'Guns at the Belén gate', MX_GUNS,
+         m=0, name='GUNS', formation="Terrés's brigade"),
+    guns('causeg', 'mx', 2, 3, '1310', 'A battery on the Belén causeway',
+         MX_GUNS, m=1, name='BATT', formation="Terrés's brigade"),
+    unit('alvarez', 'mx', 'horse', 2, 2, '0114', "Álvarez's cavalry",
+         MX_GUARD, m=5, name='ALVREZ', formation='Cavalry'),
+    unit('sa1', 'mx', 'infantry', 4, 4, None, "Santa Anna's reserve",
+         MX_LINE, steps=3, name='RESRV', arrive=RESERVE, at='2008',
+         formation='Army of the North'),
+    unit('sa2', 'mx', 'infantry', 3, 4, None, "Santa Anna's reserve",
+         MX_LINE, steps=3, name='RESRV', arrive=RESERVE, at='2004',
+         formation='Army of the North'),
+]
+
+PANELS = dict(
+    right=['date', 'victory', 'objectives', 'phase', 'minimap', 'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1c1812', panel='#2c261c', light='#7c6c50',
+              dark='#080604', accent='#f0c46a', button='#5c4c34',
+              button_hi='#a4906a', button_lo='#1c1812', red='#b83a22')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE BOMBARDMENT. The first two turns are the 12th: the American "
+    "infantry wait (their counters say HELD) while the siege guns pound "
+    "the castle. Guns firing from more than 4 hexes lose a column. Worth's "
+    "division joins in later, and Santa Anna's reserves may come from "
+    "the city in the afternoon.",
+
+    "THE STORM. The castle hex is hard: a column for the castle and one "
+    "for its walls, its defenders lose a step rather than retreat, and "
+    "its north face is a cliff that can't be climbed or attacked across. "
+    "The slopes "
+    "below cost 2 to climb and shift attacks a column, and the cypress "
+    "grove has a wall round it. Storming the castle without one of the "
+    "storming parties (they have the scaling ladders) costs another "
+    "column.",
+
+    "THE CAUSEWAYS. East of the hill the meadows are flooded: 3 to "
+    "enter, and nothing on wheels at all. The two causeways run straight "
+    "to the Belén and San Cosme gates, which are fortified (a column). "
+    "Once the castle has fallen the defenders are shaken: every "
+    "American attack gains a column.",
+
+    "WINNING. If the Americans hold the castle and both gates at the "
+    "end, they win; the castle and one gate is a marginal American "
+    "victory, unless they've lost more steps than the Mexicans. The "
+    "castle alone is a marginal Mexican victory, and a castle that holds "
+    "a clear one. The score (the castle 6, each gate 4, La Verónica 1, "
+    "and each step destroyed) is kept for the record.",
+]
+
+ICON = 'chapultepec'
+
+
+@grognard.icon('chapultepec')
+def draw_icon(p, n):
+    """The castle on its hill, with the flag over it."""
+    p.fill('#d8c8a0')
+    p.disc(n * 0.5, n * 1.05, n * 0.62, '#8a7450')
+    p.rect(n * 0.28, n * 0.38, n * 0.44, n * 0.16, '#e8e0d0')
+    p.rect(n * 0.38, n * 0.28, n * 0.24, n * 0.12, '#e8e0d0')
+    for k in range(5):
+        p.rect(n * (0.3 + k * 0.09), n * 0.42, n * 0.04, n * 0.06,
+               '#5a4a3a')
+    p.rect(n * 0.49, n * 0.08, n * 0.02, n * 0.22, '#3a2a1a')
+    p.rect(n * 0.51, n * 0.08, n * 0.07, n * 0.09, '#2a6a3a')
+    p.rect(n * 0.58, n * 0.08, n * 0.07, n * 0.09, '#f0f0f0')
+    p.rect(n * 0.65, n * 0.08, n * 0.07, n * 0.09, '#b02020')
+    for x, r in ((0.15, 0.09), (0.25, 0.1), (0.8, 0.08)):
+        p.disc(n * x, n * 0.72, n * r, '#3a5a30')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

@@ -17,10 +17,11 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are three games so far: a Second World War battle, a raid in a
+There are four games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
-optional rules for fast mechanized combat, and the most famous charge of
-the American Civil War.
+optional rules for fast mechanized combat, the most famous charge of the
+American Civil War, and the storming of Chapultepec in the
+Mexican-American War.
 
 ```bash
 ./crossroads
@@ -32,6 +33,10 @@ the American Civil War.
 
 ```bash
 ./pickett
+```
+
+```bash
+./chapultepec
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -138,6 +143,38 @@ a low stone wall.
   against computer the Union holds a little more often than not, and
   the attackers lose about as many steps as the defenders, though they
   started with twice as many.
+
+## Chapultepec: the storming of the castle, 12-13 September 1847
+
+The fourth game. Scott's army has reached the edge of Mexico City; the
+hill of Chapultepec and its castle, the Military College, stand between
+it and the western gates.
+
+- **Twelve turns**: the 12th in two halves, while the American siege
+  guns bombard the castle and the infantry wait; then the 13th hour by
+  hour from 8 in the morning. Worth's division joins at 10, and Santa
+  Anna's reserves may come out of the city in the afternoon.
+- **The storm**: the castle is a fortress (two columns, and its
+  defenders lose a step rather than retreat), its north face a cliff
+  that can't be climbed or attacked across; the slopes cost 2 and give a
+  column; the cypress grove below has a wall round it. Storming the
+  castle without one of the two storming parties, who carry the scaling
+  ladders, costs another column.
+- **The causeways**: east of the hill the meadows are flooded, 3 to
+  enter and nothing on wheels, so the fight for the Belén and San Cosme
+  gates is along two raised roads. Once the castle has fallen the
+  defenders are shaken, and American attacks gain a column.
+- **The armies**: Pillow's and Quitman's divisions, with the Voltigeurs
+  and the Marines, Worth's division, the storming parties and the siege
+  guns; against Bravo's garrison with the cadets of the Military
+  College, the San Blas battalion, the gate garrisons and their guns,
+  Álvarez's cavalry and Santa Anna's reserve.
+- **Winning**: the castle and both gates is an American victory, the
+  castle and one gate a marginal one (unless the Americans have lost
+  more steps than they destroyed); the castle alone a marginal Mexican
+  victory, and a castle that holds a clear one. Computer against
+  computer the castle always falls, and the Americans force a gate a
+  little more often than not.
 
 ## Playing
 
@@ -371,9 +408,12 @@ A game is a script that defines a handful of names and calls
 `grognard.run()`. See `crossroads` for a complete one; `saltmarsh` for
 one with the optional rules, its own unit types, NATO symbols drawn with
 `@grognard.symbol`, counter pictures, terrain with a hovercraft movement
-class, and its own panel colours; and `pickett` for walls, fences, held
+class, and its own panel colours; `pickett` for walls, fences, held
 units, its own combat table, combat shifts and a turn hook (ammunition
-running short), and its own font.
+running short), and its own font; and `chapultepec` for a fortress
+terrain, cliffs, a walled grove worked out in code, a side that gets
+stronger when an objective falls, and victory decided by ground rather
+than points.
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)
