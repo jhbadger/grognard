@@ -68,6 +68,25 @@ class Screens(unittest.TestCase):
         g.show_charts()
         self.assertIsInstance(g.mode, Charts)
 
+    def test_sides_dialog_done_closes_it(self):
+        g = util.new_game(GD, side=GD.SIDES[0]['id'])
+        first = GD.SIDES[0]['id']
+        was = g.controllers[first]
+
+        def tap_button(value):
+            g.frame()
+            for x0, y0, x1, y1, v in g.mode.rects:
+                if v == value:
+                    g.tap((x0 + x1) // 2, (y0 + y1) // 2)
+                    return
+            self.fail('no %r button' % (value,))
+        g.choose_sides()
+        tap_button(first)
+        self.assertNotEqual(g.controllers[first], was)
+        self.assertIsInstance(g.mode, Dialog)
+        tap_button('_done')
+        self.assertIs(g.mode, g.play)
+
     def test_every_widget(self):
         from grognard.widgets import WIDGETS, Layout
         g = util.new_game(GD, side=GD.SIDES[1]['id'])

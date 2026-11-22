@@ -1417,13 +1417,14 @@ class Game:
                 for s in e.side_ids]
 
         def pick(v):
-            if v:
+            if v in self.controllers:
                 self.controllers[v] = 'human' if \
                     self.controllers[v] == 'ai' else 'ai'
                 self.play.clear()
                 self.choose_sides()
+        # Done needs a value: a tap on a button worth None counts as a miss
         self.push(Dialog('Sides', 'Tap a side to switch it between you and '
-                         'the computer.', opts + [('Done', None)], pick))
+                         'the computer.', opts + [('Done', '_done')], pick))
 
     def show_help(self):
         pages = list(HELP)
