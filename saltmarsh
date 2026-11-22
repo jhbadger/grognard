@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+"""Saltmarsh: a hover raid on the Iver Delta, 2187.  A sample game for the
+Grognard engine, with the engine's optional rules for fast mechanized
+warfare: ranged fire, a second movement phase after combat, disabled
+results, overruns, and no zones of control.
+
+The Highland Directorate's hover raiders come down out of the hills to
+cut the Littoral Compact's convoys on the delta road and burn its
+forward command post at Port Iver.  Play either side against the
+computer, or against a friend at the same screen.
+
+Run it with ./saltmarsh (Python 3 with Tk, nothing else).  The game is
+saved to ~/.saltmarsh.json.  ./saltmarsh --selftest checks the map and
+plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import counters                          # noqa: E402
+
+ID = 'saltmarsh'
+TITLE = 'Saltmarsh'
+SUBTITLE = 'A hover raid on the Iver Delta, 2187'
+
+INTRO = [
+    "2187. The sea took the low country a century ago and gave back the "
+    "Iver Delta: forty kilometres of salt marsh, tidal channels and "
+    "saltpans, crossed by one causeway road. The coastal cities of the "
+    "Littoral Compact run their supply convoys up that road to the front.",
+
+    "The Highland Directorate can't match the Compact's heavy armour. It "
+    "doesn't try. Its raiders ride on air: skimmers that cross water and "
+    "marsh as if they were a parade ground, fire, and are gone before the "
+    "tanks can turn.",
+
+    "Tonight the raiders are coming down out of the western hills. Their "
+    "targets are the convoys on the road and the Compact's forward "
+    "command post at Port Iver. The tanks are slow, the bridges are few, "
+    "and the tide is out.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='hd', name='Directorate', adj='Directorate', colour='#d98c58',
+         ink='#1a1008', posture='attack',
+         about='Destroy convoys, the command post at Port Iver, and '
+               'anything else you can catch, without losing your '
+               'skimmers doing it.'),
+    dict(id='lc', name='Compact', adj='Compact', colour='#86bcc4',
+         ink='#081418', posture='defend',
+         about='Get the convoys up the road and off the north edge, keep '
+               'the command post alive, and make the raiders pay.'),
+]
+ORDER = ['hd', 'lc']
+
+TURNS = 12
+TURN_NAME = lambda t: ('Turn %d' % t, '%02d:00' % ((20 + t) % 24))  # noqa
+
+# The optional rules that make this a different game from Crossroads.
+PHASES = ['move', 'combat', 'move2']    # move, fire, move again ('m2')
+PHASE_NAMES = {'move2': 'Second move'}
+RANGED = True           # every unit fires out to its range
+OVERRUN = True          # moving into an enemy hex fights it there
+ZOC = False             # no zones of control: raiders slip past
+FOG = False             # the delta is flat: everyone sees everything
+STACK = 3
+
+# A table with no retreats and no losses for the attacker: D disables
+# (no moving or firing next turn; a second D destroys), X destroys.
+CRT = {
+    'columns': ['1:3', '1:2', '1:1', '3:2', '2:1', '3:1', '4:1'],
+    'rows': [
+        ['-', '-', '-', '-', 'D', 'D', 'X'],
+        ['-', '-', '-', 'D', 'D', 'X', 'X'],
+        ['-', '-', 'D', 'D', 'X', 'X', 'X'],
+        ['-', 'D', 'D', 'X', 'X', 'X', 'X'],
+        ['D', 'D', 'X', 'X', 'X', 'X', 'X'],
+        ['D', 'X', 'X', 'X', 'X', 'X', 'X'],
+    ],
+}
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Infantry dug in among buildings are hard to dig out."""
+    defenders = [u for u in e.at(target) if u.side != e.side]
+    t = e.board.terrain(target)
+    if defenders and all(u.kind == 'infantry' for u in defenders) and \
+            t.get('pattern') in ('town', 'city'):
+        return [(-1, 'dug in')]
+    return []
+
+
+# --------------------------------------------------------------- the map
+
+# Hover can cross water and marsh but not woods; tracks can't cross
+# water except by the bridges, and wheels keep to the road.
+TERRAIN = {
+    'clear':  dict(name='Flats', colour='#c6b98a', ink='#a89a6a',
+                   edge='#8a7c50',
+                   move={'foot': 1, 'track': 1, 'wheel': 2, 'hover': 1}),
+    'fields': dict(name='Saltpan', colour='#e2dcc8', ink='#c8c0a8',
+                   pattern='snow', edge='#b0a890', open=True,
+                   move={'foot': 1, 'track': 1, 'wheel': 2, 'hover': 1}),
+    'marsh':  dict(name='Salt marsh', colour='#8fa07a', ink='#5a7f8a',
+                   edge='#5a6a48',
+                   move={'foot': 2, 'track': 3, 'wheel': None, 'hover': 1}),
+    'water':  dict(name='Channel', colour='#3e6f8c', ink='#6d9cb8',
+                   edge='#2a4a60', impassable=False, shift=0,
+                   move={'foot': None, 'track': None, 'wheel': None,
+                         'hover': 1}),
+    'woods':  dict(name='Scrub woods', colour='#5f7a4a', ink='#3a5230',
+                   edge='#2c3e22',
+                   move={'foot': 2, 'track': 2, 'wheel': 3, 'hover': None}),
+    'hills':  dict(name='Hills', colour='#a89a72', ink='#7a6c4a',
+                   move={'foot': 2, 'track': 2, 'wheel': 3, 'hover': 2}),
+    'town':   dict(name='Village', colour='#b8a890', ink='#6a5048',
+                   move={'foot': 1, 'track': 1, 'wheel': 1, 'hover': 1}),
+    'city':   dict(name='Port', colour='#a8a49c', ink='#4a5a6a',
+                   move={'foot': 1, 'track': 1, 'wheel': 1, 'hover': 1},
+                   stand=False),
+}
+ROAD_TYPES = {
+    'road':  dict(name='Causeway', colour='#d8d0b8', edge='#3a3428',
+                  cost={'foot': 0.5, 'track': 0.5, 'wheel': 0.5,
+                        'hover': 0.5}),
+    'trail': dict(name='Dyke track', colour='#c8b890', edge='#5a4a34',
+                  cost={'foot': 1, 'track': 1, 'wheel': 1, 'hover': 1}),
+}
+
+MAP = [
+    'hh.f.:~.:.m..~~m:.......',
+    'hhf..m~mmm.mm~~m:.......',
+    'hhff..~.m:m..~~mm...t.ff',
+    'h.ff:.~m:m...~~.m.fff...',
+    '......~.t:m.m~~mmf..f..f',
+    '.h.fmmm~mm..m~~mm.....f.',
+    'hhf...:~mmmm.m~~...f..f.',
+    'h...m.m~...mmm~~..f...f.',
+    'hhftmm.~....m:~~m.Cf.f..',
+    '.hf.mm.~:...mm~~mf....f.',
+    'hh.....~..m...~~m..ff..f',
+    'h....m~.::..mm~~....f.f.',
+    '.h.fm.~.mtmm...~~.....f.',
+    'h.f...~mmm.m:m.~~fftff..',
+    'h.....~.:~~m:mm~~...f.f.',
+    '.h..:.~m~~.m.mm~~f..f..f',
+]
+
+ROADS = [
+    ('road', ['1816', '2014', '1909', '2103', '2101']),   # the convoy road
+    ('road', ['0109', '0409', '1009', '1309', '1909']),   # the causeway
+    ('trail', ['1009', '0905']),
+    ('trail', ['1009', '1013']),
+    ('trail', ['1013', '1414', '2014']),
+]
+
+LABELS = {
+    '0905': 'Reedholt', '1013': 'Saltcote', '1909': 'Port Iver',
+    '2103': 'Gullmouth', '2014': 'Coldbank', '0409': 'Fenwick',
+    '0802': 'Merrow Cut', '1503': 'Iver Water',
+}
+
+OBJECTIVES = {
+    '1909': dict(vp=4, owner='lc', **{'for': 'hd'}),
+    '0905': dict(vp=1, owner='lc', **{'for': 'hd'}),
+    '1013': dict(vp=1, owner='lc', **{'for': 'hd'}),
+    '2014': dict(vp=1, owner='lc', **{'for': 'hd'}),
+}
+
+# Convoys that reach the north edge are through: 4 VP each.
+EXITS = {'lc': dict(hexes=['N'], vp=4, types=['convoy'])}
+
+
+def VICTORY(e):
+    """Victory points: each side scores what it destroys (every unit has
+    its value) and its objectives, and the Compact 4 VP a convoy that
+    gets through."""
+    hd, lc = e.vp('hd'), e.vp('lc')
+    m = hd - lc
+    score = 'Directorate %d VP, Compact %d.' % (hd, lc)
+    if m >= 6:
+        return 'hd', 'Directorate victory. %s The delta burns.' % score
+    if m >= -1:
+        return 'hd', 'Directorate marginal victory. %s' % score
+    if m > -8:
+        return 'lc', 'Compact marginal victory. %s The road held.' % score
+    return 'lc', ('Compact victory. %s The raiders are scattered and the '
+                  'convoys rolled on.' % score)
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'skimmer': dict(name='Skimmer', symbol='hover', move='hover'),
+    'heavy':   dict(name='Heavy tank', symbol='armor', move='track',
+                    armor=True),
+    'missile': dict(name='Missile tank', symbol='missile', move='track'),
+    'mskim':   dict(name='Missile skimmer', symbol='missile_hover',
+                    move='hover'),
+    'mortar':  dict(name='Mortar carrier', symbol='sp_art', move='track'),
+    'command': dict(name='Command post', symbol='hq', move='foot'),
+    'convoy':  dict(name='Convoy', symbol='convoy', move='wheel',
+                    overrun=False),
+}
+
+LC = '#86bcc4'
+HD = '#d98c58'
+
+
+def unit(uid, side, kind, a, r, d, m, vp, m2=0, **kw):
+    """A unit: attack, range, defence, movement (and second movement)."""
+    spec = dict(id=uid, side=side, type=kind, a=a, range=r, d=d, m=m, vp=vp,
+                steps=1, size=kw.pop('size', 'I'))
+    if m2:
+        spec['m2'] = m2
+    spec.update(kw)
+    return spec
+
+
+UNITS = [
+    # ---- the Compact
+    unit('CP', 'lc', 'command', 0, 0, 2, 0, 12, name='CP', hex='1909',
+         long='Delta forward command post', size='X'),
+    unit('H1', 'lc', 'heavy', 6, 3, 5, 3, 3, name='BASTN', hex='1909',
+         long='Bastion heavy tank 1'),
+    unit('H2', 'lc', 'heavy', 6, 3, 5, 3, 3, name='BASTN', hex='1810',
+         long='Bastion heavy tank 2'),
+    unit('M1', 'lc', 'missile', 5, 5, 3, 3, 3, name='HARPN', hex='2008',
+         long='Harpoon missile tank 1'),
+    unit('M2', 'lc', 'missile', 5, 5, 3, 3, 3, name='HARPN', hex='1913',
+         long='Harpoon missile tank 2'),
+    unit('S1', 'lc', 'skimmer', 3, 2, 3, 5, 2, m2=2, name='PETRL',
+         hex='1306', long='Petrel skimmer 1'),
+    unit('S2', 'lc', 'skimmer', 3, 2, 3, 5, 2, m2=2, name='PETRL',
+         hex='1210', long='Petrel skimmer 2'),
+    unit('S3', 'lc', 'skimmer', 3, 2, 3, 5, 2, m2=2, name='PETRL',
+         hex='1112', long='Petrel skimmer 3'),
+    unit('I1', 'lc', 'infantry', 2, 1, 2, 2, 1, name='GUARD', hex='0905',
+         long='Delta Guard squad, Reedholt'),
+    unit('I2', 'lc', 'infantry', 2, 1, 2, 2, 1, name='GUARD', hex='1013',
+         long='Delta Guard squad, Saltcote'),
+    unit('I3', 'lc', 'infantry', 2, 1, 2, 2, 1, name='GUARD', hex='1909',
+         long='Delta Guard squad, Port Iver'),
+    unit('I4', 'lc', 'infantry', 2, 1, 2, 2, 1, name='GUARD', hex='2014',
+         long='Delta Guard squad, Coldbank'),
+    unit('G1', 'lc', 'mortar', 5, 5, 2, 2, 2, name='MORTR', hex='2009',
+         long='Mortar carrier 1'),
+    unit('G2', 'lc', 'mortar', 5, 5, 2, 2, 2, name='MORTR', hex='2112',
+         long='Mortar carrier 2'),
+] + [
+    unit('C%d' % i, 'lc', 'convoy', 0, 0, 3, 4, 4, name='CONVY',
+         arrive=t, at='1816', long='Supply convoy %d' % i)
+    for i, t in enumerate([2, 4, 6, 8], 1)
+] + [
+    # ---- the Directorate: the first wave, then the second
+    unit('R%d' % i, 'hd', 'skimmer', 3, 2, 3, 5, 2, m2=3, name='KESTR',
+         arrive=t, at=h, long='Kestrel skimmer %d' % i)
+    for i, (t, h) in enumerate([(1, '0104'), (1, '0108'), (1, '0112'),
+                                (1, '0108'), (4, '0102'), (4, '0114'),
+                                (4, '0106'), (4, '0110')], 1)
+] + [
+    unit('B1', 'hd', 'skimmer', 5, 2, 4, 4, 3, m2=2, name='CORSR',
+         arrive=1, at='0104', long='Corsair heavy skimmer 1'),
+    unit('B2', 'hd', 'skimmer', 5, 2, 4, 4, 3, m2=2, name='CORSR',
+         arrive=4, at='0114', long='Corsair heavy skimmer 2'),
+    unit('K1', 'hd', 'mskim', 4, 4, 3, 4, 3, m2=2, name='JAVLN',
+         arrive=1, at='0112', long='Javelin missile skimmer 1'),
+    unit('K2', 'hd', 'mskim', 4, 4, 3, 4, 3, m2=2, name='JAVLN',
+         arrive=4, at='0102', long='Javelin missile skimmer 2'),
+    unit('T1', 'hd', 'heavy', 4, 2, 4, 3, 2, name='RAM', arrive=1,
+         at='0109', long='Ram light tank 1'),
+    unit('T2', 'hd', 'heavy', 4, 2, 4, 3, 2, name='RAM', arrive=4,
+         at='0109', long='Ram light tank 2'),
+]
+for _u in UNITS:
+    _u['colour'] = LC if _u['side'] == 'lc' else HD
+
+PANELS = dict(
+    right=['date', 'victory', 'objectives', 'phase', 'minimap', 'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#10181c', panel='#1c2a30', light='#5e8088',
+              dark='#04080a', accent='#ffc86a', button='#3e5a62',
+              button_hi='#7aa0a8', button_lo='#10181c', red='#b84020')
+
+HELP = [
+    "SALTMARSH uses the engine's rules for fast mechanized war. Each "
+    "turn a side moves, fires, then moves again: only skimmers have a "
+    "second move (the number after the + in the unit panel), so they "
+    "can come out of the marsh, shoot and slip back.",
+
+    "FIRE. Every unit shoots out to its range (in brackets on the "
+    "counter: the missile tanks and mortars reach far). Pick a target "
+    "and every unit in range joins in. There's no loss to the attacker. "
+    "D disables the target: it can't move or fire in its next turn, and "
+    "a second D destroys it. X destroys it. Infantry in a village or the "
+    "port are dug in: one column to the left.",
+
+    "TERRAIN. Skimmers cross water and marsh at a hex a point but can't "
+    "enter the scrub woods. Tanks can't cross water at all except by the "
+    "causeway's bridges, and slog through marsh. Convoys keep to the "
+    "road. There are no zones of control: anyone can drive past anyone.",
+
+    "OVERRUNS. In the first move a unit can drive straight into an enemy "
+    "hex and fight there, alone, before its move ends. Clear the hex and "
+    "it takes it; fail and it stops outside. A unit that overruns can't "
+    "fire again that turn.",
+
+    "WINNING. Each unit is worth points to whoever destroys it (the "
+    "command post 12, convoys 4, tanks 3, skimmers 2 or 3, infantry 1), "
+    "the Directorate scores the villages and Port Iver if it takes them, "
+    "and the Compact scores 4 for each convoy that gets off the north "
+    "edge. The Directorate wins if it finishes no more than 1 VP "
+    "behind (6 ahead for a clear victory); the Compact needs to be 8 "
+    "ahead for a clear one.",
+]
+
+ICON = 'saltmarsh'
+
+
+# ------------------------------------------------- symbols and the icon
+
+@grognard.symbol('hover')
+def s_hover(p, x, y, w, h, c):
+    """A skimmer: an oval hull on a skirt of air."""
+    p.oval(x + (w - 1) / 2, y + (h - 1) / 2 - 1, (w - 1) / 2 - 2,
+           max(1, (h - 1) / 2 - 2), c)
+    for k in range(3):
+        xx = x + 2 + k * (w - 4) // 3
+        p.line(xx, y + h - 2, xx + max(1, (w - 4) // 6), y + h - 2, c)
+
+
+@grognard.symbol('missile')
+def s_missile(p, x, y, w, h, c):
+    """A missile tank: the armour oval with a missile in it."""
+    counters.SYMBOLS['armor'](p, x, y, w, h, c)
+    cx = x + w // 2
+    p.line(cx - w // 4, y + h // 2, cx + w // 4, y + h // 2, c)
+    p.set(cx + w // 4 - 1, y + h // 2 - 1, c)
+    p.set(cx + w // 4 - 1, y + h // 2 + 1, c)
+
+
+@grognard.symbol('missile_hover')
+def s_missile_hover(p, x, y, w, h, c):
+    s_hover(p, x, y, w, h, c)
+    cx = x + w // 2
+    p.line(cx - w // 5, y + h // 2 - 1, cx + w // 5, y + h // 2 - 1, c)
+
+
+@grognard.symbol('convoy')
+def s_convoy(p, x, y, w, h, c):
+    """Lorries: a load bed on wheels."""
+    p.frame(x + 2, y + 2, w - 4, h // 2, c)
+    for k in (0.3, 0.7):
+        p.oval(x + w * k, y + h - 3, 1, 1, c, fill=c)
+
+
+counters.PICTURES['hover'] = [
+    '...........', '....###....', '..#######..', '.#########.',
+    '###########', '.#+#+#+#+#.', '...........', '...........']
+counters.PICTURES['missile_hover'] = [
+    '...........', '..#####>...', '..#######..', '.#########.',
+    '###########', '.#+#+#+#+#.', '...........', '...........']
+counters.PICTURES['missile'] = [
+    '...........', '..#####>...', '...######..', '#########..',
+    '.#########.', '#.#.#.#.#..', '.#.#.#.#...', '...........']
+counters.PICTURES['convoy'] = [
+    '...........', '.######.##.', '.######.###', '.##########',
+    '.##########', '..#....#.#.', '...........', '...........']
+
+
+@grognard.icon('saltmarsh')
+def draw_icon(p, n):
+    """A skimmer over a tidal channel at dusk."""
+    p.fill('#d98c58')
+    p.rect(0, n * 0.55, n, n * 0.45, '#3e6f8c')
+    for k in range(4):
+        y = n * (0.65 + k * 0.08)
+        p.line(n * 0.1 + k * n * 0.07, y, n * 0.35 + k * n * 0.07, y,
+               '#6d9cb8', max(1, n // 40))
+    p.disc(n * 0.5, n * 0.42, n * 0.3, '#1a1008')
+    p.rect(n * 0.15, n * 0.42, n * 0.7, n * 0.12, '#d98c58')
+    p.rect(n * 0.18, n * 0.38, n * 0.64, n * 0.08, '#1a1008')
+    p.line(n * 0.5, n * 0.2, n * 0.85, n * 0.12, '#1a1008', max(2, n // 20))
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

@@ -342,7 +342,7 @@ class PlayMode(Mode):
         g = self.g
         self.sel = [u.id for u in units]
         self.reach = None
-        if units and self.human() and g.e.phase == 'move' and \
+        if units and self.human() and g.e.moving and \
                 all(u.side == g.e.side for u in units):
             self.reach = self.group_reach(units)
         g.dirty = True
@@ -387,18 +387,18 @@ class PlayMode(Mode):
         if self.pending:
             return [('Advance', 'advance', bool(self.chosen)),
                     ('Stay', 'stay')]
-        if e.phase == 'move':
+        if e.moving:
             u = self.selected_unit()
             many = u is not None and len(e.at(u.hex, u.side)) > 1
             return [('Next unit', 'next'), ('Undo', 'undo', bool(self.undo)),
                     ('Whole stack', 'stack', many and len(self.sel) < 2),
-                    ('End move', 'end')]
+                    ('End turn' if e.last_phase() else 'End move', 'end')]
         if self.target is not None:
             o = self.planned_odds()
             return [('Attack!', 'attack', o is not None and o['final'] >= 0),
                     ('Cancel', 'cancel')]
         return [('Next target', 'nexttarget', bool(e.targets())),
-                ('End combat', 'end')]
+                ('End turn' if e.last_phase() else 'End combat', 'end')]
 
     def order(self, v):
         g = self.g
@@ -438,7 +438,7 @@ class PlayMode(Mode):
     def next_unit(self):
         g = self.g
         e = g.e
-        if e.phase == 'move':
+        if e.moving:
             units = [u for u in e.alive(e.side) if u.mp > 0 and
                      not u.moved]
         else:
@@ -446,7 +446,7 @@ class PlayMode(Mode):
         units = sorted({u.id: u for u in units}.values(),
                        key=lambda u: (u.hex[0], u.hex[1], u.id))
         if not units:
-            g.flash('Every unit has moved.' if e.phase == 'move' else
+            g.flash('Every unit has moved.' if e.moving else
                     'No attacks left to make.')
             return
         cur = self.sel[0] if self.sel else None
@@ -476,12 +476,24 @@ class PlayMode(Mode):
                           for u in units],
                    control=dict(e.control), msgs=len(e.messages))
         moved = []
+        fight = None
         for u in units:
+            enemy = h in e.enemy_hexes(u.side)
+            e.last_overrun = None
             if e.move(u, h) is None:
                 break
             moved.append(u)
+            if enemy:                   # an overrun: one unit at a time
+                fight = e.last_overrun
+                break
         if not moved:
             g.sound.play('nope')
+            return
+        if fight:
+            self.undo = []
+            g.after_engine()
+            g.show_result(fight, mine=True)
+            self.select([u for u in moved if u.alive])
             return
         self.undo.append(rec)
         g.after_engine()
@@ -581,7 +593,7 @@ class PlayMode(Mode):
             elif h == self.pending['target'] and self.chosen:
                 self.do_advance()
             return
-        if self.human() and e.phase == 'move':
+        if self.human() and e.moving:
             if self.sel and self.reach and h in self.reach:
                 self.move_to(h)
                 return
@@ -679,7 +691,7 @@ class PlayMode(Mode):
             elif k == 's':
                 self.pending = None
         elif k == 'n':
-            self.order('next' if e.phase == 'move' else 'nexttarget')
+            self.order('next' if e.moving else 'nexttarget')
         elif k == 'u':
             self.do_undo()
         elif k == 'tab':
@@ -692,7 +704,7 @@ class PlayMode(Mode):
             self.attack()
         elif k in ('e', 'enter', 'space'):
             g.end_phase_request()
-        elif k == 'k' and e.phase == 'move':
+        elif k == 'k' and e.moving:
             self.order('stack')
         g.dirty = True
 
@@ -1057,7 +1069,8 @@ class Game:
             elif kind == 'phase':
                 self.play.undo = []
                 self.play.clear()
-                self.flash('%s: combat' % e.side_name(e.side))
+                self.flash('%s: %s' % (e.side_name(e.side),
+                                       e.phase_name().lower()))
             elif kind == 'capture':
                 self.sound.play('select')
             elif kind == 'arrive':
@@ -1102,7 +1115,8 @@ class Game:
         """Tell the player how a fight went."""
         e = self.e
         o = res['odds']
-        lines = ['%s at %s: %s.' % ('Barrage' if o.get('bombard') else
+        lines = ['%s at %s: %s.' % ('Overrun' if res.get('overrun') else
+                                   'Barrage' if o.get('bombard') else
                                    'Attack', e.place(res['target']),
                                    o['label'])]
         if res.get('roll'):
@@ -1110,6 +1124,9 @@ class Game:
                                                    res['result']['text']))
         lines.append('Attacker loses %d step%s, defender %d.' % (
             res['alost'], '' if res['alost'] == 1 else 's', res['dlost']))
+        if res.get('disabled'):
+            lines.append('Disabled: %s.' % ', '.join(
+                e.units[i].name for i in res['disabled']))
         if res.get('stood'):
             lines.append('The defenders stand fast instead of retreating.')
         if mine and self.play.pending:
@@ -1215,7 +1232,7 @@ class Game:
             ('Orders', [('End phase   E', self.end_phase_request
                          if human else None),
                         ('Next unit   N', (lambda: p.order('next'))
-                         if human and e.phase == 'move' else None),
+                         if human and e.moving else None),
                         ('Next target   N', (lambda: p.order('nexttarget'))
                          if human and e.phase == 'combat' else None),
                         ('Undo move   U', p.do_undo if p.undo else None),
@@ -1438,6 +1455,10 @@ class Game:
             for hx in list(p.reach) + ([u.hex] if u else []):
                 if hx in shown:
                     v.restore(s, hx)
+            if u:
+                for hx in p.reach:
+                    if hx in shown and hx in e.enemy_hexes(u.side):
+                        v.outline(s, hx, rgb('#ff3010'), 2)
         if p.human() and e.phase == 'combat' and not p.pending:
             for h in e.targets():
                 if h != p.target:
@@ -1467,7 +1488,7 @@ class Game:
         dims = set()
         if p.human():
             for u in e.alive(e.side):
-                if (e.phase == 'move' and (u.mp <= 0)) or \
+                if (e.moving and (u.mp <= 0)) or \
                         (e.phase == 'combat' and (u.attacked or u.fired)):
                     dims.add(u.id)
         # ghosts: enemy units last seen here
@@ -1632,10 +1653,8 @@ class Charts(Mode):
                 s.text(tx + 30 + i * cw + cw // 2, yy, res['text'], col,
                        align='center')
         yy = ty + 16 + len(e.table) * 11
-        key = ('A1, A2: attacker loses steps.  D1, D2: defender does.  '
-               'R: defender retreats.  EX: both lose one.  DE, AE: '
-               'eliminated.  Odds round down; terrain and other shifts '
-               'move the column.')
+        key = ' '.join(crt_key(e)) + '  Odds round down; terrain and ' \
+            'other shifts move the column.'
         for ln in font.wrap(key, w - 20):
             s.text(tx, yy, ln, ch(g, 'dim'))
             yy += 10
@@ -1690,6 +1709,29 @@ class Charts(Mode):
 
     def tap(self, g, x, y):
         g.pop(self)
+
+
+def crt_key(e):
+    """What the results on the combat table mean, for those it has."""
+    rs = [r for row in e.table for r in row]
+    out = []
+    if any(r['a'] for r in rs):
+        out.append('A1, A2: the attacker loses steps.')
+    if any(r['d'] for r in rs):
+        out.append('D1, D2: the defender does.')
+    if any(r['retreat'] for r in rs):
+        out.append('R: the defender retreats.')
+    if any(r['text'] == 'EX' for r in rs):
+        out.append('EX: both lose one.')
+    if any(r.get('disable') for r in rs):
+        out.append("D: disabled; it can't move or fire in its next turn, "
+                   "and a second D destroys it.")
+    if any(r['de'] for r in rs):
+        out.append('%s: destroyed.' % '/'.join(sorted(
+            {r['text'] for r in rs if r['de']})))
+    if any(r['ae'] for r in rs):
+        out.append('AE: the attackers are destroyed.')
+    return out
 
 
 HELP = [

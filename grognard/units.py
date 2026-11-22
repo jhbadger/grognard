@@ -9,7 +9,11 @@ A game lists its units in UNITS, each a dict:
     type      a key of UNIT_TYPES (infantry, armor, artillery...)
     size      'XX', 'X', 'III', 'II' or 'I' (drawn over the symbol)
     a, d, m   attack, defence and movement allowance
-    range     for artillery: how far away it can support an attack
+    range     for artillery: how far away it can support an attack (and
+              with RANGED = True, how far any unit can fire)
+    m2        movement in the second movement phase (PHASES with 'move2')
+    vp        what destroying it is worth to the enemy
+    overrun   False if it can't overrun (with OVERRUN = True)
     steps     how many losses it can take (2 is usual: full, then reduced)
     ra, rd    attack and defence with one step left (default: halved)
     hex       where it starts ('1210'), or
@@ -66,7 +70,8 @@ class Unit:
     """One counter, and what it has done this turn."""
 
     SAVED = ('id', 'steps', 'hex', 'status', 'mp', 'moved', 'attacked',
-             'fired', 'dfired', 'oos', 'seen', 'arrive', 'started')
+             'fired', 'dfired', 'disabled', 'recovering', 'oos', 'seen',
+             'arrive', 'started')
 
     def __init__(self, spec, types):
         self.spec = spec
@@ -101,6 +106,8 @@ class Unit:
         self.attacked = False       # made or joined an attack this turn
         self.fired = False          # artillery: supported this turn
         self.dfired = False         # artillery: fired in defence
+        self.disabled = False       # a 'D' result: out of action a turn
+        self.recovering = False     # sitting out its turn, disabled
         self.oos = False            # out of supply
         self.seen = False           # the enemy has seen it (fog of war)
 
@@ -145,6 +152,11 @@ class Unit:
         return self.spec.get('spot', self.type.get('spot', 2))
 
     @property
+    def m2(self):
+        """Movement in a second movement phase."""
+        return self.spec.get('m2', self.type.get('m2', 0))
+
+    @property
     def reduced(self):
         return self.steps < self.max_steps
 
@@ -172,8 +184,8 @@ class Unit:
 
     def values(self):
         """What the counter's bottom line says: attack-defence-movement
-        (with the range in brackets for artillery)."""
-        if self.supports:
+        (with the range in brackets, for units that fire from afar)."""
+        if self.supports or self.range > 1:
             return '%d(%d)-%d-%d' % (self.attack, self.range, self.defense,
                                      self.max_mp)
         return '%d-%d-%d' % (self.attack, self.defense, self.max_mp)

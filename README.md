@@ -17,8 +17,16 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
+There are two games so far: a Second World War battle, and a raid in a
+far-future war of hovercraft and missile tanks that uses the engine's
+optional rules for fast mechanized combat.
+
 ```bash
 ./crossroads
+```
+
+```bash
+./saltmarsh
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -53,6 +61,44 @@ Armored Division breaks through from the south.
   the western edge on the road to the Meuse; the Americans for German
   steps destroyed, Assenois, and holding Bastogne. The Germans must
   finish 11 VP ahead to win.
+
+## Saltmarsh: a hover raid on the Iver Delta, 2187
+
+The second game, and an original one. The Highland Directorate's hover
+raiders come down out of the western hills onto the Iver Delta, a
+drowned plain of salt marsh, tidal channels and saltpans crossed by one
+causeway, to cut the Littoral Compact's convoys on the road north and
+destroy its forward command post at Port Iver.
+
+- **Twelve turns**, an hour each, through one night. The Directorate
+  moves first.
+- **Move, fire, move again**: each turn has a second movement phase after
+  combat, and only skimmers (hovercraft) have a second move, so they can
+  dash out of the marsh, shoot and slip back.
+- **Fire at range**: every unit shoots out to its range (in brackets on
+  the counter); missile tanks and mortars reach far. Results disable (no
+  moving or firing next turn; a second disable destroys) or destroy;
+  attackers never take losses.
+- **Overruns**: in the first move a unit can drive into an enemy hex and
+  fight there and then.
+- **Terrain that favours the hovercraft**: skimmers cross water and
+  marsh as easily as flats but can't enter the scrub woods; tanks can
+  cross water only at the causeway's bridges; convoys keep to the road.
+  There are no zones of control.
+- **The Compact**: the command post, Bastion heavy tanks, Harpoon missile
+  tanks, Petrel skimmers, mortar carriers, Delta Guard infantry dug into
+  the villages, and four convoys coming up the road from the south.
+- **The Directorate**: Kestrel skimmers, Corsair heavy skimmers, Javelin
+  missile skimmers and Ram light tanks, in two waves.
+- **Winning**: every unit is worth points to whoever destroys it (the
+  command post 12, convoys 4), the Directorate scores the villages and
+  Port Iver if it takes them, and the Compact scores 4 for each convoy
+  off the north edge. The Directorate wins if it ends no more than 1 VP
+  behind. Computer against computer it comes out about even.
+
+The setting, the units, their numbers and the map are all new; the
+mechanics are the genre's common stock, built into the engine so any
+game can use them.
 
 ## Playing
 
@@ -201,6 +247,23 @@ The rules are the classic ones, and each part can be changed by a game:
   own (`spot`, 3 for reconnaissance), or 1 where they're in terrain that
   blocks sight (`los: False`), or in weather with its own `spot`; units
   that fought are seen for the rest of the turn.
+- **Optional rules for fast mechanized war** (Saltmarsh uses them all):
+  - `PHASES = ['move', 'combat', 'move2']` adds a second movement phase
+    after combat, for units with a second movement allowance `m2`;
+    `PHASE_NAMES` renames phases.
+  - `RANGED = True`: every unit attacks anything within its `range` (at
+    least the next hex), not only its neighbours.
+  - `OVERRUN = True`: in the first movement phase a unit can move into
+    an enemy hex and attack it there, alone; if the hex is cleared it
+    moves in, if not it stops next to it. Either way its move and its
+    attack for the turn are spent. A type or unit with `overrun: False`
+    can't.
+  - `ZOC = False`: no zones of control.
+  - Combat results `D` (disabled: no moving or attacking in the unit's
+    next turn; disabled again, it's destroyed) and `X` (destroyed) for a
+    game's own `CRT`.
+  - A unit's `vp` is what destroying it is worth to the enemy, and
+    `EXITS` can name the `types` that may leave (convoys).
 - **Victory**: objectives held (each with `vp`, `owner` at the start, and
   `for`, the side it counts for), `STEP_VP` for each enemy step
   destroyed, `EXITS` for units leaving by an edge, and `SUDDEN_DEATH`
@@ -226,6 +289,13 @@ every attack it could make (from the combat table's outcomes, weighing
 steps lost on each side, retreats and ground taken), makes the best,
 looks again, and stops when nothing is worth it.
 
+With the fast rules it also weighs overruns among the places a unit can
+move, keeps in range of targets rather than next to them, and after the
+fight (the second move) thinks first of getting clear. Attacking sides
+hunt enemy units worth 4 VP or more (Saltmarsh's convoys), and units
+whose job is to leave the map (`EXITS` with `types`) head steadily for
+the edge.
+
 A side's `posture` ('attack' or 'defend') sets the balance; a unit can
 have its own (the 4th Armored attacks while the rest of the Americans
 defend), or one that starts on a given turn: `posture=('attack', 9)`.
@@ -242,7 +312,10 @@ of a scenario's balance (Crossroads comes out about even).
 ### Making a game
 
 A game is a script that defines a handful of names and calls
-`grognard.run()`. See `crossroads` for a complete one.
+`grognard.run()`. See `crossroads` for a complete one, and `saltmarsh`
+for one with the optional rules, its own unit types, NATO symbols drawn
+with `@grognard.symbol`, counter pictures, terrain with a hovercraft
+movement class, and its own panel colours.
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)

@@ -43,6 +43,9 @@ LEGEND = {'.': 'clear', ',': 'clear', ':': 'fields', 'f': 'woods',
 #   DR       the defenders retreat a hex        D1R     both
 #   EX       each side loses a step             DE, AE  eliminated
 #   -        nothing happens
+# A game's own table may also use D alone (disabled: the defenders can't
+# move or fire in their next turn; disabled again, they're destroyed) and
+# X (destroyed: the same as DE).
 CRT = {
     'columns': ['1:2', '1:1', '1.5:1', '2:1', '3:1', '4:1', '5:1', '6:1'],
     'rows': [
@@ -66,6 +69,13 @@ WEATHER = {
 }
 
 
+# Phases a game can list in PHASES.  'move2' is a second movement phase
+# after combat, for units with a second movement allowance ('m2').
+MOVE_PHASES = ('move', 'move2')
+PHASE_NAMES = {'move': 'Movement', 'combat': 'Combat',
+               'move2': 'Second move'}
+
+
 def ratio(col):
     """'3:2' or '1.5:1' -> 1.5."""
     a, b = col.split(':')
@@ -74,10 +84,17 @@ def ratio(col):
 
 def parse_result(s):
     """A combat result ('D1R', 'EX', 'AE'...) as a dict: a and d (steps
-    lost), retreat (hexes), ae and de (eliminated)."""
+    lost), retreat (hexes), ae and de (eliminated), disable."""
     s = s.strip().upper()
-    r = dict(text=s, a=0, d=0, retreat=0, ae=False, de=False)
+    r = dict(text=s, a=0, d=0, retreat=0, ae=False, de=False,
+             disable=False)
     if s in ('-', 'NE', ''):
+        return r
+    if s == 'D':
+        r['disable'] = True
+        return r
+    if s == 'X':
+        r['de'] = True
         return r
     if s == 'AE':
         r['ae'] = True
@@ -224,6 +241,7 @@ class Reach(dict):
     """Where a unit can go: {hex: (cost, parent)}, and .parent, the
     whole search tree (paths can pass through hexes it can't stop in)."""
     parent = None
+    overruns = frozenset()
 
 
 class Engine:
@@ -250,6 +268,12 @@ class Engine:
         self.stack_limit = getattr(gdef, 'STACK', 3)
         self.turns = gdef.TURNS
         self.fog = getattr(gdef, 'FOG', True)
+        # optional rules
+        self.phases = list(getattr(gdef, 'PHASES', ['move', 'combat']))
+        self.ranged = getattr(gdef, 'RANGED', False)
+        self.use_zoc = getattr(gdef, 'ZOC', True)
+        self.overruns = getattr(gdef, 'OVERRUN', False)
+        self.last_overrun = None
         self.rng = random.Random(seed)
         self.new()
 
@@ -329,6 +353,19 @@ class Engine:
     def side(self):
         return self.order[self.active]
 
+    @property
+    def moving(self):
+        """Whether this is a movement phase (the first or the second)."""
+        return self.phase in MOVE_PHASES
+
+    def phase_name(self, phase=None):
+        names = dict(PHASE_NAMES)
+        names.update(getattr(self.d, 'PHASE_NAMES', {}))
+        return names.get(phase or self.phase, phase or self.phase)
+
+    def last_phase(self):
+        return self.phase == self.phases[-1]
+
     def side_name(self, s, key='name'):
         return self.sides[s].get(key) or self.sides[s]['name']
 
@@ -381,7 +418,11 @@ class Engine:
             side in getattr(self.d, 'AIR', ())
 
     def zoc(self, side):
-        """Hexes in the zone of control of side's units."""
+        """Hexes in the zone of control of side's units (none if the game
+        plays without zones of control, ZOC = False)."""
+        if not self.use_zoc:
+            return set()
+
         def build():
             z = set()
             for u in self.alive(side):
@@ -455,12 +496,16 @@ class Engine:
         start = unit.hex
         mp = unit.mp if mp is None else mp
         if mp <= 0 or not unit.alive:
-            return {}
+            out = Reach()
+            out.parent = {}
+            return out
         # friendly units cancel enemy zones of control where they stand
         friends = {u.hex for u in self.alive(unit.side) if u is not unit}
         ez = self.enemy_zoc(unit.side) - friends
         eh = self.enemy_hexes(unit.side)
         fresh = not unit.moved and mp >= unit.max_mp
+        may_overrun = self.can_overrun(unit)
+        over = {}                   # enemy hexes it could overrun
         dist = {start: 0}
         parent = {start: None}
         heap = [(0, start)]
@@ -471,7 +516,14 @@ class Engine:
             if h != start and h in ez:
                 continue                    # entering a ZOC ends the move
             for n in neighbours(h):
-                if n in eh or not self.board.on_map(n):
+                if not self.board.on_map(n):
+                    continue
+                if n in eh:
+                    if may_overrun:
+                        c = self.enter_cost(unit, h, n)
+                        if c is not None and cost + c <= mp + 1e-9 and \
+                                cost + c < over.get(n, (1e9,))[0]:
+                            over[n] = (cost + c, h)
                     continue
                 if h in ez and n in ez:
                     continue                # no ZOC to ZOC
@@ -490,11 +542,24 @@ class Engine:
                     parent[n] = h
                     heapq.heappush(heap, (nc, n))
         out = Reach()
-        out.parent = parent
+        out.parent = dict(parent)
         for h, c in dist.items():
             if h != start and self.room(h, unit):
                 out[h] = (c, parent[h])
+        out.overruns = set(over)
+        for h, (c, p) in over.items():
+            out[h] = (c, p)
+            out.parent[h] = p
         return out
+
+    def can_overrun(self, unit):
+        """Whether unit may drive into an enemy hex in this movement phase
+        and fight there (OVERRUN = True, in the first movement phase, for
+        units that can attack and haven't, unless their type says
+        'overrun': False)."""
+        return self.overruns and self.phase == 'move' and \
+            unit.attack > 0 and not unit.attacked and not unit.disabled and \
+            unit.spec.get('overrun', unit.type.get('overrun', True))
 
     def path(self, unit, dest, reach=None):
         if reach is None:
@@ -515,6 +580,8 @@ class Engine:
         path = self.path(unit, dest, reach)
         if unit.started is None:
             unit.started = unit.hex
+        if dest in reach.overruns:
+            return self.overrun(unit, path, reach)
         unit.hex = dest
         unit.mp = max(0, unit.mp - reach[dest][0])
         unit.moved = True
@@ -525,6 +592,32 @@ class Engine:
         for h in path[1:]:
             self.take(h, unit.side)
         self.events.append(('move', unit.id, path))
+        return path
+
+    def overrun(self, unit, path, reach):
+        """unit drives up to the enemy in path's last hex and fights them
+        there: the odds of its attack alone, terrain and all.  If the hex
+        is cleared it moves in; either way its move is over.  The fight's
+        result is in self.last_overrun."""
+        target = path[-1]
+        before = path[-2]
+        unit.hex = before
+        unit.mp = 0
+        unit.moved = True
+        self.changed()
+        for h in path[1:-1]:
+            self.take(h, unit.side)
+        if len(path) > 2:
+            self.events.append(('move', unit.id, path[:-1]))
+        self.say('%s overruns %s.' % (unit.long, self.place(target)))
+        res = self.resolve(target, [unit], [])
+        res['overrun'] = True
+        if res['vacated'] and unit.alive:
+            unit.hex = target
+            self.changed()
+            self.take(target, unit.side)
+            self.events.append(('move', unit.id, [before, target]))
+        self.last_overrun = res
         return path
 
     def take(self, h, side):
@@ -582,7 +675,7 @@ class Engine:
 
     def begin_player_turn(self):
         side = self.side
-        self.phase = 'move'
+        self.phase = self.phases[0]
         self.hit = set()
         self.arrivals(side)
         hook = getattr(self.d, 'ON_TURN', None)
@@ -596,6 +689,10 @@ class Engine:
             u.mp = u.max_mp / 2 if u.oos else u.max_mp
             u.moved = u.attacked = u.fired = False
             u.started = None
+            if u.disabled:              # sits this turn out
+                u.mp = 0
+                u.attacked = True
+                u.recovering = True
         for u in self.alive():
             u.dfired = False
             if u.side != side:
@@ -637,9 +734,14 @@ class Engine:
         if not cfg:
             return
         hexes = set(self.board.hex_list(cfg.get('hexes')))
+        types = cfg.get('types')
         for u in self.alive(side):
-            if u.hex in hexes and not u.supports and u.attack_full > 0 and \
-                    not u.type.get('no_exit'):
+            if types:
+                ok = u.kind in types
+            else:
+                ok = not u.supports and u.attack_full > 0 and \
+                    not u.type.get('no_exit')
+            if u.hex in hexes and ok:
                 vp = cfg.get('vp', 1) * u.steps
                 self.bonus[side] += vp
                 self.exited[side] += u.steps
@@ -652,12 +754,17 @@ class Engine:
         """The active side is done with this phase."""
         if self.over:
             return
-        if self.phase == 'move':
+        if self.moving:
             self.exits(self.side)
-            self.phase = 'combat'
-            self.hit = set()
-            self.events.append(('phase', 'combat'))
+        i = self.phases.index(self.phase)
+        if i + 1 < len(self.phases):
+            self.phase = self.phases[i + 1]
+            self.start_phase()
+            self.events.append(('phase', self.phase))
             return
+        for u in self.alive(self.side):
+            if u.recovering:            # back in action
+                u.disabled = u.recovering = False
         self.active += 1
         if self.active >= len(self.order):
             self.active = 0
@@ -665,6 +772,18 @@ class Engine:
             if self.over:
                 return
         self.begin_player_turn()
+
+    def start_phase(self):
+        side = self.side
+        if self.phase == 'combat':
+            self.hit = set()
+        elif self.phase == 'move2':
+            for u in self.alive(side):
+                m2 = u.spec.get('m2', u.type.get('m2', 0))
+                u.mp = 0 if u.disabled else (m2 / 2 if u.oos else m2)
+                u.moved = False
+                u.started = None
+            self.changed()
 
     def end_turn(self):
         hook = getattr(self.d, 'ON_END_TURN', None)
@@ -692,9 +811,27 @@ class Engine:
 
     def can_attack(self, u):
         return u.alive and u.side == self.side and not u.attacked and \
-            not u.supports and u.attack > 0
+            not u.supports and u.attack > 0 and not u.disabled
 
     def attackers_for(self, target):
+        """The active side's units that could attack target: those next to
+        it, or with RANGED = True, those within their range (at least
+        one hex)."""
+        if self.ranged:
+            out = []
+            for u in self.alive(self.side):
+                if not self.can_attack(u):
+                    continue
+                d = distance(u.hex, target)
+                if d > max(1, u.range):
+                    continue
+                if d == 1:
+                    riv = self.board.river(u.hex, target)
+                    if riv and riv['cost'].get(u.move_class, 1) is None \
+                            and not riv.get('halve'):
+                        continue
+                out.append(u)
+            return out
         out = []
         for n in neighbours(target):
             for u in self.at(n, self.side):
@@ -828,6 +965,16 @@ class Engine:
                    retreats=[], alost=0, dlost=0)
         dl = sum(u.steps for u in defenders) if res['de'] else res['d']
         out['dlost'] = self.take_losses(defenders, dl)
+        out['disabled'] = []
+        if res.get('disable'):
+            for u in [u for u in defenders if u.alive]:
+                if u.disabled:          # twice is too much
+                    out['dlost'] += self.take_losses([u], u.steps)
+                else:
+                    u.disabled = True
+                    u.recovering = False
+                    out['disabled'].append(u.id)
+                    self.say('%s is disabled.' % u.long)
         if attackers:
             al = sum(u.steps for u in attackers) if res['ae'] else res['a']
             out['alost'] = self.take_losses(attackers, al)
@@ -886,6 +1033,9 @@ class Engine:
 
     def eliminate(self, u):
         u.status = 'dead'
+        if u.spec.get('vp'):            # what it's worth to the enemy
+            for e in self.enemies(u.side):
+                self.bonus[e] += u.spec['vp']
         self.events.append(('die', u.id, u.hex))
         self.say('%s is destroyed.' % u.long)
         u.hex = None

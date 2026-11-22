@@ -136,15 +136,16 @@ class Playing(unittest.TestCase):
         e = g.e
         self.assertEqual(e.side, self.side)
         movers = [u for u in e.alive(self.side) if u.attack > 0 and
-                  not u.supports]
-        u = movers[0]
+                  not u.supports and u.mp > 0]
+        u = g.play.stack_at(movers[0].hex)[0]     # the top of its stack
         self.tap_hex(u.hex)
         self.assertEqual(g.play.sel, [u.id])
         reach = g.play.reach
         self.assertTrue(reach)
         # somewhere it can go that meets nobody: then undo it
         start = u.hex
-        quiet = [h for h in reach if h not in e.enemy_zoc(u.side)]
+        quiet = [h for h in reach if h not in e.enemy_zoc(u.side) and
+                 h not in e.enemy_hexes(u.side)]
         if quiet:
             before = set(e.visible(self.side))
             self.tap_hex(quiet[0])
@@ -166,7 +167,10 @@ class Playing(unittest.TestCase):
                 while isinstance(g.mode, Dialog):
                     g.key('enter')
                 g.key('s')          # stay, if there was a choice
-        g.key('e')
+        while e.side == self.side and not e.over:   # any later phases
+            g.key('e')
+            while isinstance(g.mode, Dialog):
+                g.key('enter')
         self.assertNotEqual(e.side, self.side)
         # the computer takes its turn
         for _ in range(3000):

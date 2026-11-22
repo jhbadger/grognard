@@ -284,5 +284,109 @@ class Rules(unittest.TestCase):
         self.assertEqual(act[1], r2.hex)
 
 
+class FastRules(unittest.TestCase):
+    """The optional rules: ranged fire, a second move, disabled results,
+    overruns, no zones of control, exits by type and unit values."""
+
+    def setUp(self):
+        d = util.tiny(
+            RANGED=True, OVERRUN=True, ZOC=False,
+            PHASES=['move', 'combat', 'move2'],
+            CRT={'columns': ['1:1', '2:1'],
+                 'rows': [['D', 'X']] * 6},
+            EXITS={'r': dict(hexes=['E'], vp=5, types=['truck'])},
+            UNIT_TYPES={'truck': dict(name='Truck', move='wheel')})
+        d.UNITS = [dict(u) for u in d.UNITS]
+        d.UNITS[0].update(range=3, m2=2, vp=2)          # b1 shoots far
+        d.UNITS[3].update(vp=3)                         # r1 is worth 3
+        d.UNITS.append(dict(id='rt', side='r', type='truck', a=0, d=1, m=4,
+                            steps=1,
+                            hex='0706'))
+        self.e = Engine(d, seed=1)
+
+    def test_ranged_fire(self):
+        e = self.e
+        e.end_phase()
+        b1, r1 = e.units['b1'], e.units['r1']
+        b1.hex = parse('0403')                  # three hexes from r1
+        e.changed()
+        self.assertEqual(distance(b1.hex, r1.hex), 3)
+        self.assertIn(b1, e.attackers_for(r1.hex))
+        self.assertNotIn(e.units['b2'], e.attackers_for(r1.hex))
+
+    def test_disabled_then_destroyed(self):
+        e = self.e
+        e.end_phase()
+        b1, r1 = e.units['b1'], e.units['r1']
+        b1.hex = parse('0701')                  # two hexes off: 1:1
+        e.changed()
+        res = e.resolve(r1.hex, [b1], [], roll=1)
+        self.assertEqual(res['result']['text'], 'D')
+        self.assertTrue(r1.disabled and r1.alive)
+        self.assertEqual(res['alost'], 0)
+        # red's turn: r1 can't move or fire, then it recovers
+        e.end_phase()               # blue: combat -> second move
+        self.assertEqual(e.phase, 'move2')
+        self.assertEqual(b1.mp, 2)
+        self.assertEqual(e.units['b2'].mp, 0)   # no second move for it
+        e.end_phase()
+        self.assertEqual(e.side, 'r')
+        self.assertEqual(r1.mp, 0)
+        self.assertFalse(e.can_attack(r1))
+        for _ in range(3):
+            e.end_phase()
+        self.assertEqual(e.side, 'b')
+        self.assertFalse(r1.disabled)
+        # disabled twice is destroyed, and its value goes to blue
+        r1.disabled = True
+        b1.attacked = False
+        e.end_phase()
+        bonus = e.bonus['b']
+        e.resolve(r1.hex, [b1], [], roll=1)
+        self.assertFalse(r1.alive)
+        self.assertEqual(e.bonus['b'], bonus + 3)
+
+    def test_no_zones_of_control(self):
+        e = self.e
+        self.assertEqual(e.enemy_zoc('b'), set())
+
+    def test_overrun(self):
+        e = self.e
+        b2, r1 = e.units['b2'], e.units['r1']
+        b2.hex = parse('0702')                  # next to r1, on clear
+        e.changed()
+        r = e.reachable(b2)
+        self.assertIn(r1.hex, r.overruns)
+        e.move(b2, r1.hex)
+        res = e.last_overrun
+        self.assertTrue(res['overrun'])
+        self.assertTrue(b2.attacked)
+        self.assertEqual(b2.mp, 0)
+        if res['vacated']:
+            self.assertEqual(b2.hex, parse('0703'))
+        else:
+            self.assertEqual(b2.hex, parse('0702'))
+
+    def test_exits_by_type(self):
+        e = self.e
+        for _ in range(2):
+            e.end_phase()
+        e.end_phase()               # red moves now
+        rt, r2 = e.units['rt'], e.units['r2']
+        self.assertEqual(e.side, 'r')
+        rt.hex = parse('0806')
+        r2.hex = parse('0805')                  # on the edge too
+        e.changed()
+        e.end_phase()
+        self.assertEqual(rt.status, 'exited')
+        self.assertEqual(r2.status, 'map')      # only trucks leave
+        self.assertEqual(e.bonus['r'], 5)
+
+    def test_ai_plays_the_fast_rules(self):
+        from grognard import play_out
+        for seed in range(3):
+            self.assertTrue(play_out(self.e.d, seed=seed).over)
+
+
 if __name__ == '__main__':
     unittest.main()

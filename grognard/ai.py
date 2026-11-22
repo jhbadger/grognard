@@ -97,6 +97,8 @@ class AI:
                     self.threat[x] = self.threat.get(x, 0) + u.attack * 0.7
                 continue
             reach = int(u.max_mp / 1.6) + 1
+            if e.ranged:
+                reach += max(1, u.range) - 1
             for x in within(h, reach):
                 self.threat[x] = self.threat.get(x, 0) + u.attack
         self.enemy_at = {}
@@ -120,15 +122,22 @@ class AI:
                 self.goals.append(([h], v, 'take'))
             elif not mine:
                 self.goals.append(([h], v * 0.5, 'take'))
+        # enemy units worth hunting down (a game marks them with a high
+        # 'vp', 4 or more): where they were last seen
+        for u, h in self.enemies():
+            if u.spec.get('vp', 0) >= 4 and u.max_mp > 0:
+                self.goals.append(([h], u.spec['vp'], 'hunt'))
         self.assign = {}
         if e.phase == 'move':
             self.garrisons()
         self.reserved = {h for uid, h in self.assign.items()
                          if e.units[uid].hex != h}
         ex = getattr(e.d, 'EXITS', {}).get(self.side)
+        self.exit_types = None
         if ex:
             hs = [h for h in e.board.hex_list(ex.get('hexes'))]
             self.goals.append((hs, ex.get('vp', 1) * 2, 'exit'))
+            self.exit_types = ex.get('types')
         self.fields = {}
         self.supplied = e.supplied(self.side)
         self.turns_left = e.turns - e.turn
@@ -200,7 +209,7 @@ class AI:
         if key != self.key:
             self.key = key
             self.begin()
-        if e.phase == 'move':
+        if e.moving:
             return self.next_move()
         return self.next_attack()
 
@@ -240,7 +249,14 @@ class AI:
         best, best_score = None, None
         noise = (2.0 - self.skill) * 1.5
         for h in cands:
-            s = self.score(u, h)
+            if h in reach.overruns:
+                # drive in and fight: worth it for a good result
+                v, o = self.expected(h, [u], [])
+                if o['final'] < 0:
+                    continue
+                s = v * 5 - 2 + self.score(u, reach[h][1]) * 0.5
+            else:
+                s = self.score(u, h)
             s += self.rng.uniform(0, noise)
             if best_score is None or s > best_score:
                 best, best_score = h, s
@@ -262,15 +278,28 @@ class AI:
             if d is None:
                 continue
             if kind == 'exit':
-                if u.supports or u.kind == 'hq' or not attack:
+                if self.exit_types:
+                    if u.kind not in self.exit_types:
+                        continue
+                elif u.supports or u.kind == 'hq' or not attack:
                     continue
                 # worth more as the end approaches, and for strong units
                 w = value * u.steps * (1.5 if self.turns_left < 6 else 1)
-                s += w * 2.0 / (1 + d / 2)
+                if self.exit_types:
+                    # units whose whole job is getting off the map: a
+                    # steady pull, every hex nearer as good as the last
+                    s += w * (3 - d * 0.25)
+                else:
+                    s += w * 2.0 / (1 + d / 2)
                 if d == 0:
                     s += w * 3
             elif kind == 'take':
+                if e.phase == 'move2' and attack:
+                    continue        # after the fight: get clear first
                 s += value * (3.0 if attack else 1.2) / (1 + d / 2)
+            elif kind == 'hunt':
+                if attack and u.attack > 0 and e.phase != 'move2':
+                    s += value * 1.5 / (1 + max(0, d - u.range) / 2)
             else:       # hold
                 h0 = hexes[0]
                 if self.assign.get(u.id) == h0:
@@ -308,7 +337,9 @@ class AI:
             dfn = self.stack_defense(u, h) * (1 + 0.5 * -t.get('shift', 0))
             ratio = threat * 0.5 / max(1, dfn)
             if ratio > 1.5:
-                s -= (ratio - 1.5) * (4 if not attack else 2) * u.steps
+                s -= (ratio - 1.5) * (4 if not attack else 2) * u.steps * \
+                    (3 if e.phase == 'move2' else 1) * \
+                    (u.spec.get('vp', u.steps) / u.steps)
         # contact
         adj_enemy = [x for n in neighbours(h) for x in self.enemy_at.get(n,
                                                                          [])]
@@ -327,6 +358,17 @@ class AI:
             s -= threat * 0.3
             if adj_enemy:
                 s -= 15
+        elif e.ranged:
+            # in range of something to shoot at (but not after the fight)
+            r = max(1, u.range)
+            near = [n for n in self.enemy_at if distance(h, n) <= r]
+            if near and u.attack > 0 and e.phase != 'move2':
+                weak = min(sum(x.defense for x in self.enemy_at[n])
+                           for n in near)
+                if attack:
+                    s += 3 + max(0, u.attack - weak) * 0.6
+                else:
+                    s += 1
         else:
             if adj_enemy:
                 weak = min(sum(x.defense for x in self.enemy_at[n])
@@ -360,7 +402,9 @@ class AI:
             if obj.get('for', self.side) != self.side and \
                     e.control.get(target) == self.side:
                 objv *= 0.4
-        dval = 1.0 + 0.1 * sum(x.attack for x in defenders) / max(1, dsteps)
+        worth = sum(x.spec.get('vp', x.steps) for x in defenders)
+        dval = worth / max(1, dsteps) + \
+            0.1 * sum(x.attack for x in defenders) / max(1, dsteps)
         bold = sum(1 for x in attackers + list(support)
                    if self.posture_of(x) == 'attack') * 2 >= \
             len(attackers) + len(support)
@@ -371,6 +415,9 @@ class AI:
             al = 0 if o['bombard'] else (asteps if res['ae'] else
                                          min(res['a'], asteps))
             v = dl * dval - al * aval
+            if res.get('disable'):
+                v += sum(x.steps if x.disabled else 0.45 * x.steps
+                         for x in defenders) * dval
             if res['retreat'] and dl < dsteps:
                 v += 0.6 + (objv * 0.8 if attackers else 0)
             elif dl >= dsteps and attackers:

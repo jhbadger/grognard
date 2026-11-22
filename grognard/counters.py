@@ -394,6 +394,11 @@ def counter(unit, side, size, style='nato', dim=False, flags=()):
             tiny(p.px, p.w, (S - tiny_width(name)) // 2, by + bh + 1, name,
                  ink)
     for f in flags:
+        if f == 'dis':                  # disabled: smoke across it
+            for y in range(1, S - 1):
+                for x in range(1, S - 1):
+                    if (x + y) % 4 == 0:
+                        p.set(x, y, (40, 40, 40))
         if f == 'oos':                  # out of supply: a red corner
             for j in range(4):
                 for i in range(4 - j):

@@ -196,6 +196,8 @@ class MapView:
             flags = []
             if u.oos and u.side == self.g.viewer():
                 flags.append('oos')
+            if u.disabled:
+                flags.append('dis')
             self.counter_at(s, u, sx - step * (n - 1) // 2 + off,
                             sy - step * (n - 1) // 2 + off,
                             dim=(u.id in dims) or ghost, flags=flags)

@@ -284,7 +284,7 @@ class Phase(Widget):
         s.rect(x + 4, y + 12, w - 8, 11, rgb(side['colour']))
         s.text(x + w // 2, y + 13, fit(side['name'], w - 10),
                rgb(side.get('ink', '#000000')), align='center')
-        label = 'Movement' if e.phase == 'move' else 'Combat'
+        label = e.phase_name()
         if e.over:
             label = 'Game over'
         elif g.thinking():
@@ -443,16 +443,18 @@ class UnitInfo(Widget):
         s.text(tx, y + 26, fit(u.formation or side['name'], w - 48),
                ch(g, 'dim'))
         bits = ['A%d D%d' % (u.attack, u.defense)]
-        if u.supports:
+        if u.supports or (e.ranged and u.range > 1):
             bits.append('Rng %d' % u.range)
-        if u.side == e.side and e.phase == 'move':
+        if u.side == e.side and e.moving:
             bits.append('MP %s/%d' % (('%.1f' % u.mp).rstrip('0').rstrip(
                 '.'), u.max_mp))
         else:
-            bits.append('MP %d' % u.max_mp)
+            bits.append('MP %d' % u.max_mp + ('+%d' % u.m2 if u.m2 else ''))
         bits.append('Steps %d/%d' % (u.steps, u.max_steps))
         s.text(tx, y + 37, fit('  '.join(bits), w - 48), ch(g, 'text'))
         flags = []
+        if u.disabled:
+            flags.append('DISABLED')
         if u.oos:
             flags.append('OUT OF SUPPLY')
         if u.attacked:
