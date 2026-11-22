@@ -133,7 +133,7 @@ a low stone wall.
   and the VI Corps.
 - **Winning**: the Confederates score the copse of trees (8), the Angle
   (6), Ziegler's Grove and Harrow's line (2 each) if they hold them at
-  the end, and every Union step destroyed; the Federals score every
+  the end, and every Union step destroyed; the Union scores every
   Confederate step. The Confederates must finish 5 VP ahead. Computer
   against computer the Union holds a little more often than not, and
   the attackers lose about as many steps as the defenders, though they
@@ -379,7 +379,8 @@ running short), and its own font.
   engine's), `ICON` (a function registered with `@grognard.icon`)
 - `SIDES`: each a dict with `id`, `name`, `adj`, `colour` and `ink` for
   its counters, `posture` for the computer, and `about`, told to whoever
-  plays it
+  plays it; `singular: True` for a name that takes a singular verb
+  ("the Union takes the Angle")
 - `ORDER`, `TURNS`, `START` (a date) and `TURN_PARTS` (`['AM', 'PM']`),
   or `TURN_NAME(turn)`
 - `MAP`: rows of characters, one a hex, and `LEGEND` for any not in the

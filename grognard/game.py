@@ -1457,8 +1457,8 @@ class Game:
                 '%s (%d)' % (o['name'], o['vp']))
         for s in e.side_ids:
             if held.get(s):
-                lines.append('%s hold: %s' % (e.side_name(s),
-                                              ', '.join(held[s])))
+                lines.append('%s %s: %s' % (
+                    e.side_name(s), e.verb(s, 'hold'), ', '.join(held[s])))
         if e.over:
             lines += ['', e.result]
         self.push(Dialog('Score', '\n'.join(lines), width=440))

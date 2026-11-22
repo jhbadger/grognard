@@ -374,6 +374,11 @@ class Engine:
     def side_name(self, s, key='name'):
         return self.sides[s].get(key) or self.sides[s]['name']
 
+    def verb(self, side, v):
+        """v to go with the side's name: 'take' for the Germans, 'takes'
+        for a side with a singular name ('singular': True, the Union)."""
+        return v + 's' if self.sides[side].get('singular') else v
+
     def enemies(self, side):
         return [s for s in self.side_ids if s != side]
 
@@ -629,7 +634,8 @@ class Engine:
         if h in self.control and self.control[h] != side:
             self.control[h] = side
             o = self.board.objectives[h]
-            self.say('%s take %s.' % (self.side_name(side), o['name']))
+            self.say('%s %s %s.' % (self.side_name(side),
+                                    self.verb(side, 'take'), o['name']))
             self.events.append(('capture', h, side))
 
     # ----------------------------------------------------------- supply
@@ -801,8 +807,8 @@ class Engine:
             hs = self.board.hex_list(hexes)
             if hs and all(self.control.get(h) == side for h in hs):
                 names = ', '.join(self.place(h) for h in hs)
-                self.finish(side, '%s hold %s. %s' % (
-                    self.side_name(side), names,
+                self.finish(side, '%s %s %s. %s' % (
+                    self.side_name(side), self.verb(side, 'hold'), names,
                     'Sudden death victory.'))
                 return
         if self.over:
@@ -1022,8 +1028,10 @@ class Engine:
             'Barrage' if o['bombard'] else 'Attack', self.place(target),
             o['label'], roll, res['text']))
         if out['dlost'] or out['alost']:
-            self.say('%s lose %d step%s, %s %d.' % (
-                self.side_name(self.enemy(self.side)), out['dlost'],
+            loser = self.enemy(self.side)
+            self.say('%s %s %d step%s, %s %d.' % (
+                self.side_name(loser), self.verb(loser, 'lose'),
+                out['dlost'],
                 '' if out['dlost'] == 1 else 's',
                 self.side_name(self.side), out['alost']))
         self.events.append(('combat', target, out))

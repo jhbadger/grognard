@@ -57,8 +57,8 @@ SIDES = [
          ink='#1a1a1a', posture='attack',
          about='Break the Union centre: take the Angle and the copse of '
                'trees, and hold them.'),
-    dict(id='us', name='Federals', adj='Union', colour='#6f8fc8',
-         ink='#f4f4f4', posture='defend',
+    dict(id='us', name='Union', adj='Union', singular=True,
+         colour='#6f8fc8', ink='#f4f4f4', posture='defend',
          about='Hold Cemetery Ridge. Let them come across the open ground '
                'into your guns.'),
 ]
@@ -205,12 +205,12 @@ STEP_VP = 1
 
 def VICTORY(e):
     """The Confederates score the ground they hold and Union losses, the
-    Federals Confederate losses, and the margin decides: the attackers
+    Union Confederate losses, and the margin decides: the attackers
     must come out 5 VP ahead (set from games between computer players:
     ./pickett --simulate 30)."""
     cs, us = e.vp('cs'), e.vp('us')
     m = cs - us
-    score = 'Confederates %d VP, Federals %d.' % (cs, us)
+    score = 'Confederates %d VP, Union %d.' % (cs, us)
     if m >= 12:
         return 'cs', 'Confederate victory. %s The Union centre is broken.' \
             % score
@@ -361,10 +361,10 @@ HELP = [
 
     "WINNING. The Confederates score for the copse of trees (8), the "
     "Angle (6), Ziegler's Grove and Harrow's line (2 each) if they hold "
-    "them at the end, and for every Union step destroyed; the Federals "
-    "score every Confederate step. The Confederates must finish 5 VP "
-    "ahead to win (12 for a clear victory); the Federals win clearly if "
-    "they're 5 or more ahead.",
+    "them at the end, and for every Union step destroyed; the Union "
+    "scores every Confederate step. The Confederates must finish 5 VP "
+    "ahead to win (12 for a clear victory); the Union wins clearly if "
+    "it's 5 or more ahead.",
 ]
 
 ICON = 'pickett'
