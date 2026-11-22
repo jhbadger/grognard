@@ -135,9 +135,11 @@ class Playing(unittest.TestCase):
         g = self.g
         e = g.e
         self.assertEqual(e.side, self.side)
-        movers = [u for u in e.alive(self.side) if u.attack > 0 and
-                  not u.supports and u.mp > 0]
-        u = g.play.stack_at(movers[0].hex)[0]     # the top of its stack
+        # a unit that can move and is on top of its stack (in Pickett's
+        # Charge only the guns can, on turn 1)
+        movers = [u for u in e.alive(self.side) if u.mp > 0 and
+                  g.play.stack_at(u.hex)[0] is u]
+        u = movers[0]
         self.tap_hex(u.hex)
         self.assertEqual(g.play.sel, [u.id])
         reach = g.play.reach
@@ -180,6 +182,28 @@ class Playing(unittest.TestCase):
             if e.side == self.side or e.over:
                 break
         self.assertTrue(e.side == self.side or e.over)
+
+    def test_stack_strip(self):
+        """Selecting a stack shows all its units in a strip, and tapping
+        one there selects it."""
+        g = self.g
+        e = g.e
+        stacks = [h for h, us in e.where().items()
+                  if len(g.play.stack_at(h)) > 1]
+        if not stacks:
+            self.skipTest('no stacks at the start')
+        h = stacks[0]
+        self.tap_hex(h)
+        us, r = g.play.strip()
+        self.assertEqual({u.id for u in us},
+                         {u.id for u in g.play.stack_at(h)})
+        g.frame()
+        x, y, w, hh = r
+        last = us[-1]
+        g.tap(x + 4 + (len(us) - 1) * g.play.STRIP_STEP + 3, y + hh // 2)
+        self.assertEqual(g.play.sel, [last.id])
+        self.assertEqual([u.id for u in g.play.strip()[0]],
+                         [u.id for u in us])       # the order holds
 
     def test_save_and_load(self):
         g = self.g

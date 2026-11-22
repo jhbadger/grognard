@@ -363,6 +363,11 @@ class Engine:
         names.update(getattr(self.d, 'PHASE_NAMES', {}))
         return names.get(phase or self.phase, phase or self.phase)
 
+    def held(self, u):
+        """Whether u is on the map but may not yet move or attack: its
+        'release' turn hasn't come."""
+        return u.spec.get('release', 0) > self.turn
+
     def last_phase(self):
         return self.phase == self.phases[-1]
 
@@ -693,6 +698,9 @@ class Engine:
                 u.mp = 0
                 u.attacked = True
                 u.recovering = True
+            if self.held(u):            # waiting for the order to go
+                u.mp = 0
+                u.attacked = u.fired = True
         for u in self.alive():
             u.dfired = False
             if u.side != side:
@@ -870,8 +878,9 @@ class Engine:
 
     def backing(self, target):
         """The defender's artillery that adds its strength to the
-        defence of target: up to DEFENSIVE_FIRE (2) guns in range that
-        haven't already fired in defence this turn, the strongest first."""
+        defence of target against an assault (not a bombardment): up to
+        DEFENSIVE_FIRE (2) guns in range that haven't already fired in
+        defence this turn, the strongest first."""
         n = getattr(self.d, 'DEFENSIVE_FIRE', 2)
         if not n:
             return []
@@ -901,13 +910,20 @@ class Engine:
             att += u.attack / 2 if u.oos else u.attack
         att = int(att)
         dfn = sum(u.defense for u in defenders)
-        backing = self.backing(target)
+        # the defender's guns meet an assault (not a bombardment)
+        backing = self.backing(target) if attackers else []
         dfn += sum(u.attack / 2 if u.oos else u.attack for u in backing)
         dfn = int(dfn)
         t = self.board.terrain(target)
         shifts = []
         if t.get('shift'):
             shifts.append((t['shift'], t['name']))
+        # behind a wall: every adjacent attacker comes across one
+        near = [u for u in attackers if distance(u.hex, target) == 1]
+        walls = [self.board.river(u.hex, target) for u in near]
+        if near and all(w and w.get('shift') for w in walls):
+            w = max(walls, key=lambda w: w['shift'])
+            shifts.append((w['shift'], w['name'].lower()))
         o = self.board.objectives.get(target)
         if o and o.get('shift'):
             shifts.append((o['shift'], o.get('works', 'defences')))

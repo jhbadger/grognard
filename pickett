@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+"""Pickett's Charge: Gettysburg, 3 July 1863.  A sample game for the
+Grognard engine.
+
+After two days of fighting, Lee orders an assault on the centre of the
+Union line on Cemetery Ridge: three divisions, some twelve thousand men,
+across nearly a mile of open fields, aiming for a copse of trees behind
+a low stone wall.  First the guns, then the infantry.  Play either side
+against the computer, or against a friend at the same screen.
+
+Run it with ./pickett (Python 3 with Tk, nothing else).  The game is
+saved to ~/.pickett.json.  ./pickett --selftest checks the map and plays
+a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import hexgrid                           # noqa: E402
+
+ID = 'pickett'
+TITLE = "Pickett's Charge"
+SUBTITLE = 'Gettysburg, 3 July 1863'
+
+INTRO = [
+    "Gettysburg, Pennsylvania, the third day. Lee's attacks on both ends "
+    "of the Union line have failed. He believes the centre, on Cemetery "
+    "Ridge, must be weak, and that one great blow will break the Army of "
+    "the Potomac.",
+
+    "Longstreet has the task, and doesn't believe in it. Three "
+    "divisions will go in: Pickett's fresh Virginians on the right, and "
+    "Pettigrew's and Trimble's men, battered on the first day, on the "
+    "left. Their aiming point is a small copse of trees behind a low "
+    "stone wall, near where the wall turns a right angle.",
+
+    "Before the infantry go, the Confederate guns along Seminary Ridge "
+    "will try to silence the Union batteries. Then the lines must cross "
+    "almost a mile of open fields, climb the fences along the Emmitsburg "
+    "Road, and go up the slope into the guns and the wall.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='cs', name='Confederates', adj='Confederate', colour='#b8b6aa',
+         ink='#1a1a1a', posture='attack',
+         about='Break the Union centre: take the Angle and the copse of '
+               'trees, and hold them.'),
+    dict(id='us', name='Federals', adj='Union', colour='#6f8fc8',
+         ink='#f4f4f4', posture='defend',
+         about='Hold Cemetery Ridge. Let them come across the open ground '
+               'into your guns.'),
+]
+ORDER = ['cs', 'us']
+
+TURNS = 10
+
+
+def TURN_NAME(t):
+    """Fifteen minutes a turn, from two o'clock."""
+    m = 14 * 60 + (t - 1) * 15
+    return ('3 Jul 1863', '%d:%02d PM' % ((m // 60 - 1) % 12 + 1, m % 60))
+
+
+STACK = 2               # brigades are big: two to a hex
+
+# Rifled muskets and canister: an attacker pays for ground even when it
+# wins, and only big odds drive a line from its position.
+CRT = {
+    'columns': ['1:2', '1:1', '1.5:1', '2:1', '3:1', '4:1', '5:1'],
+    'rows': [
+        ['A2', 'A2', 'A1', 'A1', 'A1', 'EX', 'EX'],
+        ['A2', 'A1', 'A1', 'A1', 'EX', 'EX', 'DR'],
+        ['A1', 'A1', 'EX', 'EX', 'EX', 'DR', 'D1R'],
+        ['A1', 'EX', 'EX', 'DR', 'D1R', 'D1R', 'D1R'],
+        ['EX', 'DR', 'DR', 'D1R', 'D1R', 'D2R', 'D2R'],
+        ['DR', 'D1R', 'D1R', 'D2R', 'D2R', 'D2R', 'DE'],
+    ],
+}
+FOG = False             # the whole field is in plain sight
+DEFENSIVE_FIRE = 2
+
+# The cannonade comes first: the infantry wait in the woods until turn 3.
+RELEASE = 3
+
+
+def ON_TURN(e, side):
+    """After the cannonade the Confederate guns are short of ammunition
+    (the reserve train had been moved away): from the infantry's release
+    on, each battery fires only every other turn."""
+    if side == 'cs' and e.turn >= RELEASE:
+        for u in e.alive('cs'):
+            if u.supports and (e.turn + len(u.id)) % 2:
+                u.fired = True
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Guns firing canister at close range: attacking a hex with a
+    battery in it costs a column.  A bombardment loses a column beyond 3
+    hexes (some 400 yards: shell, not canister), and three beyond 6 (much
+    of the cannonade went over the ridge)."""
+    out = []
+    if any(u.supports for u in e.at(target) if u.side != e.side) and \
+            any(hexgrid.distance(u.hex, target) == 1 for u in attackers):
+        out.append((-1, 'canister'))
+    if not attackers and support:
+        d = min(hexgrid.distance(u.hex, target) for u in support)
+        if d > 6:
+            out.append((-3, 'long range'))
+        elif d > 3:
+            out.append((-1, 'medium range'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+TERRAIN = {
+    'clear':  dict(name='Fields', colour='#a9b86a', ink='#8a9a50',
+                   edge='#7a8a40'),
+    'fields': dict(name='Wheat', colour='#d2bf72', ink='#b49e52',
+                   edge='#9a8440'),
+    'woods':  dict(colour='#4f7a3a', ink='#2f5222', edge='#22401a'),
+    'hills':  dict(name='Ridge', colour='#b0b47a', ink='#7a7c4a',
+                   edge='#6e7040', shift=-1,
+                   move={'foot': 1, 'track': 2, 'wheel': 2}),
+    'town':   dict(name='Farm', colour='#b8a888', ink='#8a3a2a',
+                   shift=-1),
+}
+
+MAP = [
+    'fh...........hhhhh',
+    'hh.........:.f.hhh',
+    'hh...t.......hh...',
+    'ff...:.:..:..hhh..',
+    'hf...::......hh...',
+    'hf...........h.ht.',
+    'ff.:.:.......fh...',
+    'ff...::t..::.h....',
+    'ffff.........hh...',
+    'fhff:....:...hhh..',
+    'hfff....:..f.hhh..',
+    'hff..........h....',
+    'fff:......:..hh...',
+    'fh...........hh...',
+]
+
+EMMITSBURG = ['0514', '1101']
+ROADS = [
+    ('road', EMMITSBURG),
+    ('road', ['1714', '1701']),                         # Taneytown Road
+    ('trail', ['0808', '1308']),                        # Codori's lane
+    ('trail', ['0603', '1403']),                        # Bliss farm lane
+]
+
+
+def _fences():
+    """Post-and-rail fences line the Emmitsburg Road: every side of a road
+    hex facing east, except where the road itself runs on."""
+    road = [hexgrid.parse(EMMITSBURG[0])]
+    road += hexgrid.line(road[0], hexgrid.parse(EMMITSBURG[1]))[1:]
+    out = []
+    for h in road:
+        for d in (1, 2):                                # NE and SE
+            n = hexgrid.neighbour(h, d)
+            if n not in road and 0 <= n[0] < 18 and 0 <= n[1] < 14:
+                out.append((h, n))
+    return out
+
+
+RIVERS = [
+    # the stone wall in front of the Union centre, with its angle
+    ('wall', ['1402:NW,SW', '1403:NW,SW', '1404:NW,SW', '1405:NW,SW',
+              '1306:NE,N,NW,SW', '1307:NW,SW', '1308:NW,SW', '1309:NW,SW',
+              '1310:NW,SW']),
+    ('fence', _fences()),
+]
+
+LABELS = {
+    '0603': 'Bliss farm', '0808': 'Codori farm', '1306': 'The Angle',
+    '1407': 'Copse', '1402': "Ziegler's Grove", '1706': 'Leister house',
+    '0102': 'Seminary Ridge', '0310': "Spangler's Woods",
+    '1513': 'Cemetery Ridge', '1601': 'Cemetery Hill',
+}
+
+OBJECTIVES = {
+    '1407': dict(name='Copse', vp=8, owner='us',
+                 **{'for': 'cs'}),
+    '1306': dict(name='Angle', vp=6, owner='us', **{'for': 'cs'}),
+    '1402': dict(name='Ziegler', vp=2, owner='us', **{'for': 'cs'}),
+    '1310': dict(name='Harrow', vp=2, owner='us', **{'for': 'cs'}),
+}
+STEP_VP = 1
+
+
+def VICTORY(e):
+    """The Confederates score the ground they hold and Union losses, the
+    Federals Confederate losses, and the margin decides: the attackers
+    must come out 5 VP ahead (set from games between computer players:
+    ./pickett --simulate 30)."""
+    cs, us = e.vp('cs'), e.vp('us')
+    m = cs - us
+    score = 'Confederates %d VP, Federals %d.' % (cs, us)
+    if m >= 12:
+        return 'cs', 'Confederate victory. %s The Union centre is broken.' \
+            % score
+    if m >= 5:
+        return 'cs', 'Confederate marginal victory. %s' % score
+    if m > -5:
+        return 'us', ('Union marginal victory. %s The ridge holds, at a '
+                      'price.' % score)
+    return 'us', ('Union victory. %s The high water mark: the charge '
+                  'breaks against the wall, and Lee says "It is all my '
+                  'fault."' % score)
+
+
+# ----------------------------------------------------------------- units
+
+PICKETT = '#c4bfa6'     # Pickett's Virginians
+PETTIGREW = '#aeb0aa'
+TRIMBLE = '#a2a8a8'
+ANDERSON = '#b4ae9a'
+CS_GUNS = '#c8c4b4'
+US_II = '#7896cc'
+US_I = '#6a86b8'
+US_GUNS = '#86a2d4'
+
+
+def brigade(uid, side, a, d, hx, formation, colour, long, steps=3, **kw):
+    """An infantry brigade: attack, defence, and the hex it starts in
+    (None if it arrives later, with arrive and at)."""
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type='infantry', size='X', a=a, d=d, m=3, steps=steps,
+                hex=hx, formation=formation, colour=colour, long=long)
+    if side == 'cs':
+        spec['release'] = RELEASE
+    spec.update(kw)
+    return spec
+
+
+def guns(uid, side, a, rng, hx, formation, colour, long, m=2, **kw):
+    """Artillery: attack, range and the hex it starts in."""
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type='artillery', size='II', a=a, d=3, m=m, range=rng,
+                steps=1, hex=hx, formation=formation, colour=colour,
+                long=long)
+    spec.update(kw)
+    return spec
+
+
+UNITS = [
+    # ---- the Army of Northern Virginia
+    brigade('kemper', 'cs', 6, 5, '0412', "Pickett's Division", PICKETT,
+            "Kemper's Brigade"),
+    brigade('garnett', 'cs', 6, 5, '0410', "Pickett's Division", PICKETT,
+            "Garnett's Brigade"),
+    brigade('armistd', 'cs', 7, 5, '0311', "Pickett's Division", PICKETT,
+            "Armistead's Brigade", name='ARMIST'),
+    brigade('fry', 'cs', 4, 4, '0307', "Pettigrew's Division", PETTIGREW,
+            "Fry's (Archer's) Brigade"),
+    brigade('marshll', 'cs', 5, 4, '0306', "Pettigrew's Division",
+            PETTIGREW, "Marshall's (Pettigrew's) Brigade", name='MARSHL'),
+    brigade('davis', 'cs', 4, 4, '0305', "Pettigrew's Division", PETTIGREW,
+            "Davis's Brigade"),
+    brigade('mayo', 'cs', 3, 3, '0304', "Pettigrew's Division", PETTIGREW,
+            "Mayo's (Brockenbrough's) Brigade", steps=2),
+    brigade('lane', 'cs', 5, 4, '0206', "Trimble's Division", TRIMBLE,
+            "Lane's Brigade"),
+    brigade('lowrnce', 'cs', 4, 4, '0207', "Trimble's Division", TRIMBLE,
+            "Lowrance's (Scales's) Brigade", name='LOWRNC'),
+    brigade('wilcox', 'cs', 4, 4, '0414', "Anderson's Division", ANDERSON,
+            "Wilcox's Brigade", release=RELEASE + 2),
+    brigade('lang', 'cs', 2, 3, '0413', "Anderson's Division", ANDERSON,
+            "Lang's (Perry's) Brigade", steps=2, release=RELEASE + 2),
+    guns('alex1', 'cs', 5, 10, '0511', "Alexander's artillery", CS_GUNS,
+         "Alexander's and Cabell's battalions", name='ALEX'),
+    guns('alex2', 'cs', 4, 10, '0509', "Alexander's artillery", CS_GUNS,
+         "Dearing's battalion", name='DEARNG'),
+    guns('eshlmn', 'cs', 4, 10, '0613', "Alexander's artillery", CS_GUNS,
+         "Eshleman's Washington Artillery", name='ESHLMN'),
+    guns('henry', 'cs', 3, 10, '0408', "Alexander's artillery", CS_GUNS,
+         "Henry's battalion"),
+    guns('hill1', 'cs', 4, 10, '0303', "Third Corps artillery", CS_GUNS,
+         "Poague's and Pegram's battalions", name='PEGRAM'),
+    guns('hill2', 'cs', 3, 10, '0302', "Third Corps artillery", CS_GUNS,
+         "McIntosh's and Lane's battalions", name='MCINTS'),
+
+    # ---- the Army of the Potomac
+    brigade('webb', 'us', 4, 6, '1306', "Gibbon's Division, II Corps",
+            US_II, "Webb's Philadelphia Brigade"),
+    brigade('hall', 'us', 4, 6, '1308', "Gibbon's Division, II Corps",
+            US_II, "Hall's Brigade"),
+    brigade('harrow', 'us', 5, 6, '1310', "Gibbon's Division, II Corps",
+            US_II, "Harrow's Brigade"),
+    brigade('smyth', 'us', 4, 6, '1404', "Hays's Division, II Corps",
+            US_II, "Smyth's Brigade"),
+    brigade('sherrll', 'us', 4, 4, '1503', "Hays's Division, II Corps",
+            US_II, "Sherrill's (Willard's) Brigade", name='SHERRL'),
+    brigade('stannrd', 'us', 5, 5, '1211', "Doubleday's Division, I Corps",
+            US_I, "Stannard's Vermont Brigade", name='STANRD'),
+    brigade('gates', 'us', 3, 4, '1411', "Doubleday's Division, I Corps",
+            US_I, "Gates's (Rowley's) Brigade"),
+    brigade('carroll', 'us', 4, 4, None, "Hays's Division, II Corps", US_II,
+            "Carroll's regiments", steps=2, arrive=4, at='1601'),
+    brigade('vi', 'us', 5, 5, None, 'VI Corps', US_I,
+            'Brigades from the VI Corps reserve', name='VI', arrive=6,
+            at='1810'),
+    guns('cushing', 'us', 5, 10, '1307', 'II Corps artillery', US_GUNS,
+         "Cushing's Battery A, 4th US", name='CUSHNG'),
+    guns('arnold', 'us', 5, 10, '1405', 'II Corps artillery', US_GUNS,
+         "Arnold's and Woodruff's batteries", name='ARNOLD'),
+    guns('brown', 'us', 5, 10, '1409', 'II Corps artillery', US_GUNS,
+         "Brown's and Rorty's batteries"),
+    guns('mcgilvy', 'us', 10, 10, '1412', 'Artillery Reserve', US_GUNS,
+         "McGilvery's line of guns", name='MCGILV'),
+    guns('rittnhs', 'us', 3, 14, '1614', 'V Corps artillery', US_GUNS,
+         "Rittenhouse's guns on Little Round Top", name='RITTNH', m=0),
+    guns('hazard', 'us', 5, 10, None, 'Artillery Reserve', US_GUNS,
+         'Fresh batteries from the Artillery Reserve', name='RESRV',
+         arrive=5, at='1805'),
+]
+
+PANELS = dict(
+    right=['date', 'victory', 'objectives', 'phase', 'minimap', 'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1e1a14', panel='#2e2820', light='#7a6e58',
+              dark='#080604', accent='#e8c47a', button='#5a4e3a',
+              button_hi='#a09070', button_lo='#1e1a14', red='#b03020')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE CANNONADE. For the first two turns the Confederate infantry wait "
+    "in the woods (their counters say HELD) while the guns on Seminary "
+    "Ridge try to knock out the Union batteries. Artillery attacks from "
+    "its range without risk to itself, and a battery defending its own "
+    "hex adds its fire to the defence; up to two more within range join "
+    "in. Wilcox and Lang go in two turns later, on the right.",
+
+    "THE ADVANCE. Brigades move 3 hexes over open ground, and the fences "
+    "along the Emmitsburg Road cost an extra point to climb. Zones of "
+    "control apply, and only two brigades fit in a hex. Every big "
+    "brigade can lose three steps before it's gone.",
+
+    "THE WALL. Attacking across the stone wall costs a column if every "
+    "attacker next to the hex is on the far side of it. Attacking a hex "
+    "with a battery in it costs another (canister), and the ridge one "
+    "more. Bombarding from more than 3 hexes costs a column, from more "
+    "than 6 three. After the cannonade the Confederate batteries are "
+    "short of ammunition and each fires only every other turn.",
+
+    "WINNING. The Confederates score for the copse of trees (8), the "
+    "Angle (6), Ziegler's Grove and Harrow's line (2 each) if they hold "
+    "them at the end, and for every Union step destroyed; the Federals "
+    "score every Confederate step. The Confederates must finish 5 VP "
+    "ahead to win (12 for a clear victory); the Federals win clearly if "
+    "they're 5 or more ahead.",
+]
+
+ICON = 'pickett'
+
+
+@grognard.icon('pickett')
+def draw_icon(p, n):
+    """The copse of trees on the ridge, behind the stone wall."""
+    p.fill('#cfd8e0')
+    p.rect(0, n * 0.62, n, n * 0.38, '#a9b86a')
+    p.disc(n * 0.5, n * 0.95, n * 0.55, '#b0b47a')
+    for x, y, r in ((0.38, 0.45, 0.15), (0.55, 0.38, 0.18),
+                    (0.68, 0.48, 0.13), (0.47, 0.52, 0.14)):
+        p.disc(n * x, n * y, n * r, '#2f5222')
+    p.rect(0, n * 0.7, n, n * 0.07, '#a8a498')
+    for k in range(8):
+        p.rect(n * k / 8, n * 0.7, 1, n * 0.07, '#6a6658')
+    p.rect(n * 0.12, n * 0.18, n * 0.02, n * 0.5, '#3a2a1a')
+    p.rect(n * 0.14, n * 0.18, n * 0.16, n * 0.1, '#b02020')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

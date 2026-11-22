@@ -1,9 +1,10 @@
 """Smooth text: what the windows need to draw the game's text in a real
 font over the picture, instead of the bitmap font in it.
 
-The game lays text out in its own pixels (640 x 480), so a font is
-chosen to match the bitmap font's size once the picture is scaled up to
-the window: capitals about 7 of the game's pixels tall.  A game can name
+The game lays text out in its own pixels (before the window scales
+them up), so a font is chosen to match the bitmap font's size once the
+picture is scaled up to the window: capitals about 7 of the game's
+pixels tall.  A game can name
 its own with FONT = dict(family='Georgia', size=1.0, bold=False); size
 is a factor on the usual size.
 """

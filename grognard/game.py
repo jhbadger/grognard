@@ -374,6 +374,83 @@ class PlayMode(Mode):
                                -u.attack - u.defense, u.id))
         return us
 
+    # ------------------------------------------------- the stack strip
+
+    STRIP_C = 22        # counter size in the strip
+    STRIP_STEP = 26     # from one counter to the next
+
+    def strip(self):
+        """The units in the selected unit's hex, when there's more than
+        one, in a steady order (so tapping through them doesn't shuffle
+        them), and where the strip showing them goes: (units, rect) or
+        (None, None)."""
+        g = self.g
+        u = self.selected_unit()
+        if u is None:
+            return None, None
+        e = g.e
+        vis = e.visible(g.viewer())
+        us = [x for x in e.at(u.hex) if x.id in vis]
+        if len(us) < 2:
+            return None, None
+        us.sort(key=lambda x: (x.supports, -x.attack - x.defense, x.id))
+        mx, my, mw, mh = g.view.rect
+        w = 8 + len(us) * self.STRIP_STEP - (self.STRIP_STEP - self.STRIP_C)
+        h = self.STRIP_C + 9
+        x, y = mx + 4, my + mh - h - 4
+        # not over the stack it shows
+        sx, sy = g.view.to_screen(u.hex)
+        if x - 20 <= sx < x + w + 20 and y - 20 <= sy < y + h + 20:
+            x = mx + mw - w - 4
+        return us, (x, y, w, h)
+
+    def draw_strip(self, s):
+        g = self.g
+        us, r = self.strip()
+        if not us:
+            return
+        x, y, w, h = r
+        s.rect(x + 2, y + 2, w, h, (0, 0, 0))
+        s.rect(x, y, w, h, ch(g, 'panel'))
+        s.bevel(x, y, w, h, ch(g, 'light'), ch(g, 'dark'))
+        e = g.e
+        from . import counters
+        for i, u in enumerate(us):
+            cx = x + 4 + i * self.STRIP_STEP
+            cy = y + 4
+            side = dict(e.sides[u.side])
+            if u.spec.get('colour'):
+                side['colour'] = u.spec['colour']
+            flags = []
+            if u.oos and u.side == g.viewer():
+                flags.append('oos')
+            if u.disabled:
+                flags.append('dis')
+            spent = self.human() and u.side == e.side and (
+                (e.moving and u.mp <= 0) or
+                (e.phase == 'combat' and (u.attacked or u.fired)))
+            s.blit(counters.counter(u, side, self.STRIP_C, g.style,
+                                    dim=spent, flags=tuple(flags)), cx, cy)
+            if u.id in self.sel:
+                s.frame(cx - 2, cy - 2, self.STRIP_C + 4, self.STRIP_C + 4,
+                        ch(g, 'accent'))
+
+    def tap_strip(self, x, y):
+        """A tap on the strip selects the unit tapped; True if it was on
+        the strip."""
+        us, r = self.strip()
+        if not us:
+            return False
+        rx, ry, rw, rh = r
+        if not (rx <= x < rx + rw and ry <= y < ry + rh):
+            return False
+        i = (x - rx - 4) // self.STRIP_STEP
+        if 0 <= i < len(us) and \
+                x - rx - 4 - i * self.STRIP_STEP < self.STRIP_C:
+            self.select([us[i]])
+            self.g.sound.play('select')
+        return True
+
     # ---------------------------------------------------------- orders
 
     def buttons(self):
@@ -714,6 +791,9 @@ class PlayMode(Mode):
         if y < 13:
             g.tap_bar(x)
             return
+        if self.tap_strip(x, y):
+            g.dirty = True
+            return
         if g.view.inside(x, y):
             self.tap_map(g.view.at(x, y))
             g.dirty = True
@@ -879,6 +959,7 @@ class Game:
         self.ais = {}
         self.memory = {}            # side -> {enemy unit id: hex last seen}
         self.portrait = False
+        self.screen = None          # (W, H) the window wants, if it says
         self.layout = None
         self.dirty = True
         self.quit = False
@@ -1226,9 +1307,9 @@ class Game:
                       ('Text: %s' % ('smooth' if self.smooth_text else
                                      'pixels'),
                        self.toggle_text if self.measure else None),
-                      ('Find selected   C', self.find_selected),
-                      ('Upright screen' if not self.portrait else
-                       'Wide screen', self.toggle_portrait)]),
+                      ('Find selected   C', self.find_selected)] +
+             ([('Upright screen' if not self.portrait else 'Wide screen',
+                self.toggle_portrait)] if self.screen is None else [])),
             ('Orders', [('End phase   E', self.end_phase_request
                          if human else None),
                         ('Next unit   N', (lambda: p.order('next'))
@@ -1403,12 +1484,22 @@ class Game:
     # ------------------------------------------------------- the screen
 
     def relayout(self):
-        self.layout = Layout(self, self.portrait)
+        self.layout = Layout(self, self.portrait, self.screen)
         self.view.set_rect(self.layout.map)
         self.dirty = True
 
+    def set_screen(self, size, portrait):
+        """The window says how big a screen to draw (in the game's own
+        pixels, before it scales it up) and which way up."""
+        if size != self.screen or portrait != self.portrait:
+            self.screen = size
+            self.portrait = portrait
+            self.relayout()
+
     def frame(self):
-        if self.layout is None or self.layout.portrait != self.portrait:
+        L = self.layout
+        if L is None or L.portrait != self.portrait or \
+                (self.screen and (L.W, L.H) != self.screen):
             self.relayout()
         s = self.render()
         self.dirty = False
@@ -1518,6 +1609,7 @@ class Game:
                     v.counter_at(s, u, x, y)
             else:
                 a.draw(self, s)
+        p.draw_strip(s)
         # frame and banner
         x, y, w, h = v.rect
         s.frame(x - 1, y - 1, w + 2, h + 2, ch(self, 'dark'))
@@ -1744,10 +1836,10 @@ HELP = [
     "light up. Tap one to move there. Each unit has movement points; "
     "terrain costs more or less to enter, and roads are quickest. A unit "
     "that moves next to an enemy unit (into its zone of control) must "
-    "stop, unless a friendly unit is already there. Tap a selected "
-    "stack again to pick the next unit in it, or Whole stack to move them "
-    "together. Undo takes back a move until you meet the enemy. End move "
-    "goes on to combat.",
+    "stop, unless a friendly unit is already there. Selecting a stack "
+    "shows all its units in a strip in the corner of the map: tap one to "
+    "pick it, or Whole stack to move them together. Undo takes back a "
+    "move until you meet the enemy. End move goes on to combat.",
 
     "FIGHTING. In the combat phase, enemy hexes you can attack are shaded "
     "red. Tap one: every unit that can join in is picked (outlined in "

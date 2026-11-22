@@ -46,6 +46,13 @@ def done():
     sh.root.destroy()
 sh.root.after(600, wide)
 sh.run()
+# the screens: wide at first; upright, and filling the window, after
+w, h = out[0]
+w2, h2 = out[2]
+a, b = sh.zoom
+out[0] = 'wide' if w >= 640 and h >= 480 and w > h else out[0]
+out[2] = 'upright' if h2 > w2 and abs(420 - w2 * a // b) < a and \
+    abs(780 - h2 * a // b) < a else out[2]
 print(out, len(errors))
 '''
 
@@ -72,6 +79,11 @@ def go(dt):
     sh.Clock.schedule_once(lambda dt: sh.close(), 0.2)
 sh.Clock.schedule_once(go, 1.0)
 sh.run()
+# upright, and filling the window (450 x 850, in its own pixels)
+w, h = out[0]
+ww, wh = sh.Window.size
+out[0] = 'upright' if h > w and abs(ww - w * sh.scale) < sh.scale + 1 \
+    and abs(wh - h * sh.scale) < sh.scale + 1 else out[0]
 print(out)
 '''
 
@@ -93,8 +105,7 @@ class Shells(unittest.TestCase):
     def test_tk(self):
         code, last, err = run(TK)
         self.assertEqual(code, 0, err)
-        self.assertEqual(last[0], "[(640, 480), 'combat', (360, 640)] 0",
-                         err)
+        self.assertEqual(last[0], "['wide', 'combat', 'upright'] 0", err)
 
     @unittest.skipIf(NO_GUI or not has('kivy',
                                        os.environ.get('KIVY_PYTHON',
@@ -104,7 +115,7 @@ class Shells(unittest.TestCase):
         code, last, err = run(KIVY, os.environ.get('KIVY_PYTHON',
                                                   sys.executable))
         self.assertEqual(code, 0, err)
-        self.assertEqual(last[0], "[(360, 640), 'combat']", err[-2000:])
+        self.assertEqual(last[0], "['upright', 'combat']", err[-2000:])
 
 
 if __name__ == '__main__':

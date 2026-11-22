@@ -455,6 +455,8 @@ class UnitInfo(Widget):
         flags = []
         if u.disabled:
             flags.append('DISABLED')
+        if e.held(u):
+            flags.append('HELD TO TURN %d' % u.spec['release'])
         if u.oos:
             flags.append('OUT OF SUPPLY')
         if u.attacked:
@@ -592,11 +594,42 @@ class Log(Widget):
 
 # ---------------------------------------------------------------- layout
 
+# The smallest screens the panels are laid out for, wide and upright; a
+# window bigger than these (in the game's pixels, after scaling) gets a
+# bigger screen, and the map takes the extra room.
+WIDE = (640, 480)
+UPRIGHT = (360, 600)
+
+
+def screen_size(win_w, win_h, scales=None):
+    """How to fill a window win_w x win_h: (scale, (W, H), portrait).
+    The window shows the game's W x H screen enlarged by scale.  With
+    scales (a list of scale factors, smallest first) the biggest that
+    leaves room for the smallest screen is used; without, any scale is,
+    in half steps from 2 up (whole pixels look crisper big)."""
+    portrait = win_h > win_w * 1.05
+    mw, mh = UPRIGHT if portrait else WIDE
+    if scales:
+        sc = scales[0]
+        for f in scales:
+            if win_w / f >= mw and win_h / f >= mh:
+                sc = f
+    else:
+        sc = max(1.0, min(win_w / mw, win_h / mh))
+        if sc >= 2:
+            sc = int(sc * 2) / 2
+    W = max(mw, int(win_w / sc))
+    H = max(mh, int(win_h / sc))
+    return sc, (W, H), portrait
+
+
 class Layout:
     """Where the menu bar, the map and each widget go, for a wide screen
-    or an upright one."""
+    or an upright one, of any size from WIDE (or UPRIGHT) up: the panels
+    keep their size (the right-hand column widens a little) and the map
+    gets the rest."""
 
-    def __init__(self, g, portrait=False):
+    def __init__(self, g, portrait=False, size=None):
         self.portrait = portrait
         d = getattr(g.d, 'PANELS', {})
         right = d.get('right', ['date', 'weather', 'victory', 'objectives',
@@ -604,23 +637,29 @@ class Layout:
         bottom = d.get('bottom', ['unit', 'orders', 'log'])
         self.items = []         # (widget, rect)
         if not portrait:
-            self.W, self.H = 640, 480
-            self.bar = (0, 0, 640, 13)
-            rw = 64 if right else 0
-            self.map = (3, 16, 640 - 6 - rw - (3 if right else 0), 406)
-            self.column(g, right, (640 - 3 - rw, 16, rw, 461))
-            self.row(g, bottom, (3, 425, self.map[2], 52))
+            W, H = size or (640, 480)
+            W, H = max(W, WIDE[0]), max(H, WIDE[1])
+            self.W, self.H = W, H
+            self.bar = (0, 0, W, 13)
+            rw = max(64, min(110, 64 + (W - 640) // 10)) if right else 0
+            self.map = (3, 16, W - 6 - rw - (3 if right else 0), H - 74)
+            self.column(g, right, (W - 3 - rw, 16, rw, H - 19))
+            self.row(g, bottom, (3, H - 55, self.map[2], 52))
         else:
-            self.W, self.H = 360, 640
-            self.bar = (0, 0, 360, 13)
-            self.map = (2, 15, 356, 390)
+            W, H = size or (360, 640)
+            W, H = max(W, UPRIGHT[0]), max(H, UPRIGHT[1])
+            self.W, self.H = W, H
+            self.bar = (0, 0, W, 13)
+            side_h = max(110, min(200, H // 4))
+            self.map = (2, 15, W - 4, H - 15 - 3 - 52 - 3 - 37 - side_h)
+            y = self.map[1] + self.map[3] + 3
             row = [n for n in bottom if n != 'log']
-            self.row(g, row, (2, 408, 356, 52))
-            y = 463
+            self.row(g, row, (2, y, W - 4, 52))
+            y += 55
             if 'log' in bottom:
-                self.items.append((WIDGETS['log'](), (2, y, 356, 34)))
+                self.items.append((WIDGETS['log'](), (2, y, W - 4, 34)))
                 y += 37
-            self.columns(g, right, (2, y, 356, self.H - y - 2))
+            self.columns(g, right, (2, y, W - 4, self.H - y - 2))
 
     def make(self, name):
         cls = WIDGETS.get(name)

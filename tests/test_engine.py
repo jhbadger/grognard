@@ -388,5 +388,46 @@ class FastRules(unittest.TestCase):
             self.assertTrue(play_out(self.e.d, seed=seed).over)
 
 
+class WallsAndOrders(unittest.TestCase):
+    """Stone walls shift attacks made across them; units can be held
+    until a turn."""
+
+    def setUp(self):
+        d = util.tiny(RIVERS=[('wall', ['0603/0703', '0602/0703'])])
+        d.UNITS = [dict(u) for u in d.UNITS]
+        d.UNITS[1].update(release=2)                    # b2 waits a turn
+        self.e = Engine(d, seed=1)
+
+    def test_wall(self):
+        e = self.e
+        e.end_phase()
+        b1, b2, r1 = e.units['b1'], e.units['b2'], e.units['r1']
+        b2.attacked = False
+        b1.hex = parse('0603')
+        e.changed()
+        o = e.odds(r1.hex, [b1])
+        self.assertIn((-1, 'stone wall'), o['shifts'])
+        # one attacker not behind the wall: no shift
+        b2.hex = parse('0702')
+        e.changed()
+        o = e.odds(r1.hex, [b1, b2])
+        self.assertNotIn((-1, 'stone wall'), o['shifts'])
+        # and crossing it costs a point more
+        self.assertEqual(e.enter_cost(b1, parse('0603'), parse('0703')),
+                         1 + 1 + 1)         # hills, and the wall
+
+    def test_held(self):
+        e = self.e
+        b2 = e.units['b2']
+        self.assertTrue(e.held(b2))
+        self.assertEqual(b2.mp, 0)
+        self.assertEqual(e.reachable(b2), {})
+        for _ in range(4):
+            e.end_phase()
+        self.assertEqual(e.turn, 2)
+        self.assertFalse(e.held(b2))
+        self.assertEqual(b2.mp, b2.max_mp)
+
+
 if __name__ == '__main__':
     unittest.main()

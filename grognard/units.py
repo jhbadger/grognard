@@ -13,6 +13,7 @@ A game lists its units in UNITS, each a dict:
               with RANGED = True, how far any unit can fire)
     m2        movement in the second movement phase (PHASES with 'move2')
     vp        what destroying it is worth to the enemy
+    release   the turn it may first move and attack (held until then)
     overrun   False if it can't overrun (with OVERRUN = True)
     steps     how many losses it can take (2 is usual: full, then reduced)
     ra, rd    attack and defence with one step left (default: halved)

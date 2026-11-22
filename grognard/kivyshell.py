@@ -7,6 +7,7 @@ import importlib
 import os
 
 from . import textfont
+from .widgets import screen_size
 
 W, H = 640, 480
 
@@ -164,15 +165,14 @@ class KivyShell:
         return tex
 
     def fit(self, *args):
+        """Choose the scale for the window's size, tell the game how big a
+        screen fills it (an upright window, a phone held upright, gets the
+        upright layout), and centre the picture."""
         ww, wh = self.Window.size
-        # an upright window (a phone held upright) gets the upright layout
-        self.g.portrait = wh > ww * 1.05
-        W, H = self.fsize
-        s = min(ww / W, wh / H)
-        # whole pixels look crisper when the screen is big enough for them
-        if s >= 2:
-            s = int(s * 2) / 2
+        s, size, portrait = screen_size(ww, wh)
+        self.g.set_screen(size, portrait)
         self.scale = s
+        W, H = self.fsize
         self.ox = (ww - W * s) / 2
         self.oy = (wh - H * s) / 2
         self.back.size = (ww, wh)

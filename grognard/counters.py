@@ -382,10 +382,14 @@ def counter(unit, side, size, style='nato', dim=False, flags=()):
                                          ink)
         size_marks(p.px, p.w, S // 2, by - 4, unit.size, ink)
         vals = unit.values()
-        if tiny_width(vals) > S - 2:
-            vals = vals.replace('-', '')
-            if tiny_width(vals) > S - 2:
-                vals = '%d-%d' % (unit.attack, unit.defense)
+        # too wide: leave off the movement, then the dashes, then all
+        # but attack and defence
+        for v in (vals, vals.rsplit('-', 1)[0], vals.replace('-', '')):
+            if tiny_width(v) <= S - 2:
+                vals = v
+                break
+        else:
+            vals = '%d-%d' % (unit.attack, unit.defense)
         tiny(p.px, p.w, (S - tiny_width(vals)) // 2, S - 7, vals, ink)
         if big:
             name = unit.name.upper()

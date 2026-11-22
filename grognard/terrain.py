@@ -75,6 +75,9 @@ TERRAIN = {
 #   cost    added to the cost of crossing (not along a road: bridges);
 #           None for can't cross
 #   halve   attacks across it are made at half strength
+#   shift   a column shift when every unit attacking next to the hex does
+#           so across one (a stone wall: -1, for the defender)
+#   posts   drawn as a rail with posts (a fence), not a band
 SIDES = {
     'stream': dict(name='Stream', colour='#4a86c8', width=1,
                    cost={'foot': 1, 'track': 1, 'wheel': 1}, halve=False),
@@ -83,6 +86,11 @@ SIDES = {
     'major':  dict(name='Major river', colour='#2e64b0', width=3,
                    cost={'foot': None, 'track': None, 'wheel': None},
                    halve=True),
+    'wall':   dict(name='Stone wall', colour='#a8a498', width=2,
+                   cost={'foot': 1, 'track': 1, 'wheel': 2}, halve=False,
+                   shift=-1),
+    'fence':  dict(name='Fence', colour='#5a4024', width=1, posts=True,
+                   cost={'foot': 1, 'track': 1, 'wheel': 1}, halve=False),
 }
 
 # Roads: what entering a hex along each costs, by movement class.

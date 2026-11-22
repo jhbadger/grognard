@@ -118,6 +118,9 @@ class AI:
                            else 1)
             if mine and for_them:
                 self.goals.append(([h], v, 'hold'))
+            elif not mine and for_them and e.control.get(h):
+                # the enemy took it and scores it: get it back
+                self.goals.append(([h], v, 'retake'))
             elif not mine and (for_me or for_them):
                 self.goals.append(([h], v, 'take'))
             elif not mine:
@@ -297,6 +300,12 @@ class AI:
                 if e.phase == 'move2' and attack:
                     continue        # after the fight: get clear first
                 s += value * (3.0 if attack else 1.2) / (1 + d / 2)
+            elif kind == 'retake':
+                if e.phase == 'move2':
+                    continue
+                s += value * 3.0 / (1 + d / 2)
+                if d <= 1 and u.attack > 0:
+                    s += value * 0.8        # close enough to strike
             elif kind == 'hunt':
                 if attack and u.attack > 0 and e.phase != 'move2':
                     s += value * 1.5 / (1 + max(0, d - u.range) / 2)
@@ -399,9 +408,14 @@ class AI:
             objv = obj['vp']
             if target in self.must_hold or target in self.must_take:
                 objv *= 4
-            if obj.get('for', self.side) != self.side and \
-                    e.control.get(target) == self.side:
+            enemy_scores = obj.get('for', e.enemy(self.side)) != self.side
+            if enemy_scores and e.control.get(target) == self.side:
                 objv *= 0.4
+            elif enemy_scores and e.control.get(target) not in (
+                    None, self.side):
+                # the enemy is scoring it now: taking it back is worth
+                # twice as much, and more as the end nears
+                objv *= 2 * (1.5 if e.turns - e.turn < 3 else 1)
         worth = sum(x.spec.get('vp', x.steps) for x in defenders)
         dval = worth / max(1, dsteps) + \
             0.1 * sum(x.attack for x in defenders) / max(1, dsteps)
@@ -447,7 +461,7 @@ class AI:
                 # keep units for other attacks: a little cost per unit
                 cost = 0.12 * len(a) + 0.08 * len(s)
                 if not a:
-                    cost += 0.3         # artillery alone: last resort
+                    cost += 0.1         # artillery alone: keep some back
                 bold = sum(1 for x in a + s
                            if self.posture_of(x) == 'attack') * 2 >= \
                     len(a) + len(s)

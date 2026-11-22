@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 
 from . import textfont
+from .widgets import screen_size
 
 W, H = 640, 480
 
@@ -42,7 +43,7 @@ class TkShell:
         self.zoom = z
         ww, wh = W * z[0] // z[1], H * z[0] // z[1]
         self.root.geometry('%dx%d' % (ww, wh))
-        self.root.minsize(W, H)
+        self.root.minsize(360, 480)
         self.canvas = tk.Canvas(self.root, width=ww, height=wh, bg='black',
                                 highlightthickness=0)
         self.canvas.pack(fill='both', expand=True)
@@ -64,6 +65,7 @@ class TkShell:
         self.full = False
         self.last = time.time()
         self.set_icon()
+        self.fit()
         # smooth text
         fs = textfont.spec(game.d)
         self.family = fs['family'] or \
@@ -143,23 +145,31 @@ class TkShell:
     def on_resize(self, e):
         if e.widget is not self.root:
             return
+        if (e.width, e.height) == self.win:
+            return
         self.win = (e.width, e.height)
-        # an upright window (a phone held upright) gets the upright layout
-        self.g.portrait = e.height > e.width * 1.05
-        self.place()
+        self.fit()
         self.g.dirty = True
 
+    def fit(self):
+        """Choose the scale for the window's size, and tell the game how
+        big a screen fills it (an upright window, a phone held upright,
+        gets the upright layout)."""
+        ww, wh = self.win
+        sc, size, portrait = screen_size(ww, wh,
+                                         [a / b for a, b in SCALES])
+        self.zoom = [z for z in SCALES if z[0] / z[1] == sc][0]
+        self.g.set_screen(size, portrait)
+        self.place()
+
     def place(self):
-        """Scale and centre the picture in the window."""
+        """Centre the picture in the window (there's at most a sliver of
+        border, where the window doesn't divide exactly)."""
         fw, fh = self.fsize
         ww, wh = self.win
-        best = (1, 1)
-        for (a, b) in SCALES:
-            if fw * a / b <= ww and fh * a / b <= wh:
-                best = (a, b)
-        self.zoom = best
-        self.ox = max(0, (ww - fw * best[0] // best[1]) // 2)
-        self.oy = max(0, (wh - fh * best[0] // best[1]) // 2)
+        a, b = self.zoom
+        self.ox = max(0, (ww - fw * a // b) // 2)
+        self.oy = max(0, (wh - fh * a // b) // 2)
         self.canvas.coords(self.item, self.ox, self.oy)
 
     def on_key(self, e):

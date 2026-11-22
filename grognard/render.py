@@ -96,12 +96,23 @@ class MapArt:
             d = hexgrid.direction(a, bb)
             (x0, y0), (x1, y1) = g.side_line(a, d)
             wdt = max(1, int(round(spec.get('width', 2) * sc)))
+            if spec.get('posts'):
+                # a fence: a rail, with posts along it
+                thick_line(s, x0, y0, x1, y1, 1, spec['colour'])
+                n = max(2, int(round(g.R / 4)))
+                for i in range(n + 1):
+                    t = i / n
+                    px, py = x0 + (x1 - x0) * t, y0 + (y1 - y0) * t
+                    pw = max(2, wdt + 1)
+                    s.rect(int(px) - pw // 2, int(py) - pw // 2, pw, pw,
+                           mix(spec['colour'], '#000000', 0.3))
+                continue
             thick_line(s, x0, y0, x1, y1, wdt + 2,
                        mix(spec['colour'], '#000000', 0.45))
             thick_line(s, x0, y0, x1, y1, wdt, spec['colour'])
         for (a, bb), kind in b.rivers.items():     # light middle on top
             spec = b.S[kind]
-            if spec.get('width', 2) * sc >= 2:
+            if spec.get('width', 2) * sc >= 2 and not spec.get('posts'):
                 d = hexgrid.direction(a, bb)
                 (x0, y0), (x1, y1) = g.side_line(a, d)
                 thick_line(s, x0, y0, x1, y1, 1,

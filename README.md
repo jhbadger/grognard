@@ -17,9 +17,10 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are two games so far: a Second World War battle, and a raid in a
+There are three games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
-optional rules for fast mechanized combat.
+optional rules for fast mechanized combat, and the most famous charge of
+the American Civil War.
 
 ```bash
 ./crossroads
@@ -27,6 +28,10 @@ optional rules for fast mechanized combat.
 
 ```bash
 ./saltmarsh
+```
+
+```bash
+./pickett
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -100,6 +105,40 @@ The setting, the units, their numbers and the map are all new; the
 mechanics are the genre's common stock, built into the engine so any
 game can use them.
 
+## Pickett's Charge: Gettysburg, 3 July 1863
+
+The third game. Lee's last throw at Gettysburg: three Confederate
+divisions against the centre of the Union line on Cemetery Ridge,
+across nearly a mile of open fields, aiming for a copse of trees behind
+a low stone wall.
+
+- **Ten turns** of fifteen minutes, from two in the afternoon. The
+  Confederates move first.
+- **The cannonade**: for two turns the Confederate infantry wait in the
+  woods of Seminary Ridge while their guns try to silence the Union
+  batteries. Then Pickett's, Pettigrew's and Trimble's brigades go in,
+  and Wilcox and Lang follow on the right. Bombardment is weak at long
+  range (much of the real one went over the ridge), and once the
+  infantry go the Confederate batteries are short of ammunition and fire
+  only every other turn.
+- **The field**: the fences along the Emmitsburg Road cost a point to
+  climb; the stone wall, with its angle, shifts every attack made across
+  it a column, the ridge another, and a battery in the hex attacked one
+  more (canister). Brigades stack two to a hex and can lose three steps
+  each.
+- **The Union**: Gibbon's and Hays's divisions of the II Corps behind the
+  wall, Stannard's Vermonters out in front on the left, Cushing's,
+  Arnold's, Brown's and McGilvery's guns, Rittenhouse's on Little Round
+  Top, and reinforcements from Hays's division, the Artillery Reserve
+  and the VI Corps.
+- **Winning**: the Confederates score the copse of trees (8), the Angle
+  (6), Ziegler's Grove and Harrow's line (2 each) if they hold them at
+  the end, and every Union step destroyed; the Federals score every
+  Confederate step. The Confederates must finish 5 VP ahead. Computer
+  against computer the Union holds a little more often than not, and
+  the attackers lose about as many steps as the defenders, though they
+  started with twice as many.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -108,11 +147,21 @@ the score, the objectives and who holds them, the phase, and an arrow
 pad), and a row along the bottom (the selected unit, the orders and the
 log).
 
+The screen fills the window. The window enlarges the game's pixels by a
+step that keeps them crisp (1½, 2, 2½... times), and the game lays its
+screen out at whatever size is left: the panels keep their size and the
+map takes the rest, so a bigger window shows more of the map, and one
+big enough moves up a step to bigger counters and text. A window taller
+than it is wide gets the upright layout: the map on top and the panels
+in columns underneath.
+
 - **Moving**: tap one of your units; what it can't reach goes dark. Tap
   a lit hex to move there. Roads are quickest. Moving next to an enemy
   unit (into its *zone of control*) stops a unit, unless a friendly unit
   is already there, and a unit can't move straight from one enemy zone to
-  another. Tap a stack again for the next unit in it, or *Whole stack*.
+  another. Select a stack and all its units show in a strip in the corner
+  of the map; tap one there (or the stack again) to pick it, or *Whole
+  stack*.
   *Undo* takes back moves until you bump into the enemy.
 - **Fighting**: enemy hexes you can attack are shaded red. Tap one and
   every unit that can join is outlined in green; tap your hexes to leave
@@ -185,7 +234,7 @@ the map on top and the panels in columns underneath.
 | `counters.py` | the counters: NATO symbols or little pictures, unit sizes, the numbers in a 3×5 font, reduced and out-of-supply marks |
 | `render.py` | paints the whole map once per zoom: terrain, grid, terrain edges, rivers along hexsides, roads and railways |
 | `view.py` | the map on screen: scrolling, zoom, units, highlights, flags, names |
-| `widgets.py` | the panels, each a widget, and how they're laid out wide and upright |
+| `widgets.py` | the panels, each a widget, and how they're laid out wide and upright at any size, and how big a screen a window gets |
 | `game.py` | the menu bar, the modes (title, play, dialogs, menus, charts), input, animation, the computer's turns, saving and settings |
 | `gfx.py`, `font.py`, `png.py` | the framebuffer, the bitmap font and PNG screenshots (from blobber) |
 | `textfont.py` | the size of the smooth font the windows draw text in |
@@ -195,7 +244,7 @@ the map on top and the panels in columns underneath.
 
 ### Text
 
-The game lays out its text in its own 640×480 pixels. When the window
+The game lays out its text in its own pixels (640×480 at the least). When the window
 can draw text itself (Tk and Kivy both can), the framebuffer doesn't draw
 text into its pixels; it records each string, where it goes, its colour
 and its shadow, and the window draws them over the scaled-up picture in
@@ -227,7 +276,7 @@ The rules are the classic ones, and each part can be changed by a game:
   each hex once a phase. Artillery adds its strength from up to its
   range, or bombards alone (and can't be hurt doing so). Up to
   `DEFENSIVE_FIRE` (2) of the defender's guns in range add their
-  strength to the defence. Attacks across a river (`halve`) and by units
+  strength to the defence against an assault (not a bombardment). Attacks across a river (`halve`) and by units
   out of supply are at half strength. The odds, rounded down, give a
   column of `CRT`; terrain `shift`s it (and an objective's own `shift`:
   fortifications), armour attacking into the `open` without anti-tank
@@ -247,6 +296,13 @@ The rules are the classic ones, and each part can be changed by a game:
   own (`spot`, 3 for reconnaissance), or 1 where they're in terrain that
   blocks sight (`los: False`), or in weather with its own `spot`; units
   that fought are seen for the rest of the turn.
+- **Walls and fences**: a hexside kind with a `shift` (the stock
+  `wall`, -1) shifts an attack when every unit attacking from next door
+  comes across one; the stock `fence` (drawn with `posts`) only slows
+  movement.
+- **Held units**: a unit with `release` set to a turn sits where it is,
+  not moving or attacking, until that turn (Pickett's infantry during
+  the cannonade).
 - **Optional rules for fast mechanized war** (Saltmarsh uses them all):
   - `PHASES = ['move', 'combat', 'move2']` adds a second movement phase
     after combat, for units with a second movement allowance `m2`;
@@ -312,10 +368,12 @@ of a scenario's balance (Crossroads comes out about even).
 ### Making a game
 
 A game is a script that defines a handful of names and calls
-`grognard.run()`. See `crossroads` for a complete one, and `saltmarsh`
-for one with the optional rules, its own unit types, NATO symbols drawn
-with `@grognard.symbol`, counter pictures, terrain with a hovercraft
-movement class, and its own panel colours.
+`grognard.run()`. See `crossroads` for a complete one; `saltmarsh` for
+one with the optional rules, its own unit types, NATO symbols drawn with
+`@grognard.symbol`, counter pictures, terrain with a hovercraft movement
+class, and its own panel colours; and `pickett` for walls, fences, held
+units, its own combat table, combat shifts and a turn hook (ammunition
+running short), and its own font.
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)
@@ -331,8 +389,10 @@ movement class, and its own panel colours.
   (each entry merged over the stock one)
 - `ROADS`: `(kind, [waypoints])`, each leg running straight from one hex
   to the next
-- `RIVERS`: `(kind, [sides])`, each side `'0603/0703'` (between two
-  hexes) or `'1417:SW,S,SE'` (a hex's sides by direction)
+- `RIVERS`: `(kind, [sides])` for rivers, streams, walls and fences,
+  each side `'0603/0703'` (between two hexes), `'1417:SW,S,SE'` (a
+  hex's sides by direction) or a pair of hexes (`pickett` works its
+  fences out in code)
 - `LABELS`, `OBJECTIVES`, `SUDDEN_DEATH`, `EXITS`, `STEP_VP`, `VICTORY`,
   `SCORE`
 - `UNITS` (see `units.py` for every field), with `hex` to start on the
