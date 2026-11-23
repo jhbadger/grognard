@@ -1,0 +1,461 @@
+#!/usr/bin/env python3
+"""Little Round Top: Gettysburg, 2 July 1863.  A sample game for the
+Grognard engine.
+
+The second day.  Longstreet's attack on the Union left begins with
+Hood's division, sent east across the farms below Warfield Ridge toward
+two rocky hills, the Round Tops, and the boulders of Devil's Den.  The
+smaller hill, which looks down the whole Union line, has no one on it
+but a few signal officers.  Play either side against the computer, or
+against a friend at the same screen.
+
+Run it with ./roundtop (Python 3 with Tk, nothing else).  The game is
+saved to ~/.roundtop.json.  ./roundtop --selftest checks the map and
+plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import hexgrid                           # noqa: E402
+
+ID = 'roundtop'
+TITLE = 'Little Round Top'
+SUBTITLE = 'Gettysburg, 2 July 1863'
+
+INTRO = [
+    "Gettysburg, Pennsylvania, the second day. The Union line runs south "
+    "along Cemetery Ridge in the shape of a fishhook. Lee means to roll "
+    "it up from the south, and Longstreet's corps, after a long march "
+    "and countermarch to stay out of sight, is at last in place along "
+    "Warfield Ridge.",
+
+    "Hood's division of Texans, Alabamians, Arkansans and Georgians goes "
+    "in first, at four o'clock. In front of it are the Slyder and "
+    "Bushman farms, a stony valley cut by Plum Run, the great boulders "
+    "of Devil's Den with Ward's brigade and Smith's guns on the ridge "
+    "above, and two wooded hills: Big Round Top and Little Round Top.",
+
+    "General Warren, Meade's chief engineer, has climbed Little Round Top "
+    "and found it empty but for the signal station. From its rocks a "
+    "battery could rake the whole Union line. He is sending for anyone "
+    "who can get there first.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='cs', name='Confederates', adj='Confederate', colour='#b8b6aa',
+         ink='#1a1a1a', posture='attack',
+         about="Hood's division: take Devil's Den, then Little Round Top "
+               'and the Union flank, before the Union can get men up the '
+               'hill.'),
+    dict(id='us', name='Union', adj='Union', singular=True,
+         colour='#6f8fc8', ink='#f4f4f4', posture='defend',
+         about='Hold the left of the line: get Vincent and Weed up Little '
+               'Round Top in time, and hold it to the end.'),
+]
+ORDER = ['cs', 'us']
+
+TURNS = 12
+
+
+def TURN_NAME(t):
+    """Twenty minutes a turn, from four o'clock."""
+    m = 16 * 60 + (t - 1) * 20
+    return ('2 Jul 1863', '%d:%02d PM' % ((m // 60 - 1) % 12 + 1, m % 60))
+
+
+STACK = 2               # regiments: two to a hex
+FOG = True              # woods and rocks: you see the next hex or two
+DEFENSIVE_FIRE = 1
+
+# The same table as Pickett's Charge: rifled muskets, an attacker pays
+# for ground even when it wins.
+CRT = {
+    'columns': ['1:2', '1:1', '1.5:1', '2:1', '3:1', '4:1', '5:1'],
+    'rows': [
+        ['A2', 'A2', 'A1', 'A1', 'A1', 'EX', 'EX'],
+        ['A2', 'A1', 'A1', 'A1', 'EX', 'EX', 'DR'],
+        ['A1', 'A1', 'EX', 'EX', 'EX', 'DR', 'D1R'],
+        ['A1', 'EX', 'EX', 'DR', 'D1R', 'D1R', 'D1R'],
+        ['EX', 'DR', 'DR', 'D1R', 'D1R', 'D2R', 'D2R'],
+        ['DR', 'D1R', 'D1R', 'D2R', 'D2R', 'D2R', 'DE'],
+    ],
+}
+
+CHARGE = 7              # from 6:00 the 20th Maine is running out of rounds
+MAINE = '20me'
+LAW = ('4al', '15al', '47al', '44al', '48al')
+THIRST = 5              # from 5:20 Law's men have marched 25 miles dry
+
+
+def ON_TURN(e, side):
+    """What happened on the hill, and the 20th Maine's charge."""
+    f = e.flags
+    me = e.units.get(MAINE)
+    if side == 'cs':
+        if e.turn == 1:
+            e.say('A shell bursts over the Bushman farm: General Hood is '
+                  'carried from the field with a shattered arm. Law takes '
+                  'the division, and the brigades drift apart.')
+        # the 20th Maine's attacked flag is still the one from its turn
+        if f.get('ready') and me and me.alive and me.attacked:
+            f['ready'] = False
+            f['charged'] = True
+            e.say('The 20th Maine is spent: the charge has swept down the '
+                  'hill, and there will not be another.')
+    else:
+        if e.turn == 1:
+            e.say('On the summit General Warren sees the glint of bayonets '
+                  'in the trees to the south-west, and sends for help.')
+        if e.turn >= CHARGE and me and me.alive and \
+                not f.get('ready') and not f.get('charged') and \
+                any(e.at(n, 'cs') for n in hexgrid.neighbours(me.hex)):
+            f['ready'] = True
+            e.say('The 20th Maine is nearly out of ammunition. Colonel '
+                  'Chamberlain orders bayonets fixed: its next attack is a '
+                  'charge.')
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """The 20th Maine's bayonet charge gains two columns.  Law's
+    Alabamians, who marched twenty-five miles and climbed Big Round Top
+    without filling their canteens, attack a column worse from 5:20 on
+    if every attacker is theirs."""
+    out = []
+    if e.side == 'us' and e.flags.get('ready') and \
+            any(u.id == MAINE for u in attackers):
+        out.append((2, 'bayonets'))
+    if e.side == 'cs' and e.turn >= THIRST and attackers and \
+            all(u.id in LAW for u in attackers):
+        out.append((-1, 'no water'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'K': 'crest', 'B': 'bigtop', 'r': 'rough', 'm': 'valley'}
+
+TERRAIN = {
+    'clear':  dict(name='Pasture', colour='#a9b86a', ink='#8a9a50',
+                   edge='#7a8a40'),
+    'fields': dict(name='Wheat', colour='#d2bf72', ink='#b49e52',
+                   edge='#9a8440'),
+    'woods':  dict(colour='#4f7a3a', ink='#2f5222', edge='#22401a'),
+    'hills':  dict(name='Slopes', colour='#b0b47a', ink='#7a7c4a',
+                   edge='#6e7040', shift=-1,
+                   move={'foot': 2, 'track': 2, 'wheel': 2}),
+    'rough':  dict(name='Boulders', colour='#a8a090', ink='#5e5850',
+                   edge='#4e4a40'),
+    'crest':  dict(name='Little Round Top', colour='#b4ac94',
+                   ink='#5e5648', pattern='rough', edge='#4a4234', z=5,
+                   shift=-2, open=False, los=True,
+                   move={'foot': 2, 'track': 3, 'wheel': 3}),
+    'bigtop': dict(name='Big Round Top', colour='#3e6a32', ink='#22401c',
+                   pattern='pines', edge='#1a3414', z=5, shift=-1,
+                   open=False, los=False,
+                   move={'foot': 3, 'track': 4, 'wheel': None}),
+    'valley': dict(name='Plum Run', colour='#8aa278', ink='#4a7a8a',
+                   pattern='marsh', edge='#3e6a5a', z=2, shift=0,
+                   open=True, los=True,
+                   move={'foot': 2, 'track': 3, 'wheel': 3}),
+    'town':   dict(name='Farm', colour='#b8a888', ink='#8a3a2a',
+                   shift=-1),
+}
+
+MAP = [
+    'hf...::f::f..f.:t.',
+    'hf..t:.ff:f..ff.:.',
+    'hf.:..fffhf..fhf..',
+    'hh.::..ffhf.mhhf:.',
+    'fh.....:fhh.mrKhf.',
+    'fh..:..:.hh..rKhf:',
+    'hf.t..f.:hr.mrhff.',
+    'hf...:ff:rrm.fhf..',
+    'hh..:.f..rrrffff..',
+    'hf.:...:..rfBBBf..',
+    'hf...t.:...fBBBB..',
+    'fh.:....f.ffBBBBf.',
+    'hf...:.ffffBBBBf..',
+    'hh....ffffffBBBf..',
+]
+
+ROADS = [
+    ('road', ['1801', '1814']),                         # Taneytown Road
+    ('road', ['0101', '1701']),                         # Wheatfield Road
+    ('trail', ['0111', '0611', '1009']),                # Slyder's lane
+    ('trail', ['0502', '1003']),                        # Rose farm lane
+    ('trail', ['1701', '1504']),                        # up the hill
+]
+
+
+def _plum_run():
+    """Plum Run comes down the valley west of Little Round Top, then
+    bends south-west past Devil's Den through the Slaughter Pen."""
+    out = ['13%02d:NW,SW' % r for r in range(1, 9)]
+    h = hexgrid.parse('1308')
+    for _ in range(6):
+        h = hexgrid.neighbour(h, 4)                     # SW
+        out.append(hexgrid.hid(h) + ':SE,S')
+    return out
+
+
+RIVERS = [('stream', _plum_run())]
+
+LABELS = {
+    '1505': 'Little Round Top', '1512': 'Big Round Top',
+    '1009': "Devil's Den", '1004': "Houck's Ridge", '1202': 'Plum Run',
+    '1307': 'Valley of Death', '1210': 'Slaughter Pen',
+    '0502': 'Rose farm', '0611': 'Slyder farm', '0407': 'Bushman farm',
+    '0105': 'Warfield Ridge', '0802': "Rose's Woods", '0901': 'Wheatfield',
+    '0908': 'Triangular Field', '1508': "Vincent's Spur",
+    '1701': 'Weikert farm', '1810': 'Taneytown Road',
+}
+
+OBJECTIVES = {
+    '1505': dict(name='Summit', vp=8, owner='us', **{'for': 'cs'}),
+    '1506': dict(name='Hazlett', vp=3, owner='us', **{'for': 'cs'}),
+    '1508': dict(name='Spur', vp=3, owner='us', **{'for': 'cs'}),
+    '1009': dict(name="Devil's Den", vp=3, owner='us', **{'for': 'cs'}),
+    '1007': dict(name="Houck's", vp=2, owner='us', **{'for': 'cs'}),
+    '1809': dict(name='Rear', vp=3, owner='us', **{'for': 'cs'}),
+}
+STEP_VP = 1
+SUMMIT = hexgrid.parse('1505')
+
+SUPPLY = {
+    'cs': dict(**{'from': ['W'], 'range': 20}),
+    'us': dict(**{'from': ['N', 'E'], 'range': 20}),
+}
+
+
+def VICTORY(e):
+    """The Confederates score the ground they hold and Union losses, the
+    Union Confederate losses, and the margin decides (set from games
+    between computer players: ./roundtop --simulate 60)."""
+    cs, us = e.vp('cs'), e.vp('us')
+    m = cs - us
+    score = 'Confederates %d VP, Union %d.' % (cs, us)
+    if m >= 12:
+        if e.control.get(SUMMIT) == 'cs':
+            return 'cs', ('Confederate victory. %s Guns on Little Round '
+                          'Top look down the length of Cemetery Ridge.'
+                          % score)
+        return 'cs', ("Confederate victory. %s Devil's Den and Houck's "
+                      'Ridge are taken, and the Union left is bled white.'
+                      % score)
+    if m >= 5:
+        return 'cs', 'Confederate marginal victory. %s' % score
+    if m > 0:
+        return 'us', ('Union marginal victory. %s The hill is held, and '
+                      "Devil's Den is a slaughter pen." % score)
+    return 'us', ('Union victory. %s The left of the line holds, and the '
+                  'Pennsylvania Reserves sweep down into the Valley of '
+                  'Death.' % score)
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'skirmish': dict(name='Sharpshooters', symbol='infantry', move='foot',
+                     spot=3),
+}
+
+LAW_C = '#c4bfa6'       # Law's Alabamians
+TEXAS = '#b4b2a4'       # Robertson's Texans and Arkansans
+BENNING = '#aeb0aa'
+ANDERSON = '#a2a8a8'
+CS_GUNS = '#c8c4b4'
+US_III = '#6a86b8'      # Birney's division, III Corps
+US_V = '#7896cc'        # the V Corps
+US_RES = '#8aa0c8'      # the Pennsylvania Reserves
+US_GUNS = '#86a2d4'
+
+
+def regt(uid, side, a, d, hx, formation, colour, long, steps=2, **kw):
+    """An infantry regiment (or a brigade in two halves): attack,
+    defence, and the hex it starts in (None if it arrives later, with
+    arrive and at)."""
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kw.pop('type', 'infantry'), size=kw.pop('size', 'III'),
+                a=a, d=d, m=kw.pop('m', 4), steps=steps, hex=hx,
+                formation=formation, colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+def guns(uid, side, a, rng, hx, formation, colour, long, **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type='artillery', size='I', a=a, d=2, m=kw.pop('m', 3),
+                range=rng, steps=1, hex=hx, formation=formation,
+                colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+VINCENT_AT = ['1501', '1601', '1401']
+WEED_AT = ['1601', '1701', '1501']
+
+UNITS = [
+    # ---- Hood's division, Longstreet's corps
+    regt('4al', 'cs', 4, 3, '0310', "Law's Brigade", LAW_C,
+         '4th Alabama'),
+    regt('44al', 'cs', 4, 3, '0311', "Law's Brigade", LAW_C,
+         '44th Alabama'),
+    regt('48al', 'cs', 4, 3, '0311', "Law's Brigade", LAW_C,
+         '48th Alabama'),
+    regt('47al', 'cs', 4, 3, '0312', "Law's Brigade", LAW_C,
+         '47th Alabama'),
+    regt('15al', 'cs', 5, 3, '0313', "Law's Brigade", LAW_C,
+         "15th Alabama (Colonel Oates)", steps=3),
+    regt('4tx', 'cs', 4, 3, '0309', "Robertson's Brigade", TEXAS,
+         '4th Texas'),
+    regt('5tx', 'cs', 5, 3, '0309', "Robertson's Brigade", TEXAS,
+         '5th Texas'),
+    regt('1tx', 'cs', 5, 3, '0308', "Robertson's Brigade", TEXAS,
+         '1st Texas'),
+    regt('3ar', 'cs', 4, 3, '0307', "Robertson's Brigade", TEXAS,
+         '3rd Arkansas'),
+    regt('ben1', 'cs', 6, 4, '0210', "Benning's Brigade", BENNING,
+         "Benning's Georgians: 2nd and 17th Georgia", steps=3, size='X',
+         name='BENNG1', release=2),
+    regt('ben2', 'cs', 6, 4, '0211', "Benning's Brigade", BENNING,
+         "Benning's Georgians: 15th and 20th Georgia", steps=3, size='X',
+         name='BENNG2', release=2),
+    regt('and1', 'cs', 6, 4, '0206', "Anderson's Brigade", ANDERSON,
+         "G. T. Anderson's Georgians: 7th, 8th and 9th Georgia", steps=3,
+         size='X', name='ANDSN1', release=2),
+    regt('and2', 'cs', 5, 4, '0207', "Anderson's Brigade", ANDERSON,
+         "G. T. Anderson's Georgians: 11th and 59th Georgia", steps=3,
+         size='X', name='ANDSN2', release=2),
+    guns('reilly', 'cs', 4, 8, '0109', "Henry's battalion", CS_GUNS,
+         "Reilly's and Latham's North Carolina batteries", name='REILLY'),
+    guns('bachmn', 'cs', 3, 8, '0112', "Henry's battalion", CS_GUNS,
+         "Bachman's and Garden's South Carolina batteries",
+         name='BACHMN'),
+
+    # ---- the Army of the Potomac
+    regt('2usss', 'us', 2, 2, '0710', "Ward's Brigade, III Corps", US_III,
+         '2nd US Sharpshooters (Berdan\'s), skirmishing in front',
+         steps=1, type='skirmish', size='II', name='2USSS'),
+    regt('4me', 'us', 3, 3, '1109', "Ward's Brigade, III Corps", US_III,
+         '4th Maine'),
+    regt('124ny', 'us', 3, 3, '1007', "Ward's Brigade, III Corps", US_III,
+         "124th New York (the Orange Blossoms)"),
+    regt('86ny', 'us', 3, 3, '1006', "Ward's Brigade, III Corps", US_III,
+         '86th New York'),
+    regt('20in', 'us', 3, 3, '1005', "Ward's Brigade, III Corps", US_III,
+         '20th Indiana'),
+    regt('99pa', 'us', 3, 3, '1004', "Ward's Brigade, III Corps", US_III,
+         '99th Pennsylvania'),
+    regt('detrob', 'us', 4, 4, '0902', "de Trobriand's Brigade, III Corps",
+         US_III, "de Trobriand's brigade, along the Wheatfield wall",
+         steps=3, size='X', name='DETROB'),
+    guns('smith', 'us', 4, 6, '1008', 'III Corps artillery', US_GUNS,
+         "Smith's 4th New York Battery, above Devil's Den", m=0),
+    regt('40ny', 'us', 4, 3, None, "de Trobriand's Brigade, III Corps",
+         US_III, '40th New York (the Mozart Regiment)', arrive=3,
+         at=['1201', '1301']),
+    regt('6nj', 'us', 2, 2, None, "Burling's Brigade, III Corps", US_III,
+         '6th New Jersey', steps=1, arrive=3, at=['1201', '1301']),
+
+    regt('20me', 'us', 3, 3, None, "Vincent's Brigade, V Corps", US_V,
+         "20th Maine (Colonel Chamberlain)", steps=3, arrive=2,
+         at=VINCENT_AT),
+    regt('83pa', 'us', 3, 3, None, "Vincent's Brigade, V Corps", US_V,
+         '83rd Pennsylvania', arrive=2, at=VINCENT_AT),
+    regt('44ny', 'us', 3, 3, None, "Vincent's Brigade, V Corps", US_V,
+         "44th New York (Ellsworth's Avengers)", arrive=2, at=VINCENT_AT),
+    regt('16mi', 'us', 2, 2, None, "Vincent's Brigade, V Corps", US_V,
+         '16th Michigan', arrive=2, at=VINCENT_AT),
+    regt('140ny', 'us', 4, 3, None, "Weed's Brigade, V Corps", US_V,
+         "140th New York (Colonel O'Rorke)", arrive=3, at=WEED_AT,
+         name='140NY'),
+    guns('hazlet', 'us', 4, 8, None, 'V Corps artillery', US_GUNS,
+         "Hazlett's Battery D, 5th US, hauled up by hand", arrive=3,
+         at=WEED_AT, name='HAZLET'),
+    regt('weed1', 'us', 3, 3, None, "Weed's Brigade, V Corps", US_V,
+         "146th New York and 91st Pennsylvania", arrive=4, at=WEED_AT,
+         size='X', name='WEED1'),
+    regt('weed2', 'us', 3, 3, None, "Weed's Brigade, V Corps", US_V,
+         '155th Pennsylvania', arrive=4, at=WEED_AT, name='155PA'),
+    regt('mccand', 'us', 5, 4, None, "Crawford's Division, V Corps",
+         US_RES, "McCandless's brigade of Pennsylvania Reserves", steps=3,
+         size='X', name='MCCAND', arrive=9, at=WEED_AT),
+    regt('fisher', 'us', 4, 4, None, "Crawford's Division, V Corps",
+         US_RES, "Fisher's brigade of Pennsylvania Reserves", steps=3,
+         size='X', name='FISHER', arrive=9, at=['1801', '1802']),
+]
+
+PANELS = dict(
+    right=['date', 'victory', 'objectives', 'phase', 'minimap', 'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1a1c16', panel='#2a2c22', light='#767a5e',
+              dark='#060804', accent='#e0c87a', button='#4a4c38',
+              button_hi='#9a9c74', button_lo='#1a1c16', red='#b03020')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE RACE. The Confederates move first. Little Round Top is empty: "
+    "Vincent's four regiments come up from the north on turn 2, O'Rorke's "
+    "140th New York and Hazlett's guns on turn 3, the rest of Weed's "
+    "brigade on turn 4 and Crawford's Pennsylvania Reserves on turn 9. "
+    "Benning's and Anderson's Georgians follow Law and Robertson in on "
+    "turn 2 (HELD until then).",
+
+    "THE GROUND. Regiments move 4; woods, boulders, slopes and the crest "
+    "cost 2, Big Round Top 3, Plum Run a point to cross. Boulders, woods, "
+    "slopes and farms give the defender a column, the crest of Little "
+    "Round Top two. In the woods and rocks you see only a hex or two of "
+    "the enemy. Two regiments fit in a hex.",
+
+    "THE 20TH MAINE. From 6:00, once the 20th Maine has lost a step, it "
+    "is nearly out of ammunition: its next attack is a bayonet charge, "
+    "two columns better. It charges only once. Law's Alabamians marched "
+    "twenty-five miles that day and never filled their canteens: from "
+    "5:20 an attack made by them alone is a column worse.",
+
+    "WINNING. The Confederates score the summit (8), Hazlett's position "
+    "and Vincent's Spur (3 each), Devil's Den (3), Houck's Ridge (2) and "
+    "the Taneytown Road in the Union rear (3) if they hold them at the "
+    "end, and every Union step destroyed; the Union scores every "
+    "Confederate step. The Confederates must finish 5 VP ahead to win (12 "
+    "for a clear victory); the Union wins clearly if the Confederates "
+    "aren't ahead at all.",
+]
+
+ICON = 'roundtop'
+
+
+@grognard.icon('roundtop')
+def draw_icon(p, n):
+    """Little Round Top: a rocky crest with a gun and a flag."""
+    p.fill('#d4dce0')
+    p.disc(n * 0.55, n * 1.15, n * 0.75, '#6a7a48')
+    p.disc(n * 0.55, n * 1.2, n * 0.7, '#8a8a62')
+    for x, y, r in ((0.3, 0.62, 0.09), (0.48, 0.55, 0.11),
+                    (0.68, 0.6, 0.1), (0.4, 0.75, 0.08),
+                    (0.78, 0.74, 0.08), (0.58, 0.72, 0.07)):
+        p.disc(n * x, n * y, n * r, '#a8a090')
+        p.disc(n * (x - 0.02), n * (y - 0.02), n * r * 0.5, '#c4bcac')
+    p.rect(n * 0.36, n * 0.44, n * 0.26, n * 0.05, '#2a2a2a')
+    p.disc(n * 0.42, n * 0.5, n * 0.05, '#5a3a1a')
+    p.rect(n * 0.7, n * 0.14, n * 0.02, n * 0.4, '#3a2a1a')
+    p.rect(n * 0.72, n * 0.14, n * 0.16, n * 0.1, '#2a4a9a')
+    p.rect(n * 0.72, n * 0.24, n * 0.16, n * 0.02, '#f4f4f4')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

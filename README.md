@@ -17,7 +17,7 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are ten games so far: a Second World War battle, a raid in a
+There are eleven games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
@@ -28,8 +28,9 @@ where you build your own units, the oldest battle: Tours, where the
 Frankish foot stood against the horsemen of al-Andalus in 732, the
 smallest: the Severn, a morning's fight in the woods of colonial
 Maryland, sometimes called the last battle of the English Civil War,
-and Wisconsin Heights, Black Hawk's rearguard on the bluffs above the
-Wisconsin River in 1832.
+Wisconsin Heights, Black Hawk's rearguard on the bluffs above the
+Wisconsin River in 1832, and Little Round Top, the fight for the left
+of the Union line on the second day at Gettysburg.
 
 ```bash
 ./crossroads
@@ -69,6 +70,10 @@ Wisconsin River in 1832.
 
 ```bash
 ./heights
+```
+
+```bash
+./roundtop
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -457,6 +462,50 @@ in detail. Afterwards the band kept on to the Mississippi, where at Bad
 Axe less than two weeks later hundreds of men, women and children were
 killed.
 
+## Little Round Top: Gettysburg, 2 July 1863
+
+The eleventh game, and the second at Gettysburg, the day before
+Pickett's Charge. Longstreet's attack on the Union left opens with
+Hood's division going east from Warfield Ridge toward Devil's Den and
+the two Round Tops. Little Round Top looks down the whole Union line,
+and when the attack begins there is no one on it but the signal
+station.
+
+- **Twelve turns** of twenty minutes, from four in the afternoon. The
+  Confederates move first. Regiments are the counters here, not
+  brigades.
+- **The race**: Law's Alabamians and Robertson's Texans and Arkansans
+  go in at once, Benning's and Anderson's Georgians a turn later. Ward's
+  brigade and Smith's battery hold Houck's Ridge and Devil's Den, with
+  de Trobriand by the Wheatfield. Vincent's four regiments reach the
+  hill on turn 2, O'Rorke's 140th New York and Hazlett's guns on turn 3,
+  the rest of Weed's brigade on turn 4, and Crawford's Pennsylvania
+  Reserves on turn 9.
+- **The ground**: woods, boulders, slopes and the crest cost 2 to
+  enter, Big Round Top 3, and Plum Run a point to cross. The boulders,
+  woods, slopes and farms give the defender a column, the crest of
+  Little Round Top two. Fog of war: in the trees and rocks you see a hex
+  or two.
+- **The 20th Maine**: from 6:00, with the enemy next to it, it's nearly
+  out of ammunition and its next attack is Chamberlain's bayonet charge,
+  two columns better. It charges once. Law's men, who had marched
+  twenty-five miles and climbed Big Round Top without filling their
+  canteens, attack a column worse on their own from 5:20.
+- **Winning**: the Confederates score the summit (8), Hazlett's
+  position and Vincent's Spur (3 each), Devil's Den (3), Houck's Ridge
+  (2) and the Taneytown Road behind the hill (3) if they hold them at
+  the end, and every Union step destroyed; the Union scores every
+  Confederate step. The Confederates must finish 5 VP ahead. Computer
+  against computer they win 29 games in 60, mostly by taking Devil's
+  Den, Houck's Ridge or Vincent's Spur and wearing the Union down. The
+  summit almost never falls, as it didn't in 1863.
+
+The order of battle is simplified: most regiments are their own
+counters, but Benning's, Anderson's, de Trobriand's and the
+Reserves' brigades are one or two counters each, and the strengths are
+set for play rather than counted from the returns. The map is drawn from
+the battlefield's well-known landmarks, not surveyed.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -755,7 +804,10 @@ gives up when it has lost half its steps (`engine.finish` from
 `ON_TURN`), a ship that supports from the water, and a movement class
 of its own for moving through woods; and `heights` for units that can't
 fight and must get away (`EXITS` with `types`), a crossing closed until
-a given turn (`ENTER_COST`), and night.
+a given turn (`ENTER_COST`), and night; and `roundtop` for a
+one-time rule kept in `engine.flags` (the 20th Maine's charge: made
+ready in `ON_TURN`, used in `COMBAT_SHIFTS`, spent once the unit has
+attacked) and terrain of its own (the crest, Big Round Top, Plum Run).
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)
