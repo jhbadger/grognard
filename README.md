@@ -17,15 +17,17 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are eight games so far: a Second World War battle, a raid in a
+There are nine games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
 Mexican-American War, a dawn rising in the streets of Belém in
 Brazil's war of independence, a battle at sea: Trafalgar, Far
 Suns, a game of exploring, settling and conquering a cluster of stars,
-where you build your own units, and the oldest battle: Tours, where the
-Frankish foot stood against the horsemen of al-Andalus in 732.
+where you build your own units, the oldest battle: Tours, where the
+Frankish foot stood against the horsemen of al-Andalus in 732, and the
+smallest: the Severn, a morning's fight in the woods of colonial
+Maryland, sometimes called the last battle of the English Civil War.
 
 ```bash
 ./crossroads
@@ -57,6 +59,10 @@ Frankish foot stood against the horsemen of al-Andalus in 732.
 
 ```bash
 ./tours
+```
+
+```bash
+./severn
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -366,6 +372,45 @@ and the size of the armies are all argued over. The order of battle and
 the map follow the usual account (Moussais-la-Bataille, north of
 Poitiers), not a survey.
 
+## The Severn: Maryland, 25 March 1655
+
+The ninth game. The Puritans of Providence, near present-day
+Annapolis, have taken the government of Lord Baltimore's colony and
+put out its governor, William Stone. Stone comes up the Chesapeake with
+Baltimore's men and Piscataway allies, partly by land and partly in
+boats, to take it back; the merchant ship Golden Lyon fires on his boats
+and he lands on a wooded neck by the Severn. In the morning William
+Fuller marches out to meet him under an English flag borrowed from the
+ship. Both sides say they are loyal to Cromwell.
+
+- **Ten turns** of a quarter of an hour. The Puritans move first,
+  coming in from Providence to the west on the first two turns; Stone's
+  force starts in the woods round its boats at the tip of the neck.
+  Companies of twenty or thirty men, two to a hex, hidden in the woods
+  until the enemy is next door.
+- **Musketry** at close range, on a fire table of its own where even
+  odds draw blood. The Puritan volley was far more effective: Puritan
+  musketeers firing from the next hex gain a column. The Piscataway
+  move through the woods as if they were open ground, and attacking
+  them there costs a column.
+- **The Golden Lyon** lies in the creek: her guns support Puritan
+  attacks within 3 hexes and fire on attacks there. Stone's men can try
+  to burn her from the shore (4 VP), but it takes most of his force.
+- **Breaking**: at the start of its turn a side that has lost half its
+  steps gives up (Stone orders his men to lay down their arms, or
+  Fuller falls back on Providence), and so does Stone's force if Stone
+  is down. Otherwise the score decides: the clearing, each step that
+  gets down the path to Providence, the ship and Puritan steps for
+  Stone; his boats, Stone himself and Stone's steps for the Puritans,
+  who win ties. Computer against computer Stone wins a little over one
+  game in four (17 in 60), and the Puritans, as in 1655, lose far fewer
+  men than he does.
+
+The record is two sets of partisan accounts that don't agree on much:
+Stone had 130 men or 200 to 250, Fuller 100 to 170, and the hour isn't
+known. The map and the companies are a guess, after the American
+Battlefield Trust's account.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -659,7 +704,10 @@ own widget (the wind) and its own counter symbol and picture; and
 `SETUP`, its own orders, a side that never moves, and its own computer
 player; and `tours` for a unit type of its own (spearmen who cancel the
 cavalry's shock), `ON_ELIMINATE` (a leader's death), and a VP bonus
-kept in `engine.bonus` (the plunder).
+kept in `engine.bonus` (the plunder); and `severn` for a side that
+gives up when it has lost half its steps (`engine.finish` from
+`ON_TURN`), a ship that supports from the water, and a movement class
+of its own for moving through woods.
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)

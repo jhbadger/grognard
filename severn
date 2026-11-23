@@ -1,0 +1,376 @@
+#!/usr/bin/env python3
+"""The Severn: the battle of 25 March 1655, Maryland.  A sample game for
+the Grognard engine.
+
+England's civil wars reach the Chesapeake.  The Puritans of Providence
+have taken the government of Lord Baltimore's colony, and the governor
+they put out, William Stone, has come up the bay with Baltimore's men
+and their Piscataway allies to take it back.  He has landed on a wooded
+neck by the mouth of the Severn; William Fuller is marching out to meet
+him, under a flag borrowed from the merchant ship Golden Lyon.  Play
+either side against the computer, or against a friend at the same
+screen.
+
+Run it with ./severn (Python 3 with Tk, nothing else).  The game is
+saved to ~/.severn.json.  ./severn --selftest checks the map and plays a
+game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import counters, hexgrid                 # noqa: E402
+
+ID = 'severn'
+TITLE = 'The Severn'
+SUBTITLE = 'Maryland, 25 March 1655'
+
+INTRO = [
+    "March 1655. In England, Cromwell rules. In Maryland, Lord "
+    "Baltimore's colony on the Chesapeake, the Puritans who settled at "
+    "Providence on the Severn have taken the government, backed by the "
+    "commissioners Parliament sent to Virginia. They have put out the "
+    "governor, William Stone, and repealed the law that let Catholics "
+    "and Protestants worship side by side.",
+
+    "Stone has come up the bay to take the colony back: Baltimore's "
+    "Catholics and loyal Protestants from St. Mary's, and Piscataway "
+    "warriors, partly by land and partly in boats, under Baltimore's "
+    "black and yellow colours. A week of messages came to nothing. "
+    "Yesterday the merchant ship Golden Lyon, in Providence harbour, "
+    "fired on his boats, and he landed on a wooded neck out of reach of "
+    "her guns. In the night her captain, Roger Heamans, heard Stone's "
+    "men meant to burn her, and moved her into a creek.",
+
+    "This morning William Fuller, the Puritan governor, has marched out "
+    "of Providence with the men of the settlement, under an English flag "
+    "borrowed from the Golden Lyon. Both sides say they are loyal to the "
+    "Commonwealth. Across a clearing in the woods, one side cheers "
+    "\"Hey for St. Mary's!\", the other \"God is our strength.\"",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='md', name='Proprietary', adj='Proprietary', singular=True,
+         colour='#e0b830', ink='#1a1a1a', posture='attack',
+         about="Governor Stone's force for Lord Baltimore: break Fuller's "
+               'men, march on Providence, and burn the ship that fired '
+               'on your boats.'),
+    dict(id='pu', name='Puritans', adj='Puritan', colour='#ece8dc',
+         ink='#b02020', posture='attack',
+         about="Governor Fuller's men of Providence: meet Stone in the "
+               'woods, take his boats, and make him lay down his arms.'),
+]
+ORDER = ['pu', 'md']
+
+TURNS = 10
+
+
+def TURN_NAME(t):
+    """A quarter of an hour a turn, from eight in the morning (the
+    sources say only that Fuller marched out in the morning)."""
+    m = 8 * 60 + (t - 1) * 15
+    return ('25 Mar 1655', '%d:%02d AM' % (m // 60, m % 60))
+
+
+STACK = 2
+
+# Musketry at a few dozen yards: even odds draw blood, and a line gives
+# way only to heavy fire.
+CRT = {
+    'columns': ['1:2', '1:1', '1.5:1', '2:1', '3:1', '4:1'],
+    'rows': [
+        ['A1', 'A1', 'EX', 'EX', 'D1', 'D1R'],
+        ['A1', 'EX', 'EX', 'D1', 'D1R', 'D1R'],
+        ['EX', 'EX', 'D1', 'D1R', 'D1R', 'D2R'],
+        ['EX', 'D1', 'D1R', 'D1R', 'D2R', 'D2R'],
+        ['D1', 'D1R', 'D1R', 'D2R', 'D2R', 'DE'],
+        ['D1R', 'D1R', 'D2R', 'D2R', 'DE', 'DE'],
+    ],
+}
+FOG = True              # woods
+DEFENSIVE_FIRE = 1      # the ship's guns
+STEP_VP = 1
+
+BOATS = hexgrid.parse('1707')
+SHIP = hexgrid.parse('1010')
+CLEARING = hexgrid.parse('0707')
+
+# Each side's steps; half of them gone and it gives up the fight.
+BREAK = 0.5
+
+
+def _steps(e, side):
+    return sum(u.max_steps for u in e.units.values() if u.side == side
+               and u.attack_full > 0 and u.id != 'lyon')
+
+
+def ON_TURN(e, side):
+    """Breaking: at the start of the Proprietary turn, if Stone's force
+    has lost half its steps, or Stone himself is down, he orders his men
+    to lay down their arms.  At the start of the Puritans' turn, if they
+    have lost half theirs, Fuller falls back on Providence."""
+    if side == 'md':
+        if e.lost['md'] >= _steps(e, 'md') * BREAK or \
+                e.units['stone'].status == 'dead':
+            e.finish('pu', 'Puritan victory. %s Stone orders his men to lay '
+                     'down their arms; some escape into the woods, the rest '
+                     'are marched to Providence as prisoners.' % _score(e))
+    elif e.turn > 1 and e.lost['pu'] >= _steps(e, 'pu') * BREAK:
+        e.finish('md', 'Proprietary victory. %s Fuller falls back on '
+                 "Providence, and the Puritans must treat with Lord "
+                 "Baltimore's governor." % _score(e))
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """The Puritan volley was far more effective: Puritan foot attacking
+    from the next hex gain a column.  The Piscataway fight from cover:
+    attacking a hex of woods where they stand costs a column more."""
+    out = []
+    if e.side == 'pu' and any(u.kind == 'foot' and
+                              hexgrid.distance(u.hex, target) == 1
+                              for u in attackers):
+        out.append((1, 'volley'))
+    if e.board.hexes.get(target) == 'woods' and \
+            any(u.kind == 'native' for u in e.at(target)):
+        out.append((-1, 'Piscataway'))
+    if target == SHIP:
+        out.append((-1, 'from the shore'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'S': 'creek', 'b': 'landing'}
+
+TERRAIN = {
+    'clear':  dict(name='Clearing', colour='#a8b070', ink='#88924e',
+                   edge='#6e7840'),
+    'fields': dict(name='Tobacco field', colour='#bca868', ink='#96844a',
+                   edge='#7a6a3a'),
+    'woods':  dict(colour='#4a6e3a', ink='#2a4a20', edge='#1a3412',
+                   move={'skirmish': 1}),
+    'marsh':  dict(name='Salt marsh', colour='#8a9e74', ink='#4a7a8a'),
+    'water':  dict(colour='#3e6a94', ink='#6a94c0'),
+    'creek':  dict(name='The creek', colour='#4a7aa0', ink='#7aa4c8',
+                   pattern='water', edge='#2a4a6a', z=9, shift=0,
+                   open=False, los=True,
+                   move={'foot': None, 'skirmish': None, 'track': None,
+                         'wheel': None, 'ship': 1}),
+    'landing': dict(name='The landing', colour='#d0c494', ink='#a89a6a',
+                    pattern='grass', edge='#8a7a50', z=2),
+}
+
+MAP = [
+    '~~~~~~~~~~~~~~~~~~',
+    '.f~~~~~~~~~~~~~~~~',
+    'ff.ff~~~~~~~~~~~~~',
+    'fff.fff.ffff~~~~~~',
+    '.f.ff.f..fff.ff~~~',
+    '..ff....fff..ff.~~',
+    '.f.f.....ff.f.m.b~',
+    'ff.f....fff..ff.~~',
+    'f.fff.f.ff.ff.m~~~',
+    '.ff.ff.ffSff.m~~~~',
+    'ff.:f~~~~~~~~~~~~~',
+    '~~~~~~~~~~~~~~~~~~',
+]
+
+ROADS = [
+    ('trail', ['0107', '0707', '1307', '1707']),
+    ('trail', ['0707', '0909']),
+]
+
+LABELS = {
+    '0707': 'The clearing', '1707': "Stone's boats", '1010': 'Golden Lyon',
+    '0107': 'to Providence', '0802': 'Severn River', '1211': 'The creek',
+    '1504': 'Chesapeake Bay',
+}
+
+OBJECTIVES = {
+    '1707': dict(name='Boats', vp=4, owner='md', **{'for': 'pu'}),
+    '0707': dict(name='Clearing', vp=3, owner=None, **{'for': 'md'}),
+}
+
+# Stone's men who get past Fuller, down the path to Providence.
+PU_AT = ['0106', '0107', '0108']
+EXITS = {'md': dict(hexes=PU_AT, vp=1)}
+
+SUPPLY = {
+    'md': dict(**{'from': ['1707'], 'range': 12}),
+    'pu': dict(**{'from': ['W'], 'range': 12}),
+}
+
+
+def _score(e):
+    return 'Proprietary %d VP, Puritans %d.' % (e.vp('md'), e.vp('pu'))
+
+
+def VICTORY(e):
+    """If neither side has broken by the end of the morning, the score
+    decides: the Proprietary side scores the clearing, 1 for each step
+    that gets past to Providence, 4 for the Golden Lyon burnt and the
+    Puritan steps destroyed; the Puritans the boats, 3 for Stone and
+    Stone's steps.  Ties go to the Puritans, who hold the colony."""
+    md, pu = e.vp('md'), e.vp('pu')
+    if md > pu:
+        return 'md', ('Proprietary marginal victory. %s Fuller pulls back '
+                      'to Providence, and Stone is still in the field.'
+                      % _score(e))
+    return 'pu', ('Puritan marginal victory. %s Stone falls back to his '
+                  'boats, and the Puritans keep the colony.' % _score(e))
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'foot':   dict(name='Musketeers', symbol='infantry', move='foot'),
+    'native': dict(name='Piscataway warriors', symbol='infantry',
+                   move='skirmish', spot=3),
+    'ship':   dict(name='Ship', symbol='ship', move='ship', zoc=False,
+                   support=True, fate='is set on fire and burns'),
+}
+
+
+@grognard.symbol('ship')
+def s_ship(p, x, y, w, h, c):
+    """A merchantman: a hull and three masts."""
+    base = y + h - 3
+    p.rect(x + 1, base, w - 2, 1, c)
+    p.rect(x + 2, base + 1, w - 4, 1, c)
+    sw = max(1, w // 9)
+    for k in (0.28, 0.5, 0.72):
+        mx = int(x + (w - 1) * k)
+        p.rect(mx, y + 1, 1, base - y - 1, c)
+        p.rect(mx - sw, y + 2, 2 * sw + 1, max(1, (base - y - 3) // 2), c)
+
+
+counters.PICTURES['ship'] = [
+    '...#..#..#.', '..###.##.##', '..###.##.##', '...#..#..#.',
+    '#.###.##.##', '###########', '.#+#+#+#+#.', '..#######..']
+
+MD = '#e0b830'          # St. Mary's men
+MD_PROT = '#d4b450'     # loyal Protestants
+PISC = '#c8a86a'
+PU = '#ece8dc'
+LYON = '#d8d4c8'
+
+
+def company(uid, side, a, d, hx, long, colour, formation, m=3, **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kw.pop('type', 'foot'), size=kw.pop('size', 'I'),
+                a=a, d=d, m=m, steps=kw.pop('steps', 2), hex=hx,
+                long=long, colour=colour, formation=formation)
+    spec.update(kw)
+    return spec
+
+
+UNITS = [
+    # ---- Governor Stone's force
+    company('stone', 'md', 3, 2, '1307',
+            'Governor William Stone and his officers', MD, 'Stone',
+            vp=3, name='STONE'),
+    company('stm1', 'md', 3, 2, '1206', "St. Mary's men", MD,
+            "St. Mary's County", name='STMRY1'),
+    company('stm2', 'md', 3, 2, '1208', "St. Mary's men", MD,
+            "St. Mary's County", name='STMRY2'),
+    company('stm3', 'md', 3, 2, '1406', "St. Mary's men", MD,
+            "St. Mary's County", name='STMRY3'),
+    company('prot1', 'md', 2, 2, '1407', 'Loyal Protestant planters',
+            MD_PROT, 'The Protestants', name='PLNTR1'),
+    company('prot2', 'md', 2, 2, '1308', 'Loyal Protestant planters',
+            MD_PROT, 'The Protestants', name='PLNTR2'),
+    company('pisc1', 'md', 3, 2, '1105', 'Piscataway warriors', PISC,
+            'The Piscataway', type='native', m=4, name='PISC1'),
+    company('pisc2', 'md', 3, 2, '1109', 'Piscataway warriors', PISC,
+            'The Piscataway', type='native', m=4, name='PISC2'),
+    company('boatmen', 'md', 1, 2, '1707', 'Boatmen and the baggage', MD,
+            'The boats', steps=1, name='BOATS'),
+
+    # ---- the men of Providence
+    company('fuller', 'pu', 3, 2, None,
+            'Governor William Fuller and his officers', PU, 'Fuller',
+            vp=3, name='FULLER', arrive=1, at=PU_AT),
+    company('prov1', 'pu', 3, 2, None, 'Men of Providence', PU,
+            'Providence', name='PROV1', arrive=1, at=PU_AT),
+    company('prov2', 'pu', 3, 2, None, 'Men of Providence', PU,
+            'Providence', name='PROV2', arrive=1, at=PU_AT),
+    company('prov3', 'pu', 3, 2, None, 'Men of Providence', PU,
+            'Providence', name='PROV3', arrive=1, at=PU_AT),
+    company('prov4', 'pu', 3, 2, None, 'Men of the Severn plantations',
+            PU, 'Providence', name='SEVRN', arrive=2, at=PU_AT),
+    company('lyon', 'pu', 3, 14, '1010', "The Golden Lyon's guns", LYON,
+            'Captain Roger Heamans', type='ship', range=3, m=0, steps=2,
+            size='', vp=4, name='LYON'),
+]
+
+PANELS = dict(
+    right=['date', 'victory', 'objectives', 'phase', 'minimap', 'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#141a14', panel='#232c22', light='#6a7e5e',
+              dark='#060806', accent='#e0b830', button='#3e4c38',
+              button_hi='#7e9470', button_lo='#141a14', red='#b02020')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE FIGHT. The Puritans move first: Fuller's men march in from "
+    "Providence, to the west, on the first two turns. Stone's force "
+    "has landed at the tip of the neck and is in the woods around its "
+    "boats. Companies of twenty or thirty men, two to a hex; woods hide "
+    "them until the enemy is next door.",
+
+    "THE VOLLEY. Puritan musketeers attacking from the next hex gain a "
+    "column (their volley was far more effective). The Piscataway move "
+    "through the woods as if it were open ground, see farther, and "
+    "attacking them in the woods costs a column.",
+
+    "THE GOLDEN LYON lies in the creek to the south. Her guns support "
+    "Puritan attacks within 3 hexes and fire on attacks there; she "
+    "can't move. Stone's men can attack her from the shore, a column "
+    "down and against a strong defence: burnt, she's worth 4 VP to them.",
+
+    "BREAKING. At the start of its turn a side that has lost half its "
+    "steps gives up: Stone orders a surrender, or Fuller falls back on "
+    "Providence. So does Stone's force if Stone is down. Otherwise, at "
+    "the end, the score decides: the clearing (3), each step that gets "
+    "down the path to Providence at the west edge (1), the ship (4) and "
+    "Puritan steps for Stone; his boats (4), Stone himself (3) and his steps for "
+    "the Puritans, who win ties.",
+]
+
+ICON = 'severn'
+
+
+@grognard.icon('severn')
+def draw_icon(p, n):
+    """Baltimore's black and yellow over the river, and the English
+    cross on the shore."""
+    p.fill('#9ab8d0')
+    p.rect(0, n * 0.62, n, n * 0.38, '#3e6a94')
+    p.rect(0, n * 0.55, n, n * 0.1, '#4a6e3a')
+    p.rect(n * 0.18, n * 0.12, n * 0.03, n * 0.5, '#3a2a1a')
+    for i in range(4):
+        for j in range(2):
+            c = '#e0b830' if (i + j) % 2 else '#1a1a1a'
+            p.rect(n * (0.21 + i * 0.07), n * (0.12 + j * 0.1),
+                   n * 0.07, n * 0.1, c)
+    p.rect(n * 0.68, n * 0.2, n * 0.03, n * 0.42, '#3a2a1a')
+    p.rect(n * 0.71, n * 0.2, n * 0.24, n * 0.16, '#f4f0e8')
+    p.rect(n * 0.81, n * 0.2, n * 0.04, n * 0.16, '#c02020')
+    p.rect(n * 0.71, n * 0.26, n * 0.24, n * 0.04, '#c02020')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])
