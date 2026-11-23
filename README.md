@@ -17,7 +17,7 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are nine games so far: a Second World War battle, a raid in a
+There are ten games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
@@ -25,9 +25,11 @@ Mexican-American War, a dawn rising in the streets of Belém in
 Brazil's war of independence, a battle at sea: Trafalgar, Far
 Suns, a game of exploring, settling and conquering a cluster of stars,
 where you build your own units, the oldest battle: Tours, where the
-Frankish foot stood against the horsemen of al-Andalus in 732, and the
+Frankish foot stood against the horsemen of al-Andalus in 732, the
 smallest: the Severn, a morning's fight in the woods of colonial
-Maryland, sometimes called the last battle of the English Civil War.
+Maryland, sometimes called the last battle of the English Civil War,
+and Wisconsin Heights, Black Hawk's rearguard on the bluffs above the
+Wisconsin River in 1832.
 
 ```bash
 ./crossroads
@@ -63,6 +65,10 @@ Maryland, sometimes called the last battle of the English Civil War.
 
 ```bash
 ./severn
+```
+
+```bash
+./heights
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -411,6 +417,46 @@ Stone had 130 men or 200 to 250, Fuller 100 to 170, and the hour isn't
 known. The map and the companies are a guess, after the American
 Battlefield Trust's account.
 
+## Wisconsin Heights: the Black Hawk War, 21 July 1832
+
+The tenth game. Black Hawk's "British Band" of Sauk and Meskwaki, about a
+thousand people, most of them families, has fled for weeks through what
+will be Wisconsin, starving, with the militia on its trail. At the
+Wisconsin River the families build rafts and cross, while Black Hawk
+and perhaps fifty to eighty warriors hold six or seven hundred mounted
+volunteers under Henry Dodge and James D. Henry on the heights above.
+
+- **Ten turns**: six of the day, two of dusk and two of night (the
+  sources don't give the hour). The militia move first: Dodge's and
+  Ewing's battalions on turn 1, Henry's three Illinois regiments on
+  turns 2 and 3, with Ho-Chunk scouts already ahead.
+- **The crossing**: the families of the band (lodge counters, which
+  can't fight and have no zone of control) must get down through the
+  river bottoms to the crossing. From turn 3, when the rafts are ready,
+  each group that ends its move there goes over.
+- **The rearguard**: the warriors move through woods, tall grass and up
+  the heights at 1 a hex and see 3 hexes; the heights and the knoll
+  give a column, and attacking warriors in woods or tall grass costs
+  the militia another. Militia attacking with three battalions or more
+  charge with the bayonet and gain a column. At night the militia,
+  who put off their attack until morning, attack two columns worse,
+  and before dawn Neapope calls out from the knoll in a language no
+  one left with them understands.
+- **Winning**: the Sauk score 4 for each group of the band that gets
+  across and 2 for each militia step; the militia each warrior step, 4
+  for each group of the band overtaken, Black Hawk (4), and the knoll
+  and the crossing if they hold them at the end. Computer against
+  computer the Sauk win 28 games in 60: about half the families get
+  across, and the warriors lose six times as many steps as the
+  militia.
+
+The order of battle is simplified, and the map is a reasonable guess,
+not a survey: the account it follows (Wikipedia's) gives the numbers
+(600 to 750 militia, 50 to 80 warriors) but not the hour or the ground
+in detail. Afterwards the band kept on to the Mississippi, where at Bad
+Axe less than two weeks later hundreds of men, women and children were
+killed.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -707,7 +753,9 @@ cavalry's shock), `ON_ELIMINATE` (a leader's death), and a VP bonus
 kept in `engine.bonus` (the plunder); and `severn` for a side that
 gives up when it has lost half its steps (`engine.finish` from
 `ON_TURN`), a ship that supports from the water, and a movement class
-of its own for moving through woods.
+of its own for moving through woods; and `heights` for units that can't
+fight and must get away (`EXITS` with `types`), a crossing closed until
+a given turn (`ENTER_COST`), and night.
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)

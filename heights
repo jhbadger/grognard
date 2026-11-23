@@ -1,0 +1,383 @@
+#!/usr/bin/env python3
+"""Wisconsin Heights: the battle of 21 July 1832.  A sample game for
+the Grognard engine.
+
+The Black Hawk War.  Black Hawk's band of Sauk and Meskwaki, perhaps a
+thousand people, most of them women, children and old people, hungry
+and worn out by weeks of flight, has reached the Wisconsin River with
+the militia close behind.  While the families build rafts and cross,
+Black Hawk and a few dozen warriors must hold off six or seven hundred
+mounted volunteers on the heights above the river.  Play either side
+against the computer, or against a friend at the same screen.
+
+Run it with ./heights (Python 3 with Tk, nothing else).  The game is
+saved to ~/.heights.json.  ./heights --selftest checks the map and
+plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import counters, hexgrid                 # noqa: E402
+
+ID = 'heights'
+TITLE = 'Wisconsin Heights'
+SUBTITLE = 'The Black Hawk War, 21 July 1832'
+
+INTRO = [
+    "July 1832. In April Black Hawk led the \"British Band\" of Sauk and "
+    "Meskwaki, about a thousand people, back across the Mississippi into "
+    "Illinois, to the lands he said a treaty of 1804 had never truly "
+    "sold. The allies he had been promised never came. Since then the "
+    "band has been fleeing north and west through what will be "
+    "Wisconsin, trying to get home across the Mississippi.",
+
+    "They are starving; some have died on the trail. Behind them come "
+    "the mounted volunteers of Colonel Henry Dodge and General James D. "
+    "Henry, with Ho-Chunk scouts, who today have ridden twenty-five "
+    "miles from the Four Lakes on the band's trail.",
+
+    "Now the band has reached the Wisconsin River. The families must "
+    "build rafts and cross. Black Hawk turns with his warriors, perhaps "
+    "fifty or eighty of them, to hold the heights above the river until "
+    "they are over.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='sk', name='Sauk and Meskwaki', adj='Sauk', colour='#8a5a34',
+         ink='#f4e6c8', posture='defend',
+         about="Black Hawk's band: hold the militia off on the heights "
+               'while the families get down to the river and across.'),
+    dict(id='us', name='Militia', adj='Militia', colour='#4e6a96',
+         ink='#f4f4f4', posture='attack',
+         about="Dodge's and Henry's mounted volunteers: break through the "
+               'warriors on the heights before the band is over the '
+               'river.'),
+]
+ORDER = ['us', 'sk']
+
+TURNS = 10
+DUSK, NIGHT = 7, 9
+
+
+def TURN_NAME(t):
+    """The sources don't give the hour: the day turns, then dusk and the
+    night, when the militia put off their attack until morning."""
+    if t >= NIGHT:
+        part = 'Night'
+    elif t >= DUSK:
+        part = 'Dusk'
+    else:
+        part = 'Day'
+    return ('21 Jul 1832', part)
+
+
+STACK = 2
+FOG = True
+DEFENSIVE_FIRE = 0
+STEP_VP = {'sk': 2, 'us': 1}
+
+WEATHER = {1: 'clear', DUSK: 'dusk', NIGHT: 'night'}
+WEATHER_TYPES = {
+    'dusk': dict(name='Dusk', icon='fog', air=False, spot=1),
+    'night': dict(name='Night', icon='cloud', air=False, spot=1),
+}
+
+CROSSING = [hexgrid.parse(h) for h in ('0205', '0206', '0207')]
+RAFTS = 3               # the first turn the rafts are ready
+KNOLL = hexgrid.parse('0606')
+
+
+def ENTER_COST(e, unit, a, b, cost):
+    """Nobody crosses until the rafts are built."""
+    if b in CROSSING and e.turn < RAFTS:
+        return None
+    return cost
+
+
+def ON_TURN(e, side):
+    if side == 'us' and e.turn == RAFTS:
+        e.say('The rafts are ready at the river.')
+    if side == 'sk' and e.turn == NIGHT + 1 and not e.flags.get('speech'):
+        e.flags['speech'] = True
+        e.say('Before dawn a voice calls out from the knoll in Ho-Chunk: '
+              'Neapope, offering peace. No one left with the militia '
+              'understands him.')
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """The warriors fight from cover and fall back firing: attacking a
+    hex of warriors in woods or tall grass costs a column.  The militia
+    charge with the bayonet: militia attacking with three or more
+    battalions gain a column.  In the dark the militia, who don't know
+    the ground, attack two columns worse."""
+    out = []
+    t = e.board.hexes.get(target)
+    if e.side == 'us':
+        if t in ('woods', 'grass') and \
+                any(u.kind == 'warrior' for u in e.at(target, 'sk')):
+            out.append((-1, 'cover'))
+        if len(attackers) >= 3:
+            out.append((1, 'bayonets'))
+        if e.weather()['id'] == 'night':
+            out.append((-2, 'darkness'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'x': 'rafts', 'g': 'grass', 'K': 'knoll'}
+
+TERRAIN = {
+    'clear':  dict(name='Prairie', colour='#b4bc78', ink='#949c58',
+                   edge='#7a8048'),
+    'grass':  dict(name='Tall grass', colour='#a8b464', ink='#7e8c3e',
+                   pattern='fields', edge='#6a7432', z=1, shift=0,
+                   open=False, los=False,
+                   move={'foot': 1, 'skirmish': 1, 'track': 1,
+                         'wheel': 2}),
+    'woods':  dict(name='Oak woods', colour='#5a7a3a', ink='#34522a',
+                   edge='#22401a', move={'skirmish': 1}),
+    'hills':  dict(name='The heights', colour='#b0a066', ink='#82724a',
+                   edge='#6a5a34', shift=-1,
+                   move={'foot': 2, 'skirmish': 1, 'track': 2,
+                         'wheel': 3}),
+    'knoll':  dict(name='The knoll', colour='#a89662', ink='#7a6a44',
+                   pattern='hills', edge='#5a4a2e', z=4, shift=-1,
+                   open=False, los=True,
+                   move={'foot': 2, 'skirmish': 1, 'track': 2,
+                         'wheel': 3}),
+    'marsh':  dict(name='River bottoms', colour='#8aa278',
+                   ink='#4a7a8a', edge='#3e6a5a',
+                   move={'foot': 2, 'skirmish': 2, 'track': 3}),
+    'rafts':  dict(name='The crossing', colour='#c4b88a', ink='#8a7a50',
+                   pattern='grass', edge='#6a5a3a', z=6, shift=0,
+                   open=True, los=True),
+    'water':  dict(name='Wisconsin River', colour='#4a76a0'),
+}
+
+MAP = [
+    '~~mm.gfhhh..f..g..',
+    '~~mmg.hhhf...g..f.',
+    '~~m.g.ghhh.g..f...',
+    '~~mm.g..hh.hh..g..',
+    '~xm.g...h.hhh.g..f',
+    '~xmmgK..hh.hh..g..',
+    '~xmm.g.hhh..g.f...',
+    '~~m.g..hhf.g...g..',
+    '~~mm.g.hh..f..g...',
+    '~~mmg.f.h...g..f..',
+    '~~m.g..hh.g...g.f.',
+    '~~mm..g.h..g..g...',
+]
+
+ROADS = [
+    ('trail', ['1806', '1206', '0806', '0606', '0306', '0206']),
+]
+
+LABELS = {
+    '0206': 'The crossing', '0109': 'Wisconsin River', '0606': 'The knoll',
+    '0405': 'River bottoms', '1104': 'The heights', '1806': 'from the '
+    'Four Lakes', '1306': 'Militia Ridge',
+}
+
+OBJECTIVES = {
+    '0606': dict(name='Knoll', vp=3, owner='sk', **{'for': 'us'}),
+    '0206': dict(name='Crossing', vp=2, owner='sk', **{'for': 'us'}),
+}
+
+# The families who get across the river.
+EXITS = {'sk': dict(hexes=['0205', '0206', '0207'], vp=4, types=['band'])}
+
+SUPPLY = {
+    'sk': dict(**{'from': ['0205', '0206', '0207'], 'range': 20}),
+    'us': dict(**{'from': ['E'], 'range': 20}),
+}
+
+
+def VICTORY(e):
+    """The Sauk score 4 for each group of the band that gets across the
+    river and 2 for each militia step; the militia score each warrior
+    step, 4 for each group of the band overtaken, Black Hawk 4, and the
+    knoll and the crossing if they hold them at the end.  The margins
+    were set from games between computer players (./heights --simulate
+    30)."""
+    sk, us = e.vp('sk'), e.vp('us')
+    m = sk - us
+    score = 'Sauk %d VP, militia %d.' % (sk, us)
+    if m >= 6:
+        return 'sk', ('Sauk victory. %s The band is over the river and '
+                      'away into the hills, and the militia must find the '
+                      'trail again.' % score)
+    if m >= 0:
+        return 'sk', ('Sauk marginal victory. %s Most of the families '
+                      'get across in the night.' % score)
+    if m > -6:
+        return 'us', ('Militia marginal victory. %s The warriors are '
+                      'driven off the heights, and the band is scattered '
+                      'along the river.' % score)
+    return 'us', ('Militia victory. %s The rearguard is broken and the '
+                  'band overtaken at the river.' % score)
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'warrior': dict(name='Warriors', symbol='infantry', move='skirmish',
+                    spot=3),
+    'band':    dict(name='Families', symbol='lodge', move='foot',
+                    zoc=False,
+                    fate='is overtaken by the militia'),
+    'mounted': dict(name='Mounted volunteers', symbol='horse', move='foot',
+                    sound='hooves'),
+}
+
+@grognard.symbol('lodge')
+def s_lodge(p, x, y, w, h, c):
+    """Families on the move: a lodge, its poles crossing at the top."""
+    cx, top, base = x + w // 2, y + 1, y + h - 2
+    half = max(2, (base - top) * 2 // 3)
+    p.line(cx, top, cx - half, base, c)
+    p.line(cx, top, cx + half, base, c)
+    p.line(cx - half, base, cx + half, base, c)
+    p.line(cx - 1, top - 1 if top > y else top, cx + 1, top + 1, c)
+    p.line(cx + 1, top - 1 if top > y else top, cx - 1, top + 1, c)
+
+
+counters.PICTURES['lodge'] = [
+    '...#.#.....', '....#......', '...#.#.....', '..#+++#....',
+    '.#+++++#...', '#+++#++#...', '#+++#+++#..', '#########..']
+
+SAUK = '#8a5a34'
+FAMILY = '#b08a62'
+DODGE = '#4e6a96'
+HENRY = '#6a82aa'
+HOCHUNK = '#8a96b0'
+
+
+def unit(uid, side, a, d, m, hx, long, colour, formation, steps=2, **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kw.pop('type', 'warrior'), size=kw.pop('size', 'I'),
+                a=a, d=d, m=m, steps=steps, hex=hx, long=long,
+                colour=colour, formation=formation)
+    spec.update(kw)
+    return spec
+
+
+def family(k, hx):
+    return unit('fam%d' % k, 'sk', 0, 1, 2, hx,
+                'Women, children and old people of the band', FAMILY,
+                'The band', steps=1, type='band', size='', vp=4,
+                name='BAND%d' % k)
+
+
+HENRY_AT = ['1805', '1806', '1807']
+
+UNITS = [
+    # ---- Black Hawk's band
+    unit('bhawk', 'sk', 3, 3, 4, '1106', 'Black Hawk and his warriors',
+         SAUK, 'Black Hawk', vp=4, name='BLKHWK', steps=3),
+    unit('w1', 'sk', 2, 2, 4, '1204', 'Sauk warriors', SAUK, 'Warriors',
+         name='SAUK1'),
+    unit('w2', 'sk', 2, 2, 4, '1208', 'Sauk warriors', SAUK, 'Warriors',
+         name='SAUK2'),
+    unit('w3', 'sk', 2, 2, 4, '1005', 'Meskwaki warriors', SAUK,
+         'Warriors', name='MESKW'),
+    unit('neapope', 'sk', 2, 2, 4, '1007', "Neapope's warriors", SAUK,
+         'Warriors', name='NEAPPE'),
+    unit('riders', 'sk', 2, 1, 6, '1406', 'Mounted warriors', SAUK,
+         'Warriors', type='mounted', name='RIDERS'),
+] + [family(k, h) for k, h in enumerate(
+    ('0805', '0806', '0807', '0905', '0907', '0706'), 1)] + [
+    # ---- the militia
+    unit('hochunk', 'us', 1, 1, 6, '1606',
+         'Ho-Chunk scouts, with Pierre Pauquette', HOCHUNK, 'Scouts',
+         steps=1, type='warrior', name='SCOUTS', spot=3),
+    unit('dodge', 'us', 4, 3, 5, None,
+         "Colonel Dodge's Michigan Territory volunteers", DODGE, 'Dodge',
+         steps=3, type='mounted', size='II', name='DODGE', arrive=1,
+         at=HENRY_AT),
+    unit('ewing', 'us', 3, 3, 5, None, "Major Ewing's battalion", DODGE,
+         'Dodge', steps=3, type='mounted', size='II', name='EWING',
+         arrive=1, at=HENRY_AT),
+    unit('ill1', 'us', 4, 3, 5, None, 'Illinois mounted volunteers',
+         HENRY, 'General Henry', steps=3, type='mounted', size='III',
+         name='ILL1', arrive=2, at=HENRY_AT),
+    unit('ill2', 'us', 4, 3, 5, None, 'Illinois mounted volunteers',
+         HENRY, 'General Henry', steps=3, type='mounted', size='III',
+         name='ILL2', arrive=2, at=HENRY_AT),
+    unit('ill3', 'us', 4, 3, 5, None, 'Illinois mounted volunteers',
+         HENRY, 'General Henry', steps=3, type='mounted', size='III',
+         name='ILL3', arrive=3, at=HENRY_AT),
+]
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1a1a14', panel='#2a2a20', light='#7a7a5a',
+              dark='#060604', accent='#e8c878', button='#4a4a34',
+              button_hi='#94946c', button_lo='#1a1a14', red='#b03020')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE CROSSING. The militia move first. The families of the band "
+    "(BAND counters, which can't fight and have no zone of control) "
+    "must get down through the river bottoms to the crossing; from turn "
+    "3, when the rafts are ready, each group that ends its move there "
+    "goes over the river. Two groups fit in a hex.",
+
+    "THE REARGUARD. Black Hawk's warriors are few but hard to pin down: "
+    "they move through woods, tall grass and up the heights at 1 a hex, "
+    "and see 3 hexes. The heights and the knoll give a column, and "
+    "attacking warriors in woods or tall grass costs the militia "
+    "another. Militia attacking with three or more battalions charge "
+    "with the bayonet and gain a column.",
+
+    "THE MILITIA. Dodge's and Ewing's battalions ride in on turn 1 and "
+    "Henry's Illinois regiments on turns 2 and 3; the Ho-Chunk scouts "
+    "are already ahead. Dusk falls on turn 7 and night on turn 9: units "
+    "see only the next hex, and militia attacks in the dark lose two "
+    "columns (Dodge and Henry put off the attack until morning).",
+
+    "WINNING. The Sauk score 4 for each group of the band that gets "
+    "across and 2 for each militia step destroyed. The militia score each "
+    "warrior step, 4 for each group of the band overtaken, 4 for Black "
+    "Hawk, and the knoll (3) and the crossing (2) if they hold them at "
+    "the end. The Sauk win if they're not behind, clearly if 6 ahead; "
+    "the militia clearly if 6 ahead.",
+]
+
+ICON = 'heights'
+
+
+@grognard.icon('heights')
+def draw_icon(p, n):
+    """The heights above the Wisconsin River at evening, and a raft on
+    the water."""
+    p.fill('#e0b880')
+    p.rect(0, 0, n, n * 0.25, '#c08a5a')
+    p.disc(n * 0.75, n * 0.95, n * 0.6, '#8a7a4a')
+    p.disc(n * 0.95, n * 0.7, n * 0.35, '#5a6a32')
+    p.rect(0, n * 0.7, n * 0.6, n * 0.3, '#4a76a0')
+    p.rect(n * 0.12, n * 0.78, n * 0.3, n * 0.06, '#6a4a2a')
+    for k in range(3):
+        p.disc(n * (0.18 + k * 0.09), n * 0.74, n * 0.035, '#3a2a1a')
+    p.disc(n * 0.25, n * 0.15, n * 0.08, '#f8e8b0')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])
