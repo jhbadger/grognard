@@ -466,7 +466,8 @@ BUILDS = {
                     'battle. Upkeep 2.',
                     unit=dict(name='CR', a=4, d=4, m=4, steps=2)),
     'dreadnought': dict(name='Dreadnought', cost=24, upkeep=4,
-                        about='Slow and mighty; a yard of 6. Upkeep 4.',
+                        about='Slow and mighty; needs a world of 6 '
+                        'billion. Upkeep 4.',
                         unit=dict(name='DN', a=8, d=8, m=3, steps=3)),
     'starbase': dict(name='Starbase', cost=10, upkeep=1, about='Guards a '
                      'world, never moves; two a world. Upkeep 1.',
@@ -496,7 +497,7 @@ def CAN_BUILD(e, side, kind, h):
     if c is not None and blockaded(e, c):
         return 'blockaded'
     if kind == 'dreadnought' and (c is None or c.steps < 6):
-        return 'needs a yard of 6 people'
+        return 'needs a world of 6 billion'
     if kind == 'starbase' and sum(1 for u in e.at(h, side)
                                   if u.kind == 'starbase') >= 2:
         return 'two starbases here already'
@@ -1033,7 +1034,7 @@ class Empire(grognard.Widget):
             s.text(x + 15, yy, fit('%d world%s' % (worlds, '' if worlds == 1
                                                    else 's'), w - 18),
                    ch(g, 'text'))
-            s.text(x + 5, yy + 10, fit('pop %d' % pop, w - 8), ch(g, 'dim'))
+            s.text(x + 5, yy + 10, fit('%d billion' % pop, w - 8), ch(g, 'dim'))
             s.text(x + 5, yy + 20, fit('stars %d/%d' % (
                 len(explored(g.e, sid)), len(STARS)), w - 8), ch(g, 'dim'))
             yy += 31
@@ -1068,11 +1069,11 @@ class System(grognard.Widget):
             out.append(('text', 'No world fit to live on.'))
             return out
         out.append(('text', world_name(p)))
-        out.append(('text', 'Up to %d people, ore %d.' % (most(p), ore(p))))
+        out.append(('text', 'Up to %d billion people, ore %d.' % (most(p), ore(p))))
         vis = e.visible(viewer)
         c = colony_at(e, h)
         if c is not None and (c.id in vis or viewer is None):
-            out.append(('accent', '%s colony, %d people.' % (
+            out.append(('accent', '%s colony, %d billion people.' % (
                 e.side_name(c.side, 'adj'), c.steps)))
         n = natives_at(e, h)
         if n is not None:
@@ -1165,18 +1166,18 @@ HELP = [
     "a star to see what you know of it.",
 
     "INDUSTRY. At the start of every turn each of your worlds pays its "
-    "people and its ore. Select a world of 3 people or more and tap "
+    "people and its ore. Select a world of 3 billion people or more and tap "
     "Build to spend it: scouts (4), colony ships (8), escorts (6), "
-    "cruisers (12), dreadnoughts (24, from a world of 6) and starbases "
+    "cruisers (12), dreadnoughts (24, from a world of 6 billion) and starbases "
     "(10, which guard a world and never move). New ships can move at "
     "once.",
 
     "SETTLING. Fly a colony ship to a star with a free world and tap "
-    "Colonize: a colony of 1 (2 on a world whose natives you pacified). "
-    "Every third turn each colony grows by 1, up to what its world can "
+    "Colonize: a colony of 1 billion (2 on a world whose natives you "
+    "pacified). Every third turn each colony grows by a billion, up to what its world can "
     "hold. A colony ship at one of your own colonies can Settle instead, "
-    "adding 1. A world's counter shows its people and the most it can "
-    "hold.",
+    "adding a billion. A world's counter shows its people, in billions, "
+    "and the most it can hold.",
 
     "NATIVES. Many worlds have people already. Ships can't enter their "
     "star; warships must attack them from next door until they're "
@@ -1189,7 +1190,7 @@ HELP = [
     "past one another. Nebulae cost 2 to cross, hide what's in them and "
     "make it harder to hit.",
 
-    "WINNING. Take the enemy's homeworld (destroy its last person) and "
+    "WINNING. Take the enemy's homeworld (wipe out its last billion) and "
     "you win at once. If neither falls in 40 turns, the empire with "
     "more people wins.",
 ]
