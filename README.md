@@ -17,21 +17,23 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are twelve games so far: a Second World War battle, a raid in a
+There are thirteen games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
 Mexican-American War, a dawn rising in the streets of Belém in
 Brazil's war of independence, a battle at sea: Trafalgar, Far
 Suns, a game of exploring, settling and conquering a cluster of stars,
-where you build your own units, the oldest battle: Tours, where the
+where you build your own units, Tours, where the
 Frankish foot stood against the horsemen of al-Andalus in 732, the
 smallest: the Severn, a morning's fight in the woods of colonial
 Maryland, sometimes called the last battle of the English Civil War,
 Wisconsin Heights, Black Hawk's rearguard on the bluffs above the
 Wisconsin River in 1832, Little Round Top, the fight for the left
-of the Union line on the second day at Gettysburg, and Maida, British
-line against French column on a plain in Calabria in 1806.
+of the Union line on the second day at Gettysburg, Maida, British
+line against French column on a plain in Calabria in 1806, and the
+oldest battle: Carrhae, where the Parthian horse archers shot Crassus's
+legions to pieces in 53 BC.
 
 ```bash
 ./crossroads
@@ -79,6 +81,10 @@ line against French column on a plain in Calabria in 1806.
 
 ```bash
 ./maida
+```
+
+```bash
+./carrhae
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -547,6 +553,46 @@ victory thresholds are set so the game is even, not so it repeats
 history. The order of battle is simplified, the strengths are set for
 play, and the map is a reasonable guess at the ground, not a survey.
 
+## Carrhae: Mesopotamia, 53 BC
+
+The thirteenth game, and the oldest. Crassus, who shares the rule of
+Rome with Pompey and Caesar, has marched seven legions into the open
+plain east of the Euphrates. Surena meets him with nine thousand horse
+archers, a thousand cataphracts and no infantry at all, and a train of
+a thousand camels loaded with arrows.
+
+- **Ten turns** of an hour, from noon. The Parthians move first. The
+  Romans start in a square in the middle of the plain, and score each
+  step that gets back to the gates of Carrhae at the north edge. Night
+  falls at 8 PM: the Parthians can't shoot then and attack two columns
+  worse.
+- **Horse archers** shoot from 2 hexes away, alone or with the
+  cataphracts, and can't be hurt doing it; they shoot into a Roman
+  attack too. Each carries three volleys, and fills its quiver again
+  at the start of the Parthian turn within 3 hexes of the camels.
+  Take the camels and the arrows stop. By day, Roman foot entering a
+  hex in range of a horse archer with arrows pays a point more, and
+  Roman foot attacking only horse archers lose a column (they ride
+  away).
+- **The testudo**: a legion that neither moved nor fought in its last
+  turn locks its shields, and arrows alone at it lose two columns. But
+  cataphracts charging a legion in testudo gain a column, and charging
+  anything else in the open gain one too.
+- **Winning**: the Parthians score each Roman step, 2 more for each
+  eagle (a legion destroyed), 3 for Publius Crassus and 5 for Crassus;
+  the Romans each step that reaches Carrhae and each Parthian step.
+  Publius's death costs the Romans a column, and Crassus's another.
+  The Parthians must finish 10 VP ahead. Computer against computer
+  each side wins 30 games in 60; the Romans get about half their
+  steps to Carrhae.
+
+It's an hour a turn and a legion a counter, so this is the battle much
+simplified: the strengths are set for play, and the map is open plain,
+the Balikh and Carrhae, not a survey. In 53 BC the Romans did reach
+Carrhae in the night, leaving four thousand wounded behind, but Crassus
+was killed at a parley a few days later and fewer than ten thousand
+of his men got home.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -694,7 +740,9 @@ The rules are the classic ones, and each part can be changed by a game:
   each hex once a phase. Artillery adds its strength from up to its
   range, or bombards alone (and can't be hurt doing so). Up to
   `DEFENSIVE_FIRE` (2) of the defender's guns in range add their
-  strength to the defence against an assault (not a bombardment). Attacks across a river (`halve`) and by units
+  strength to the defence against an assault (not a bombardment).
+  `CAN_SUPPORT(engine, unit)` can keep a gun from firing at all (out of
+  arrows, in the dark). Attacks across a river (`halve`) and by units
   out of supply are at half strength. The odds, rounded down, give a
   column of `CRT`; terrain `shift`s it (and an objective's own `shift`:
   fortifications), armour attacking into the `open` without anti-tank
@@ -850,7 +898,11 @@ one-time rule kept in `engine.flags` (the 20th Maine's charge: made
 ready in `ON_TURN`, used in `COMBAT_SHIFTS`, spent once the unit has
 attacked) and terrain of its own (the crest, Big Round Top, Plum Run);
 and `maida` for a river worked out in code from the row where its south
-bank begins, and both sides able to break (`engine.finish`).
+bank begins, and both sides able to break (`engine.finish`); and
+`carrhae` for horse archers made as a support type that runs out of
+arrows (`CAN_SUPPORT`, with the quivers in `engine.flags`), a march
+slowed under fire (`ENTER_COST`), its own sounds of battle, and the
+stock computer player taught to ride back to the camels (`AI_CLASS`).
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)
@@ -884,6 +936,9 @@ bank begins, and both sides able to break (`engine.finish`).
   widgets of its own with `@grognard.widget('name')`, terrain patterns
   with `@grognard.pattern('name')` and NATO symbols with
   `@grognard.symbol('name')`.
+- `COMBAT_SOUND`: the sound of a fight when no unit has its own
+  (`'gun'` by default; `'swords'` for blades). A unit or type's `fight`
+  is its own (`'bow'` for archers); a barrage booms.
 - `STYLE = 'pictures'` for little pictures on the counters instead of
   NATO symbols; `ZOOM` for the zoom a game starts at; `FONT` for the
   smooth text's font.

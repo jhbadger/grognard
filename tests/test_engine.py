@@ -215,6 +215,36 @@ class Rules(unittest.TestCase):
         self.assertEqual(res['alost'], 0)
         self.assertTrue(ba.fired)
 
+    def test_out_of_ammunition(self):
+        """CAN_SUPPORT keeps a gun from firing."""
+        e = self.e
+        e.end_phase()
+        ba = e.units['bA']
+        ba.hex = parse('0503')
+        e.changed()
+        e.d.CAN_SUPPORT = lambda eng, u: u.id != 'bA'
+        try:
+            self.assertEqual(e.supporters_for(e.units['r1'].hex), [])
+            self.assertFalse(e.can_support(ba))
+        finally:
+            del e.d.CAN_SUPPORT
+
+    def test_combat_sounds(self):
+        """A fight sounds like the first unit's own fight, a barrage
+        booms, and the rest is the game's COMBAT_SOUND or gunfire."""
+        e = self.e
+        b1, ba = e.units['b1'], e.units['bA']
+        self.assertEqual(e.combat_sound([b1], []), 'gun')
+        self.assertEqual(e.combat_sound([], [ba]), 'boom')
+        e.d.COMBAT_SOUND = 'swords'
+        try:
+            self.assertEqual(e.combat_sound([b1], [ba]), 'swords')
+            ba.spec['fight'] = 'bow'
+            self.assertEqual(e.combat_sound([], [ba]), 'bow')
+        finally:
+            del e.d.COMBAT_SOUND
+            del ba.spec['fight']
+
     def test_sequence_and_reinforcements(self):
         e = self.e
         self.assertEqual((e.turn, e.side, e.phase), (1, 'b', 'move'))

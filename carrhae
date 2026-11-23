@@ -1,0 +1,570 @@
+#!/usr/bin/env python3
+"""Carrhae: Mesopotamia, 53 BC.  A sample game for the Grognard engine.
+
+Marcus Licinius Crassus, the richest man in Rome, has marched seven
+legions into the open plain east of the Euphrates to win a war against
+Parthia.  Surena, the Parthian general, meets him with ten thousand
+horsemen and no infantry at all, and a train of camels loaded with
+arrows.  Play either side against the computer, or against a friend at
+the same screen.
+
+Run it with ./carrhae (Python 3 with Tk, nothing else).  The game is
+saved to ~/.carrhae.json.  ./carrhae --selftest checks the map and plays
+a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import counters, hexgrid                 # noqa: E402
+from grognard import ai                                # noqa: E402
+
+ID = 'carrhae'
+TITLE = 'Carrhae'
+SUBTITLE = 'Mesopotamia, 53 BC'
+
+INTRO = [
+    "The summer of 53 BC. Crassus, who shares the rule of Rome with "
+    "Pompey and Caesar and has everything but a great victory, has "
+    "crossed the Euphrates with seven legions, four thousand light "
+    "troops and four thousand horse. His Arab guide has led him away "
+    "from the river, out into the open plain south of the town of "
+    "Carrhae.",
+
+    "There Surena, the general of the Parthian king, is waiting with "
+    "nine thousand horse archers and a thousand cataphracts, men and "
+    "horses armoured head to foot. They come on to the sound of "
+    "kettledrums and throw off the skins that covered their armour.",
+
+    "Crassus forms his army in a great square. The Romans tell each "
+    "other the Parthians will soon run out of arrows. They do not yet "
+    "know about the camels.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='pa', name='Parthians', adj='Parthian', colour='#d8c08a',
+         ink='#3a2414', posture='attack',
+         about="Surena's horsemen: shoot the legions to pieces from out "
+               'of reach, keep your camels close to refill the quivers, '
+               'and let the cataphracts charge when the Romans huddle '
+               'under their shields.'),
+    dict(id='ro', name='Romans', adj='Roman', colour='#a8322a',
+         ink='#f0d478', posture='attack',
+         about="Crassus's army: get the legions and their eagles back to "
+               'the walls of Carrhae, and sell every step dearly.'),
+]
+ORDER = ['pa', 'ro']
+
+TURNS = 10
+NIGHT = 9               # from 8 PM the Parthians draw off
+
+
+def TURN_NAME(t):
+    """An hour a turn, from noon."""
+    h = 12 + t - 1
+    return ('53 BC', '%d %s' % ((h - 1) % 12 + 1, 'AM' if h < 12 else 'PM'))
+
+
+STACK = 2
+FOG = False             # an open plain, and dust you can see for miles
+DEFENSIVE_FIRE = 2      # horse archers shoot into a charge
+COMBAT_SOUND = 'swords'
+
+WEATHER = {1: 'clear', NIGHT: 'night'}
+WEATHER_TYPES = {
+    'night': dict(name='Night', icon='cloud', air=False, spot=1),
+}
+
+# Arrows and blades: a fight that doesn't drive the defender off still
+# costs the attacker (horse archers shooting from a distance never lose).
+CRT = {
+    'columns': ['1:2', '1:1', '1.5:1', '2:1', '3:1', '4:1', '5:1'],
+    'rows': [
+        ['A1', 'A1', 'A1', 'EX', 'EX', 'DR', 'D1R'],
+        ['A1', 'A1', 'EX', 'EX', 'DR', 'D1R', 'D1R'],
+        ['A1', 'EX', 'EX', 'DR', 'D1R', 'D1R', 'D2R'],
+        ['EX', 'EX', 'DR', 'D1R', 'D1R', 'D2R', 'D2R'],
+        ['EX', 'DR', 'D1R', 'D1R', 'D2R', 'D2R', 'DE'],
+        ['DR', 'D1R', 'D1R', 'D2R', 'D2R', 'DE', 'DE'],
+    ],
+}
+
+# ----------------------------------------------------------- the arrows
+
+QUIVER = 3              # volleys a horse archer carries
+CAMEL_REACH = 3         # how near the camels it must be to refill
+
+
+def _arrows(e):
+    return e.flags.setdefault('arrows', {})
+
+
+def arrows_left(e, u):
+    """Volleys a horse archer has left now: what it had at the start of
+    the Parthian turn, less a volley if it has shot since (in its own
+    turn, or into a Roman charge)."""
+    n = _arrows(e).get(u.id, QUIVER)
+    if e.side == 'ro':
+        n -= int(u.fired) + int(u.dfired)
+    else:
+        n -= int(u.fired)
+    return max(0, n)
+
+
+def night(e):
+    return e.turn >= NIGHT
+
+
+def CAN_SUPPORT(e, u):
+    """Horse archers shoot only with arrows in the quiver, and not in
+    the dark."""
+    if u.kind != 'horsearcher':
+        return True
+    return not night(e) and arrows_left(e, u) > 0
+
+
+def ENTER_COST(e, unit, a, b, cost):
+    """Marching under the arrows: by day, Roman foot entering a hex in
+    range of a horse archer with arrows left pays a point more, to keep
+    its ranks closed."""
+    if cost is None or getattr(unit, 'side', None) != 'ro' or \
+            unit.kind == 'cavalry' or night(e):
+        return cost
+    for x in e.alive('pa'):
+        if x.kind == 'horsearcher' and \
+                hexgrid.distance(x.hex, b) <= x.range and \
+                arrows_left(e, x) > 0:
+            return cost + 1
+    return cost
+
+
+def _testudo(e, u):
+    """A legion that neither moved nor fought in its last turn stands
+    with its shields locked."""
+    return u.kind == 'legion' and not u.moved and not u.attacked
+
+
+def ON_TURN(e, side):
+    """The quivers: at the start of the Parthian turn each horse archer
+    pays for the volleys it shot since the last one, and those near the
+    camels fill up again.  And the hours of the day."""
+    if side == 'pa':
+        q = _arrows(e)
+        camels = e.units.get('camels')
+        full = 0
+        for u in e.alive('pa'):
+            if u.kind != 'horsearcher':
+                continue
+            n = q.get(u.id, QUIVER) - int(u.fired) - int(u.dfired)
+            if camels and camels.alive and \
+                    hexgrid.distance(u.hex, camels.hex) <= CAMEL_REACH:
+                if n < QUIVER:
+                    full += 1
+                n = QUIVER
+            q[u.id] = max(0, n)
+        if e.turn == 1:
+            e.say('The kettledrums roll across the plain, and the '
+                  'Parthians throw off the skins that hid their armour.')
+        elif full:
+            e.say('The camels bring up fresh arrows: %d squadron%s fill '
+                  'their quivers.' % (full, 's' if full > 1 else ''))
+        if e.turn == NIGHT:
+            e.say('Night falls. The Parthians never fight in the dark: '
+                  'they ride off, promising to come back for the rest in '
+                  'the morning.')
+    else:
+        if e.turn == 1:
+            e.say('Crassus forms his army in a hollow square, twelve '
+                  'cohorts to a side, with the horse on the wings.')
+        if e.turn == NIGHT:
+            e.say('In the dark the army can slip away to Carrhae, leaving '
+                  'the wounded behind.')
+
+
+def ON_ELIMINATE(e, u, where):
+    """Publius, the camels, and Crassus himself."""
+    if u.id == 'publius':
+        e.flags['publius'] = True
+        e.say("Publius Crassus is dead! The Parthians ride along the "
+              "square with his head on a lance, and the legions lose "
+              'heart.')
+    elif u.id == 'crassus':
+        e.flags['crassus'] = True
+        e.say('Crassus has fallen! The legions fight on without hope.')
+    elif u.id == 'camels':
+        e.say('The camel train is taken. The Parthians will get no more '
+              'arrows.')
+    elif u.id == 'surena':
+        e.flags['surena'] = True
+        e.say('Surena is down! The Parthians pull back to think again.')
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Shields, lances and morale:
+    - horse archers shooting alone at legions standing in testudo
+      lose two columns;
+    - cataphracts charging a legion in testudo gain a column (the lance
+      against men packed too close to fight back), and charging anyone
+      else in the open gain one too;
+    - Roman foot attacking only horse archers lose a column (they ride
+      away);
+    - in the dark the Parthians attack two columns worse;
+    - with Publius dead the Romans attack a column worse, and with
+      Crassus dead another; with Surena dead, the Parthians one."""
+    out = []
+    t = e.board.terrain(target) or {}
+    defenders = e.at(target)
+    legions = [u for u in defenders if u.kind == 'legion']
+    if e.side == 'pa':
+        if not attackers and support and legions and \
+                all(_testudo(e, u) for u in legions):
+            out.append((-2, 'testudo'))
+        cata = [u for u in attackers if u.kind == 'cataphract']
+        if cata:
+            if legions and all(_testudo(e, u) for u in legions):
+                out.append((1, 'lances'))
+            elif not legions and t.get('open'):
+                out.append((1, 'charge'))
+        if night(e):
+            out.append((-2, 'darkness'))
+        if e.flags.get('surena'):
+            out.append((-1, 'Surena is down'))
+    else:
+        if attackers and defenders and \
+                all(u.kind == 'horsearcher' for u in defenders) and \
+                all(u.kind in ('legion', 'aux') for u in attackers):
+            out.append((-1, 'they ride away'))
+        if e.flags.get('publius'):
+            out.append((-1, 'Publius is dead'))
+        if e.flags.get('crassus'):
+            out.append((-1, 'Crassus is dead'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'d': 'dunes', 'p': 'palms'}
+
+TERRAIN = {
+    'clear':  dict(name='The plain', colour='#d4c08a', ink='#b8a26a',
+                   edge='#9a8450'),
+    'fields': dict(name='Watered fields', colour='#a8b86a',
+                   ink='#88984e', edge='#6e7c3e'),
+    'dunes':  dict(name='Sand hills', colour='#e0c88c', ink='#b89a5e',
+                   pattern='hills', edge='#a08048', z=3, shift=0,
+                   open=False, los=True,
+                   move={'foot': 2, 'track': 2, 'wheel': 3}),
+    'hills':  dict(name='Low rise', colour='#c4ac78', ink='#9a8050',
+                   edge='#7a6438'),
+    'palms':  dict(name='Palms by the Balikh', colour='#6a8a4a',
+                   ink='#3e5a2a', pattern='trees', edge='#2e4420', z=5,
+                   shift=-1, open=False, los=False,
+                   move={'foot': 2, 'track': 3, 'wheel': 3}),
+    'town':   dict(name='Carrhae', colour='#c8b490', ink='#8a4a2a'),
+}
+
+MAP = [
+    ':p:.::.ttt::..d...',
+    'pp:..:.::.:...dd..',
+    ':p:.........h.....',
+    'p::...d........d..',
+    ':p:....h...dd.....',
+    'pp:.d.........h...',
+    ':p:.....d.........',
+    'p::..h......d..d..',
+    ':p:........h......',
+    'pp:.dd............',
+    ':p:.....h....dd...',
+    'p::..d.......h....',
+    ':p:.....d.........',
+    'pp:.....dd.....h..',
+    ':p:..h.........d..',
+    'p::.......h.......',
+    ':p:..dd......h....',
+    'pp:.........d.....',
+]
+
+
+def _balikh():
+    """The Balikh runs south past Carrhae along the west of the map:
+    every side between the third column and the fourth."""
+    out = []
+    for r in range(len(MAP)):
+        for n in hexgrid.neighbours((2, r)):
+            if n[0] == 3 and 0 <= n[1] < len(MAP):
+                out.append('%s/%s' % (hexgrid.hid((2, r)), hexgrid.hid(n)))
+    return out
+
+
+RIVERS = [('river', _balikh())]
+
+ROADS = [
+    ('trail', ['0901', '0907', '1018']),        # the road from the south
+]
+
+LABELS = {
+    '0901': 'Carrhae', '0207': 'Balikh', '0610': 'The plain',
+    '1205': 'Sand hills', '0213': 'Balikh',
+}
+
+GATES = ['0801', '0901', '1001']
+EXITS = {'ro': dict(hexes=GATES, vp=1,
+                    types=['legion', 'aux', 'cavalry', 'hq'])}
+STEP_VP = 1
+
+SUPPLY = {
+    'pa': dict(**{'from': ['S', 'E'], 'range': 24}),
+    'ro': dict(**{'from': ['N'], 'range': 24}),
+}
+
+
+def _score(e):
+    return 'Parthians %d VP, Romans %d.' % (e.vp('pa'), e.vp('ro'))
+
+
+def VICTORY(e):
+    """The Romans score each step that reaches Carrhae and each
+    Parthian step destroyed; the Parthians each Roman step, two more
+    for each eagle taken (a legion destroyed) and Crassus (5).  The
+    margin decides (set from games between computer players:
+    ./carrhae --simulate 60)."""
+    pa, ro = e.vp('pa'), e.vp('ro')
+    m = pa - ro
+    if m >= THRESHOLD + 10:
+        return 'pa', ('Parthian victory. %s The eagles of Rome hang in '
+                      'the temples of Parthia, and Crassus\'s head is sent '
+                      'to the king.' % _score(e))
+    if m >= THRESHOLD:
+        return 'pa', ('Parthian marginal victory. %s The Romans reach '
+                      'Carrhae, but they will never get home.' % _score(e))
+    if m > THRESHOLD - 10:
+        return 'ro', ('Roman marginal victory. %s The legions reach the '
+                      'walls of Carrhae with most of their eagles.'
+                      % _score(e))
+    return 'ro', ('Roman victory. %s The legions march into Carrhae in '
+                  'good order, and Surena rides off to tell the king.'
+                  % _score(e))
+
+
+THRESHOLD = 10          # the Parthians must finish this far ahead
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'legion':      dict(name='Legion', symbol='infantry', move='foot'),
+    'aux':         dict(name='Light troops', symbol='infantry',
+                        move='foot'),
+    'horsearcher': dict(name='Horse archers', symbol='horsebow',
+                        move='track', support=True, sound='hooves',
+                        fight='bow', fate='is ridden down'),
+    'cataphract':  dict(name='Cataphracts', symbol='horse', move='track',
+                        sound='hooves'),
+    'camels':      dict(name='Camel train', symbol='camel', move='track',
+                        zoc=False, sound='hooves',
+                        fate='is taken, arrows and all'),
+}
+
+
+@grognard.symbol('horsebow')
+def s_horsebow(p, x, y, w, h, c):
+    """Horse archers: the cavalry stroke, and a bow drawn across it."""
+    p.line(x, y + h - 1, x + w - 1, y, c)
+    cx, cy = x + w * 0.62, y + (h - 1) / 2
+    r = max(2, h // 2 - 1)
+    p.line(cx, cy - r, cx, cy + r, c)                       # string
+    for i in range(r + 1):                                  # stave
+        dx = int(round((r * r - i * i) ** 0.5 * 0.6))
+        p.set(cx - dx, cy - i, c)
+        p.set(cx - dx, cy + i, c)
+
+
+@grognard.symbol('camel')
+def s_camel(p, x, y, w, h, c):
+    """The camel train: a hump on a line of march."""
+    base = y + h - 2
+    p.line(x + 1, base, x + w - 2, base, c)
+    cx = x + (w - 1) / 2
+    r = max(2, h // 3)
+    for i in range(-r, r + 1):
+        dy = int(round((r * r - i * i) ** 0.5))
+        p.line(cx + i, base - dy, cx + i, base, c)
+    p.line(x + 2, base - r - 1, x + 2, base, c)              # the neck
+
+
+counters.PICTURES['horsebow'] = [
+    '..#....#...', '.###..#.#..', '..#..#..#..', '.#####..#..',
+    '######.#...', '.#....#....', '.#....#....', '#.#..#.#...']
+counters.PICTURES['camel'] = [
+    '...........', '#....##....', '##..####...', '.#########.',
+    '..#######..', '..#.....#..', '..#.....#..', '..#.....#..']
+
+ROME = '#a8322a'
+ROME_AUX = '#b8584a'
+ROME_HORSE = '#b4443a'
+CRASSUS = '#c84a3a'
+PARTHIA = '#d8c08a'
+CATA = '#b8a478'
+SURENA = '#e4d0a0'
+CAMELS = '#c8b48a'
+
+
+def unit(uid, side, a, d, m, hx, long, colour, formation, steps=2, **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kw.pop('type', 'legion'), size=kw.pop('size', 'X'),
+                a=a, d=d, m=m, steps=steps, hex=hx, long=long,
+                colour=colour, formation=formation)
+    spec.update(kw)
+    return spec
+
+
+def legion(n, hx):
+    return unit('leg%d' % n, 'ro', 6, 4, 3, hx,
+                'A legion: ten cohorts and its eagle', ROME, 'The legions',
+                steps=3, name='LEG %s' % ('I II III IV V VI VII'.split()[n - 1]),
+                vp=2)
+
+
+def archers(n, hx):
+    return unit('ha%d' % n, 'pa', 5, 2, 6, hx,
+                'Horse archers: some fifteen hundred riders', PARTHIA,
+                'Horse archers', type='horsearcher', range=2,
+                size='III', name='ARCH %d' % n)
+
+
+UNITS = [
+    # ---- Surena's army
+    archers(1, '0708'), archers(2, '1108'), archers(3, '0516'),
+    archers(4, '1316'), archers(5, '1312'), archers(6, '0512'),
+    unit('cat1', 'pa', 6, 4, 5, '0817', 'Cataphracts: armoured lancers',
+         CATA, 'Cataphracts', type='cataphract', size='III', name='CATA 1'),
+    unit('cat2', 'pa', 6, 4, 5, '0908', 'Cataphracts: armoured lancers',
+         CATA, 'Cataphracts', type='cataphract', size='III', name='CATA 2'),
+
+    unit('surena', 'pa', 5, 4, 5, '1017',
+         'Surena and his household cataphracts', SURENA, 'Surena',
+         type='cataphract', size='II', name='SURENA', vp=4),
+    unit('camels', 'pa', 0, 1, 5, '1517',
+         'The camel train: a thousand camels loaded with arrows', CAMELS,
+         'The baggage', type='camels', size='II', steps=1, name='CAMELS',
+         vp=4),
+
+    # ---- Crassus's army
+    legion(1, '0812'), legion(2, '0912'), legion(3, '1012'),
+    legion(4, '0814'), legion(5, '0914'), legion(6, '1014'),
+    legion(7, '0815'),
+    unit('crassus', 'ro', 0, 1, 3, '0913',
+         'Marcus Licinius Crassus, proconsul of Syria', CRASSUS,
+         'Crassus', type='hq', size='', steps=1, name='CRASSUS', vp=5),
+    unit('publius', 'ro', 4, 2, 5, '0713',
+         "Publius Crassus with Caesar's Gallic horse", ROME_HORSE,
+         'Publius', type='cavalry', size='III', name='PUBLIUS', vp=3),
+    unit('cassius', 'ro', 3, 2, 5, '1113',
+         'Gaius Cassius, the quaestor, with the rest of the horse',
+         ROME_HORSE, 'Cavalry', type='cavalry', size='III',
+         name='CASSIUS'),
+    unit('aux1', 'ro', 2, 2, 4, '0913', 'Light troops: slingers and archers',
+         ROME_AUX, 'Auxiliaries', type='aux', size='III', name='AUX 1'),
+    unit('aux2', 'ro', 2, 2, 4, '1015', 'Light troops: slingers and archers',
+         ROME_AUX, 'Auxiliaries', type='aux', size='III', name='AUX 2'),
+]
+
+
+class Surena(ai.AI):
+    """The stock computer player, with a horse archer's sense: an empty
+    quiver sends it back to the camels, and the camels keep near the
+    archers and away from the legions."""
+
+    def score(self, u, h):
+        s = super().score(u, h)
+        e = self.e
+        camels = e.units.get('camels')
+        if u.kind == 'horsearcher' and camels and camels.alive and \
+                arrows_left(e, u) <= 1 and not night(e):
+            s -= max(0, hexgrid.distance(h, camels.hex) - 1) * 3
+        elif u.kind == 'camels':
+            foes = [x.hex for x in e.alive('ro')]
+            near = min([hexgrid.distance(h, f) for f in foes] or [9])
+            s += min(near, 4) * 2
+            bows = [x.hex for x in e.alive('pa') if x.kind == 'horsearcher']
+            if bows:
+                s -= sum(hexgrid.distance(h, b) for b in bows) / \
+                    len(bows) * 0.8
+        return s
+
+
+AI_CLASS = Surena
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'phase', 'minimap', 'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1e1810', panel='#30261a', light='#8a7454',
+              dark='#080604', accent='#e8c070', button='#56442c',
+              button_hi='#aa9068', button_lo='#1e1810', red='#b03020')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE TRAP. The Parthians move first. Crassus's army stands in a "
+    "square in the open plain; Carrhae is at the north edge. Roman "
+    "units that end a move in its gates (the three town hexes) are "
+    "safe and score. By day, Roman foot entering a hex in range of a "
+    "horse archer with arrows pays a point more. Night falls at 8 PM: "
+    "the Parthians can't shoot then and attack two columns worse.",
+
+    "HORSE ARCHERS shoot from up to 2 hexes away, alone or with the "
+    "cataphracts, and can't be hurt doing it; they also shoot into a "
+    "Roman attack on anything near them. Each carries 3 volleys. At the "
+    "start of the Parthian turn, one within 2 hexes of the camel train "
+    "fills its quiver again. Take the camels and the arrows stop.",
+
+    "SHIELDS. Arrows alone at a legion lose a column, two if it stood "
+    "still and didn't fight in its last turn (testudo). But cataphracts "
+    "charging a legion in testudo gain a column, and charging anyone "
+    "else in the open gain one too. Roman foot attacking only horse "
+    "archers lose a column: they ride away.",
+
+    "WINNING. The Romans score each step that reaches Carrhae and each "
+    "Parthian step destroyed; the Parthians each Roman step, 2 more for "
+    "each eagle (a legion destroyed), 3 for Publius and 5 for Crassus. "
+    "The Parthians must finish 10 VP ahead to win (20 for a clear "
+    "victory); the Romans win clearly if the Parthians aren't ahead at "
+    "all. If Publius dies the Romans attack a column worse, and another "
+    "if Crassus does.",
+]
+
+ICON = 'carrhae'
+
+
+@grognard.icon('carrhae')
+def draw_icon(p, n):
+    """A block of red shields on the sand under a rain of arrows."""
+    p.fill('#e8d8a8')
+    p.rect(0, n * 0.6, n, n * 0.4, '#d4c08a')
+    for i in range(3):
+        for j in range(2):
+            x, y = n * (0.24 + i * 0.18), n * (0.62 + j * 0.15)
+            p.rect(x, y, n * 0.15, n * 0.13, '#a8322a')
+            p.rect(x + n * 0.06, y + n * 0.04, n * 0.03, n * 0.05,
+                   '#f0d478')
+    for k in range(7):
+        x = n * (0.1 + k * 0.12)
+        for s in range(6):
+            p.rect(x + s * n * 0.015, n * (0.1 + k % 3 * 0.08) +
+                   s * n * 0.03, n * 0.02, n * 0.02, '#3a2414')
+    p.disc(n * 0.82, n * 0.16, n * 0.08, '#f4b040')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

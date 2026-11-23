@@ -1157,8 +1157,8 @@ class Game:
             elif kind == 'combat':
                 out = ev[2]
                 self.anims.append(Boom(ev[1]))
-                self.sound.play('boom' if out['odds'].get('bombard')
-                                else 'gun')
+                self.sound.play(out.get('sound') or (
+                    'boom' if out['odds'].get('bombard') else 'gun'))
                 txt = out['result']['text']
                 if out.get('stood'):
                     txt += ' (stood)'

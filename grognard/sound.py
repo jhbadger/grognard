@@ -75,6 +75,71 @@ def hooves(strides=3):
     return out
 
 
+def ring(freqs, dur, vol=0.2, decay=10.0):
+    """Struck metal: inharmonic partials dying away, the higher ones
+    faster."""
+    n = int(dur * RATE)
+    out = []
+    for i in range(n):
+        t = i / RATE
+        v = sum(math.sin(2 * math.pi * f * t) * math.exp(-decay * (1 + k * 0.4)
+                                                         * t) / (k + 1)
+                for k, f in enumerate(freqs))
+        out.append(v * vol)
+    return out
+
+
+def swords(clashes=4):
+    """Blades meeting: a sharp scrape and a ring, a few times over, at
+    uneven intervals and pitches."""
+    rng = random.Random(11)
+    out = []
+    for k in range(clashes):
+        f = rng.uniform(1700, 2300)
+        clash = mixdown(noise(0.03, 0.5, 18, k + 20, 0.9),
+                        ring((f, f * 1.47, f * 2.09, f * 2.76), 0.3, 0.2, 9))
+        out += clash[:int(RATE * rng.uniform(0.12, 0.22))]
+    return out
+
+
+def twang(freq, dur, vol=0.3, decay=9.0):
+    """A plucked string: harmonics, the higher dying first, and the pitch
+    dropping a little as the string settles."""
+    n = int(dur * RATE)
+    out = []
+    ph = 0.0
+    for i in range(n):
+        t = i / RATE
+        ph += freq * (1 + 0.06 * math.exp(-30 * t)) / RATE
+        v = sum(math.sin(2 * math.pi * ph * h) * math.exp(-decay * h * t) / h
+                for h in (1, 2, 3, 4))
+        out.append(v * vol)
+    return out
+
+
+def whoosh(dur, vol=0.15, seed=3):
+    """An arrow going over: soft noise swelling and fading."""
+    rng = random.Random(seed)
+    n = int(dur * RATE)
+    out = []
+    last = 0.0
+    for i in range(n):
+        last += (rng.uniform(-1, 1) - last) * (0.08 + 0.25 * i / n)
+        out.append(last * vol * math.sin(math.pi * i / n))
+    return out
+
+
+def bows(n=3):
+    """A volley of arrows: a few bowstrings let go, close together, and
+    the arrows hissing away."""
+    out = []
+    for k in range(n):
+        pluck = mixdown(noise(0.01, 0.35, 30, k + 40, 0.8),
+                        twang(150 + 22 * k, 0.25, 0.28))
+        out = mixdown(out or [0.0], [0.0] * int(RATE * 0.07 * k) + pluck)
+    return mixdown(out, [0.0] * int(RATE * 0.06) + whoosh(0.4, 0.5))
+
+
 def seq(*parts):
     out = []
     for p in parts:
@@ -97,6 +162,8 @@ EFFECTS = {
                                     for k in range(6)]),
                               tone(55, 0.42, 'saw', 0.12)),
     'hooves': lambda: hooves(),
+    'swords': lambda: swords(),
+    'bow':    lambda: bows(),
     'gun':    lambda: mixdown(noise(0.5, 0.6, 7, 4, 0.35),
                               tone(70, 0.35, 'sine', 0.5, -40)),
     'boom':   lambda: mixdown(noise(0.9, 0.7, 4, 7, 0.2),

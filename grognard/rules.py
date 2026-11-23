@@ -1011,10 +1011,16 @@ class Engine:
                     out.append(u)
         return out
 
+    def can_support(self, u):
+        """Whether a gun may fire now: CAN_SUPPORT(engine, unit) can say
+        no (out of ammunition)."""
+        hook = getattr(self.d, 'CAN_SUPPORT', None)
+        return hook is None or bool(hook(self, u))
+
     def supporters_for(self, target):
         return [u for u in self.alive(self.side)
                 if u.supports and not u.fired and not u.attacked and
-                distance(u.hex, target) <= u.range]
+                distance(u.hex, target) <= u.range and self.can_support(u)]
 
     def targets(self):
         """Enemy hexes the active side could attack now."""
@@ -1046,7 +1052,7 @@ class Engine:
             return []
         guns = [u for u in self.alive() if u.side != self.side and
                 u.supports and not u.dfired and
-                distance(u.hex, target) <= u.range]
+                distance(u.hex, target) <= u.range and self.can_support(u)]
         guns.sort(key=lambda u: (-u.attack, u.id))
         return guns[:n]
 
@@ -1138,7 +1144,8 @@ class Engine:
             res['a'] = 0
             res['ae'] = False
         out = dict(odds=o, roll=roll, result=res, target=target,
-                   retreats=[], alost=0, dlost=0)
+                   retreats=[], alost=0, dlost=0,
+                   sound=self.combat_sound(attackers, support))
         dl = sum(u.steps for u in defenders) if res['de'] else res['d']
         out['dlost'] = self.take_losses(defenders, dl)
         out['disabled'] = []
@@ -1190,6 +1197,16 @@ class Engine:
                 self.side_name(self.side), out['alost']))
         self.events.append(('combat', target, out))
         return out
+
+    def combat_sound(self, attackers, support):
+        """The effect for a fight: the first unit's own (its 'fight'),
+        or a barrage's boom, or the game's COMBAT_SOUND (gunfire)."""
+        for u in list(attackers) + list(support):
+            if u.fight:
+                return u.fight
+        if not attackers:
+            return 'boom'
+        return getattr(self.d, 'COMBAT_SOUND', 'gun')
 
     def take_losses(self, units, n):
         """Take n steps from units, the strongest first.  Returns the

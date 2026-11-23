@@ -95,6 +95,7 @@ CRT = {
 }
 FOG = True              # the Franks wait in the trees
 DEFENSIVE_FIRE = 0      # no guns
+COMBAT_SOUND = 'swords'
 STEP_VP = 1
 
 WEATHER = {1: 'clear', 10: 'dusk'}

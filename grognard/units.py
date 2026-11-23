@@ -29,7 +29,9 @@ movement class, whether it has a zone of control, whether it is armour
 supports attacks from a distance (artillery), and how much of a hex's
 stacking limit it takes ('stack', 1 unless it's an HQ), and the sound
 it makes moving ('sound', an effect in sound.EFFECTS: 'hooves' for
-horses; by default engines for tracks and footsteps for the rest).  A game adds or changes
+horses; by default engines for tracks and footsteps for the rest), and
+the sound of its fighting ('fight': 'swords', 'bow'; by default the
+game's COMBAT_SOUND, or gunfire).  A game adds or changes
 types with UNIT_TYPES in its script.
 """
 
@@ -157,6 +159,11 @@ class Unit:
         """The effect played when it moves."""
         return self.spec.get('sound') or self.type.get('sound') or \
             ('tracks' if self.move_class == 'track' else 'move')
+
+    @property
+    def fight(self):
+        """The effect played when it fights, if it has one of its own."""
+        return self.spec.get('fight') or self.type.get('fight')
 
     @property
     def spot(self):
