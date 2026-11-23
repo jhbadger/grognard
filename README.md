@@ -17,7 +17,7 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are eleven games so far: a Second World War battle, a raid in a
+There are twelve games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
@@ -29,8 +29,9 @@ Frankish foot stood against the horsemen of al-Andalus in 732, the
 smallest: the Severn, a morning's fight in the woods of colonial
 Maryland, sometimes called the last battle of the English Civil War,
 Wisconsin Heights, Black Hawk's rearguard on the bluffs above the
-Wisconsin River in 1832, and Little Round Top, the fight for the left
-of the Union line on the second day at Gettysburg.
+Wisconsin River in 1832, Little Round Top, the fight for the left
+of the Union line on the second day at Gettysburg, and Maida, British
+line against French column on a plain in Calabria in 1806.
 
 ```bash
 ./crossroads
@@ -74,6 +75,10 @@ of the Union line on the second day at Gettysburg.
 
 ```bash
 ./roundtop
+```
+
+```bash
+./maida
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -506,6 +511,42 @@ Reserves' brigades are one or two counters each, and the strengths are
 set for play rather than counted from the returns. The map is drawn from
 the battlefield's well-known landmarks, not surveyed.
 
+## Maida: Calabria, 4 July 1806
+
+The twelfth game. Joseph Bonaparte has been made King of Naples, and
+Calabria is in revolt. General Stuart lands about five thousand British
+and foreign troops in the bay of Sant'Eufemia to help it along, and
+General Reynier, with about six thousand French, Poles and Swiss,
+crosses the Lamato to drive them back into the sea. It's the classic
+fight of the British line against the French column.
+
+- **Ten turns** of twenty minutes, from eight in the morning. The
+  French move first. Battalions are the counters: Compère's,
+  Peyri's and Digonet's brigades, the 9th Chasseurs à cheval and a
+  battery against Kempt's light battalion, Acland's, Cole's and
+  Oswald's brigades and a few guns. The 20th Foot lands on the beach
+  behind the British left on turn 4.
+- **Line against column**: on open ground, when only infantry attack
+  infantry, the French lose a column to the British volley and the
+  British gain one (the volley, then the bayonet). The Chasseurs
+  charging into the open gain a column, and the British have no
+  cavalry. From ten o'clock the heat costs every attack a column.
+- **The ground**: a flat plain with patches of myrtle scrub and olive
+  groves between the sea and the heights of Maida. The Lamato behind
+  the French costs 2 to cross and halves attacks across it, except at
+  the ford.
+- **Winning**: an army that has lost half its steps leaves the field at
+  the start of its turn. Otherwise each side scores the enemy steps it
+  destroys, the British the ford (5) and the French the beach at
+  Sant'Eufemia (5). The British must finish 3 VP ahead to win.
+  Computer against computer each side wins 30 games in 60.
+
+In 1806 the French broke within minutes of the first volley and lost
+perhaps a third of their men; the British lost a few hundred. The
+victory thresholds are set so the game is even, not so it repeats
+history. The order of battle is simplified, the strengths are set for
+play, and the map is a reasonable guess at the ground, not a survey.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -807,7 +848,9 @@ fight and must get away (`EXITS` with `types`), a crossing closed until
 a given turn (`ENTER_COST`), and night; and `roundtop` for a
 one-time rule kept in `engine.flags` (the 20th Maine's charge: made
 ready in `ON_TURN`, used in `COMBAT_SHIFTS`, spent once the unit has
-attacked) and terrain of its own (the crest, Big Round Top, Plum Run).
+attacked) and terrain of its own (the crest, Big Round Top, Plum Run);
+and `maida` for a river worked out in code from the row where its south
+bank begins, and both sides able to break (`engine.finish`).
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)

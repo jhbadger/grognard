@@ -1,0 +1,437 @@
+#!/usr/bin/env python3
+"""Maida: Calabria, 4 July 1806.  A sample game for the Grognard engine.
+
+A small British army, landed three days before in the bay of Sant'
+Eufemia, meets Reynier's French on the plain below the hill town of
+Maida.  French columns come on against a British line: the textbook
+fight of line against column.  Play either side against the computer,
+or against a friend at the same screen.
+
+Run it with ./maida (Python 3 with Tk, nothing else).  The game is
+saved to ~/.maida.json.  ./maida --selftest checks the map and plays a
+game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import hexgrid                           # noqa: E402
+
+ID = 'maida'
+TITLE = 'Maida'
+SUBTITLE = 'Calabria, 4 July 1806'
+
+INTRO = [
+    "Southern Italy, the summer of 1806. Napoleon's brother Joseph has "
+    "been made King of Naples; the Bourbon king has fled to Sicily, "
+    "where a British army guards him. Calabria is in revolt against the "
+    "French, and General Stuart has brought some five thousand British "
+    "and foreign troops across to help it along.",
+
+    "They landed on 1 July in the bay of Sant'Eufemia. General Reynier, "
+    "with about six thousand French, Poles and Swiss, came down from "
+    "the hills to the hill town of Maida, and this morning he has "
+    "crossed the Lamato to meet them on the plain, sure that the "
+    "British will not stand against his veterans.",
+
+    "Stuart has no cavalry and few guns. His infantry will fight in a "
+    "line two deep; the French will come on in column, as they have "
+    "across Europe. The 20th Foot is still coming ashore on the beach "
+    "behind the British left.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='fr', name='French', adj='French', colour='#4a68a8',
+         ink='#f4f0e4', posture='attack',
+         about="Reynier's division: sweep the British off the plain and "
+               "back into the sea, and keep the way home over the Lamato."),
+    dict(id='br', name='British', adj='British', colour='#b8443a',
+         ink='#f8f0e0', posture='attack',
+         about="Stuart's little army: break the French columns with "
+               'the volley and the bayonet, and seize the ford of the '
+               'Lamato behind them.'),
+]
+ORDER = ['fr', 'br']
+
+TURNS = 10
+
+
+def TURN_NAME(t):
+    """Twenty minutes a turn, from eight in the morning."""
+    m = 8 * 60 + (t - 1) * 20
+    return ('4 Jul 1806', '%d:%02d %s' % ((m // 60 - 1) % 12 + 1, m % 60,
+                                          'AM' if m < 12 * 60 else 'PM'))
+
+
+STACK = 2               # battalions: two to a hex
+FOG = False             # a flat, open plain in July sun
+DEFENSIVE_FIRE = 1
+
+# Smoothbore muskets at close range: an attack that doesn't drive the
+# defender off still costs the attacker, and a charge that does can
+# break a battalion outright.
+CRT = {
+    'columns': ['1:2', '1:1', '1.5:1', '2:1', '3:1', '4:1', '5:1'],
+    'rows': [
+        ['A2', 'A1', 'A1', 'A1', 'EX', 'EX', 'DR'],
+        ['A1', 'A1', 'A1', 'EX', 'EX', 'DR', 'D1R'],
+        ['A1', 'A1', 'EX', 'EX', 'DR', 'D1R', 'D1R'],
+        ['A1', 'EX', 'EX', 'DR', 'D1R', 'D1R', 'D2R'],
+        ['EX', 'EX', 'DR', 'D1R', 'D1R', 'D2R', 'D2R'],
+        ['EX', 'DR', 'D1R', 'D1R', 'D2R', 'D2R', 'DE'],
+    ],
+}
+
+ROSS = 4                # the 20th Foot is ashore and marching
+HEAT = 7                # from 10:00 the sun is merciless
+
+# Each side's steps; half of them gone and it gives up the field.
+BREAK = 0.5
+
+
+def _steps(e, side):
+    return sum(u.max_steps for u in e.units.values() if u.side == side)
+
+
+def _score(e):
+    return 'British %d VP, French %d.' % (e.vp('br'), e.vp('fr'))
+
+
+def ON_TURN(e, side):
+    """What happened on the plain, and an army breaking: at the start of
+    its own turn, a side that has lost half its steps leaves the field."""
+    if side == 'fr':
+        if e.turn == 1:
+            e.say('Reynier, beaten by the British in Egypt five years '
+                  'ago, means to settle the account. The drums beat the '
+                  'pas de charge.')
+        if e.turn > 1 and e.lost['fr'] >= _steps(e, 'fr') * BREAK:
+            e.finish('br', 'British victory. %s The French break and run '
+                     'for the Lamato and the road to Catanzaro; the '
+                     'Calabrian peasants are waiting for the stragglers.'
+                     % _score(e))
+    else:
+        if e.turn == 1:
+            e.say("In Oswald's brigade, de Watteville's Swiss in British "
+                  'red look across the plain at the Swiss battalion in '
+                  'French service, also in red.')
+        if e.turn == ROSS:
+            e.say('Colonel Ross brings the 20th Foot up from the boats '
+                  'at the double, toward the British left.')
+        if e.turn == HEAT:
+            e.say('It is ten o\'clock and blazing hot. Men in wool coats '
+                  'are falling down without a wound.')
+        if e.turn > 1 and e.lost['br'] >= _steps(e, 'br') * BREAK:
+            e.finish('fr', 'French victory. %s Stuart falls back on the '
+                     "beach at Sant'Eufemia, and the Navy takes what is "
+                     'left of his army off to Sicily.' % _score(e))
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Line against column: on open ground, French infantry attacking
+    British infantry lose a column to the volley, and British infantry
+    attacking French infantry gain one (the volley, then the bayonet).
+    The 9th Chasseurs charging into the open gain a column.  From 10:00,
+    in the heat, every attack is a column worse."""
+    out = []
+    t = e.board.terrain(target) or {}
+    defenders = e.at(target)
+    foot = [u for u in attackers if u.kind in FOOT]
+    if t.get('open') and attackers and len(foot) == len(attackers) and \
+            any(u.kind in FOOT for u in defenders):
+        if e.side == 'fr':
+            out.append((-1, 'column against line'))
+        else:
+            out.append((1, 'volley and bayonet'))
+    if t.get('open') and any(u.kind == 'chasseur' for u in attackers):
+        out.append((1, 'charge'))
+    if e.turn >= HEAT:
+        out.append((-1, 'heat'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'b': 'beach', 'r': 'scrub', 'o': 'olives'}
+
+TERRAIN = {
+    'clear':  dict(name='The plain', colour='#c0b878', ink='#a09a58',
+                   edge='#80784a'),
+    'fields': dict(name='Wheat stubble', colour='#d4c07a', ink='#b49e56',
+                   edge='#9a8444'),
+    'scrub':  dict(name='Myrtle scrub', colour='#9aa868', ink='#5e6e3a',
+                   pattern='rough', edge='#4e5a30', z=4, shift=0,
+                   open=False, los=True,
+                   move={'foot': 2, 'track': 2, 'wheel': 3}),
+    'olives': dict(name='Olive grove', colour='#7a9450', ink='#4a6430',
+                   pattern='trees', edge='#3a4e24', z=5, shift=-1,
+                   open=False, los=False,
+                   move={'foot': 2, 'track': 3, 'wheel': 3}),
+    'hills':  dict(name='Heights of Maida', colour='#b8a670',
+                   ink='#8a7448', edge='#6e5a32'),
+    'marsh':  dict(name='Lamato marshes', colour='#8aa478', ink='#4a7a9a'),
+    'beach':  dict(name='Beach', colour='#e4d8a8', ink='#c8b884',
+                   pattern='grass', edge='#a89868', z=1),
+    'water':  dict(name='Gulf of Sant\'Eufemia', colour='#3a6ca8',
+                   ink='#6a9cd0'),
+    'town':   dict(name='Maida', colour='#c4b494', ink='#9a4a32'),
+}
+
+MAP = [
+    '~~b..r..:..rr.hhhh',
+    '~~b...r....r..ohhh',
+    '~~b..:...r......hh',
+    '~bb.....r....r..oh',
+    '~b..r.......:...hh',
+    '~b....r.......r.hh',
+    '~b..:.....r.....oh',
+    '~b.r.....r...:..hh',
+    '~bb...r......r.hhh',
+    '~~bmm....r.....ohh',
+    '~~mm..:.o.r..:.hhh',
+    '~~b.:..oo...:.hhhh',
+    '~~b..o..:..o.hhtth',
+    '~~b.:.....:.hhhhhh',
+]
+
+# The first row (0-based) south of the Lamato, column by column.
+SOUTH = [10, 10, 10, 10, 10, 10, 10, 9, 9, 10, 10, 10, 11, 11, 10, 10,
+         10, 10]
+
+
+def _lamato():
+    """The Lamato runs west to the sea across the south of the plain:
+    every side between a hex north of it and one south of it."""
+    out = []
+    for c in range(len(MAP[0])):
+        for r in range(len(MAP)):
+            if r >= SOUTH[c] or MAP[r][c] == '~':
+                continue
+            for n in hexgrid.neighbours((c, r)):
+                nc, nr = n
+                if 0 <= nc < len(MAP[0]) and 0 <= nr < len(MAP) and \
+                        nr >= SOUTH[nc] and MAP[nr][nc] != '~':
+                    out.append('%s/%s' % (hexgrid.hid((c, r)),
+                                          hexgrid.hid(n)))
+    return out
+
+
+RIVERS = [('river', _lamato())]
+
+ROADS = [
+    ('trail', ['0302', '0903', '1306', '1312', '1613']),   # to Maida
+    ('trail', ['0302', '0312']),                           # along the shore
+]
+
+LABELS = {
+    '0302': "Sant'Eufemia", '0105': "Gulf of Sant'Eufemia",
+    '1613': 'Maida', '1311': 'Ford of the Lamato', '0711': 'Lamato',
+    '0909': 'The plain', '1604': 'Heights', '0410': 'Marshes',
+    '0903': 'Road to Maida',
+}
+
+FORD = hexgrid.parse('1311')
+LANDING = hexgrid.parse('0302')
+
+OBJECTIVES = {
+    '1311': dict(name='Ford', vp=5, owner='fr', **{'for': 'br'}),
+    '0302': dict(name="Sant'Eufemia", vp=5, owner='br', **{'for': 'fr'}),
+}
+STEP_VP = 1
+
+SUPPLY = {
+    'fr': dict(**{'from': ['S', 'E'], 'range': 20}),
+    'br': dict(**{'from': ['0302', '0307', '0309'], 'range': 20}),
+}
+
+
+def VICTORY(e):
+    """If neither army has broken by noon, the score decides: each
+    side scores the enemy's steps destroyed and the objective it holds
+    of the enemy's (the ford for the British, the landing beach for the
+    French).  The British, who need a clear win to make the landing
+    worth it, must finish 3 ahead (set from games between computer
+    players: ./maida --simulate 60)."""
+    br, fr = e.vp('br'), e.vp('fr')
+    m = br - fr
+    if m >= 6:
+        return 'br', ('British victory. %s Reynier pulls back across the '
+                      'Lamato toward Catanzaro, and all Calabria rises '
+                      'behind him.' % _score(e))
+    if m >= 3:
+        return 'br', ('British marginal victory. %s The French go back '
+                      'over the river; the British hold the plain.'
+                      % _score(e))
+    if m > -4:
+        return 'fr', ('French marginal victory. %s Stuart holds the '
+                      'beach, but Reynier still holds Calabria.'
+                      % _score(e))
+    return 'fr', ('French victory. %s The British are pushed back to '
+                  'their boats, and the revolt in Calabria dies.'
+                  % _score(e))
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'light':    dict(name='Light infantry', symbol='infantry', move='foot',
+                     spot=3),
+    'chasseur': dict(name='Chasseurs à cheval', symbol='horse',
+                     move='track', spot=3, sound='hooves'),
+}
+FOOT = ('infantry', 'light')
+
+# Uniform colours of the counters, a little apart for each brigade.
+KEMPT = '#c45a48'
+ACLAND = '#b8443a'
+COLE = '#a83a32'
+OSWALD = '#bc4e3e'
+ROSS_C = '#c86450'
+BR_GUNS = '#9a3a30'
+COMPERE = '#4a68a8'
+PEYRI = '#5a76ae'
+DIGONET = '#3e5c9c'
+FR_HORSE = '#5a80b8'
+FR_GUNS = '#38508a'
+
+
+def bn(uid, side, a, d, hx, formation, colour, long, steps=2, **kw):
+    """A battalion: attack, defence, and the hex it starts in (None if
+    it arrives later, with arrive and at)."""
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kw.pop('type', 'infantry'), size=kw.pop('size', 'II'),
+                a=a, d=d, m=kw.pop('m', 4), steps=steps, hex=hx,
+                formation=formation, colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+def guns(uid, side, a, rng, hx, formation, colour, long, **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type='artillery', size='I', a=a, d=2, m=kw.pop('m', 3),
+                range=rng, steps=1, hex=hx, formation=formation,
+                colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+UNITS = [
+    # ---- Reynier's division
+    bn('1lg1', 'fr', 4, 3, '1307', "Compère's Brigade", COMPERE,
+       "1st Battalion, 1er Léger", type='light', name='1LEG/1'),
+    bn('1lg2', 'fr', 4, 3, '1308', "Compère's Brigade", COMPERE,
+       "2nd Battalion, 1er Léger", type='light', name='1LEG/2'),
+    bn('42l1', 'fr', 4, 3, '1306', "Compère's Brigade", COMPERE,
+       '1st Battalion, 42e de Ligne', name='42/1'),
+    bn('42l2', 'fr', 4, 3, '1406', "Compère's Brigade", COMPERE,
+       '2nd Battalion, 42e de Ligne', name='42/2'),
+    bn('poles', 'fr', 3, 3, '1305', "Peyri's Brigade", PEYRI,
+       '1st Battalion, Polish Legion', name='POLES'),
+    bn('suisse', 'fr', 3, 3, '1405', "Peyri's Brigade", PEYRI,
+       'Swiss battalion (in red coats)', name='SUISSE'),
+    bn('23lg1', 'fr', 4, 3, '1304', "Digonet's Brigade", DIGONET,
+       '1st Battalion, 23e Léger', type='light', name='23LEG/1'),
+    bn('23lg2', 'fr', 4, 3, '1303', "Digonet's Brigade", DIGONET,
+       '2nd Battalion, 23e Léger', type='light', name='23LEG/2'),
+    bn('9chas', 'fr', 4, 2, '1402', 'Cavalry', FR_HORSE,
+       '9e Chasseurs à cheval', type='chasseur', m=6, size='III',
+       name='9CHAS'),
+    guns('frart', 'fr', 3, 4, '1407', 'Artillery', FR_GUNS,
+         "Reynier's foot artillery", name='FR ART'),
+
+    # ---- Stuart's army
+    bn('light', 'br', 5, 4, '0508', "Kempt's Light Brigade", KEMPT,
+       'Light Battalion (Lt-Col Kempt): the light companies, with '
+       'Corsican Rangers', type='light', steps=3, name='KEMPT'),
+    bn('78th', 'br', 4, 3, '0506', "Acland's Brigade", ACLAND,
+       '2nd Battalion, 78th Highlanders', name='78TH'),
+    bn('81st', 'br', 4, 3, '0505', "Acland's Brigade", ACLAND,
+       '1st Battalion, 81st Foot', name='81ST'),
+    bn('gren', 'br', 5, 4, '0504', "Cole's Brigade", COLE,
+       'Grenadier Battalion: the grenadier companies', steps=3,
+       name='GRENS'),
+    bn('27th', 'br', 4, 3, '0503', "Cole's Brigade", COLE,
+       '1st Battalion, 27th (Inniskilling) Foot', name='27TH'),
+    bn('58th', 'br', 3, 3, '0406', "Oswald's Brigade", OSWALD,
+       '1st Battalion, 58th Foot', name='58TH'),
+    bn('watt', 'br', 3, 3, '0405', "Oswald's Brigade", OSWALD,
+       "de Watteville's Swiss Regiment", name='WATTVL'),
+    guns('brart', 'br', 3, 4, '0407', 'Royal Artillery', BR_GUNS,
+         'Royal Artillery: four-pounders and two howitzers',
+         name='RA'),
+    bn('20th', 'br', 4, 3, None, 'Reinforcement', ROSS_C,
+       '20th Foot (Lt-Col Ross), just landed', arrive=ROSS,
+       at=['0301', '0302', '0303'], name='20TH'),
+]
+
+PANELS = dict(
+    right=['date', 'victory', 'objectives', 'phase', 'minimap', 'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1e1a14', panel='#2e2820', light='#86765a',
+              dark='#080604', accent='#e8c878', button='#544630',
+              button_hi='#a8946a', button_lo='#1e1a14', red='#b03020')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE FIELD. The French move first. Reynier's eight battalions, the "
+    "9th Chasseurs and his guns are on the plain north of the Lamato; "
+    "Stuart's seven battalions and guns face them, with the beach and "
+    "the boats at Sant'Eufemia behind. The 20th Foot comes ashore there "
+    "on turn 4.",
+
+    "LINE AGAINST COLUMN. On open ground (the plain, stubble, the "
+    "beach), when only infantry attack infantry, the French lose a "
+    "column to the British volley, and the British gain one: the volley, "
+    "then the bayonet. The 9th Chasseurs charging into the open gain a "
+    "column. From ten o'clock the heat costs every attack a column.",
+
+    "THE GROUND. Battalions move 4, the Chasseurs 6. Scrub and olive "
+    "groves cost 2; the groves and the heights give the defender a "
+    "column. The Lamato costs 2 to cross and halves an attack across "
+    "it, except at the ford.",
+
+    "WINNING. An army that has lost half its steps leaves the field at "
+    "the start of its turn, and the other side wins. Otherwise each "
+    "side scores the enemy's steps it destroys, the British the ford "
+    "(5) and the French the beach at Sant'Eufemia (5) if they hold it "
+    "at the end. The British must finish 3 VP ahead to win (6 for a "
+    "clear victory); the French win clearly 4 ahead.",
+]
+
+ICON = 'maida'
+
+
+@grognard.icon('maida')
+def draw_icon(p, n):
+    """A red line on a yellow plain, with the sea and a hill town."""
+    p.fill('#9ac4e0')
+    p.rect(0, n * 0.45, n, n * 0.55, '#d4c07a')
+    p.rect(0, n * 0.45, n * 0.18, n * 0.55, '#3a6ca8')
+    p.disc(n * 0.85, n * 0.5, n * 0.28, '#b8a670')
+    p.rect(n * 0.74, n * 0.28, n * 0.16, n * 0.08, '#e8dcc0')
+    p.rect(n * 0.78, n * 0.22, n * 0.04, n * 0.06, '#9a4a32')
+    for i in range(5):
+        x = n * (0.26 + i * 0.1)
+        p.rect(x, n * 0.62, n * 0.06, n * 0.14, '#b8443a')
+        p.rect(x, n * 0.58, n * 0.06, n * 0.04, '#1a1a1a')
+        p.rect(x, n * 0.74, n * 0.06, n * 0.04, '#f0f0e8')
+    for i in range(3):
+        x = n * (0.3 + i * 0.14)
+        p.rect(x, n * 0.84, n * 0.1, n * 0.1, '#4a68a8')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])
