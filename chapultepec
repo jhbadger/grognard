@@ -237,7 +237,8 @@ def VICTORY(e):
 # ----------------------------------------------------------------- units
 
 UNIT_TYPES = {
-    'horse': dict(name='Cavalry', symbol='recon', move='foot'),
+    'horse': dict(name='Cavalry', symbol='horse', move='foot',
+                  sound='hooves'),
 }
 
 US_REG = '#8298c6'      # regulars

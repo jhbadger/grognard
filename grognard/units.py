@@ -27,7 +27,9 @@ UNIT_TYPES says what each type of unit is: its NATO symbol (or picture),
 movement class, whether it has a zone of control, whether it is armour
 (for the armour bonus) or anti-tank (which cancels it), and whether it
 supports attacks from a distance (artillery), and how much of a hex's
-stacking limit it takes ('stack', 1 unless it's an HQ).  A game adds or changes
+stacking limit it takes ('stack', 1 unless it's an HQ), and the sound
+it makes moving ('sound', an effect in sound.EFFECTS: 'hooves' for
+horses; by default engines for tracks and footsteps for the rest).  A game adds or changes
 types with UNIT_TYPES in its script.
 """
 
@@ -51,8 +53,8 @@ UNIT_TYPES = {
                       at=True),
     'recon':     dict(name='Reconnaissance', symbol='recon', move='wheel',
                       spot=3),
-    'cavalry':   dict(name='Cavalry', symbol='recon', move='track', spot=3,
-                      armor=True),
+    'cavalry':   dict(name='Cavalry', symbol='horse', move='track', spot=3,
+                      armor=True, sound='hooves'),
     'engineer':  dict(name='Engineers', symbol='engineer', move='foot'),
     'artillery': dict(name='Artillery', symbol='artillery', move='wheel',
                       zoc=False, support=True),
@@ -149,6 +151,12 @@ class Unit:
     def stack(self):
         """How much of a hex's stacking limit it takes (HQs none)."""
         return self.spec.get('stack', self.type.get('stack', 1))
+
+    @property
+    def sound(self):
+        """The effect played when it moves."""
+        return self.spec.get('sound') or self.type.get('sound') or \
+            ('tracks' if self.move_class == 'track' else 'move')
 
     @property
     def spot(self):

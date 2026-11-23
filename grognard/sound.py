@@ -61,6 +61,20 @@ def noise(dur, vol=0.3, decay=6.0, seed=1, lowpass=0.5):
     return out
 
 
+def hooves(strides=3):
+    """A horse at a canter: hollow knocks on hard ground, three beats
+    to a stride and a pause."""
+    out = []
+    for s in range(strides):
+        for b in range(3):
+            k = s * 3 + b
+            clop = mixdown(noise(0.03, 0.25, 16, k, 0.3),
+                           tone(480 - 40 * b, 0.04, 'sine', 0.3, -150))
+            out += clop + [0.0] * int(RATE * 0.06)
+        out += [0.0] * int(RATE * 0.12)
+    return out
+
+
 def seq(*parts):
     out = []
     for p in parts:
@@ -82,6 +96,7 @@ EFFECTS = {
     'tracks': lambda: mixdown(seq(*[noise(0.04, 0.3, 5, k, 0.3) + [0.0] * 300
                                     for k in range(6)]),
                               tone(55, 0.42, 'saw', 0.12)),
+    'hooves': lambda: hooves(),
     'gun':    lambda: mixdown(noise(0.5, 0.6, 7, 4, 0.35),
                               tone(70, 0.35, 'sine', 0.5, -40)),
     'boom':   lambda: mixdown(noise(0.9, 0.7, 4, 7, 0.2),

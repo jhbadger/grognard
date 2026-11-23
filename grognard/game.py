@@ -1153,8 +1153,7 @@ class Game:
                         u.id in e.visible(viewer):
                     if len(ev[2]) > 1:
                         self.anims.append(MoveAnim(u.id, ev[2], per))
-                        self.sound.play('tracks' if u.move_class == 'track'
-                                        else 'move')
+                        self.sound.play(u.sound)
             elif kind == 'combat':
                 out = ev[2]
                 self.anims.append(Boom(ev[1]))
