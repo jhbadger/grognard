@@ -6,7 +6,7 @@ smooth font, and passes on keys and taps."""
 import importlib
 import os
 
-from . import textfont
+from . import font as gamefont, textfont
 from .widgets import screen_size
 
 W, H = 640, 480
@@ -171,7 +171,9 @@ class KivyShell:
         ww, wh = self.Window.size
         s, size, portrait = screen_size(ww, wh)
         self.g.set_screen(size, portrait)
-        self.scale = s
+        if s != getattr(self, 'scale', None):
+            self.scale = s
+            gamefont.forget_widths()
         W, H = self.fsize
         self.ox = (ww - W * s) / 2
         self.oy = (wh - H * s) / 2

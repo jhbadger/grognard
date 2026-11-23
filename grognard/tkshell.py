@@ -8,7 +8,7 @@ import time
 import tkinter as tk
 from tkinter import font as tkfont
 
-from . import textfont
+from . import font as gamefont, textfont
 from .widgets import screen_size
 
 W, H = 640, 480
@@ -158,7 +158,10 @@ class TkShell:
         ww, wh = self.win
         sc, size, portrait = screen_size(ww, wh,
                                          [a / b for a, b in SCALES])
-        self.zoom = [z for z in SCALES if z[0] / z[1] == sc][0]
+        zoom = [z for z in SCALES if z[0] / z[1] == sc][0]
+        if zoom != self.zoom:
+            self.zoom = zoom
+            gamefont.forget_widths()
         self.g.set_screen(size, portrait)
         self.place()
 

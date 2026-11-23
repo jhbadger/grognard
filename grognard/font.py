@@ -174,6 +174,13 @@ def set_metrics(fn):
         _widths.clear()
 
 
+def forget_widths():
+    """Measure everything afresh: the window's zoom has changed, and a
+    real font at another size isn't the same width scaled (hinting and
+    whole-pixel sizes can shift a line's width by a tenth)."""
+    _widths.clear()
+
+
 def width(s, scale=1):
     """The width of s in pixels."""
     if not s:
