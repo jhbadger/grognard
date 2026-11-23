@@ -1,0 +1,413 @@
+#!/usr/bin/env python3
+"""Tours: the battle between Poitiers and Tours, October 732.  A sample
+game for the Grognard engine.
+
+Abd al-Rahman al-Ghafiqi, governor of al-Andalus, has crossed the
+Pyrenees, beaten Duke Odo of Aquitaine on the Garonne, sacked Bordeaux
+and burnt the church outside Poitiers.  Now his horsemen ride north for
+the abbey of Saint-Martin at Tours, and on the old Roman road between
+the Clain and the Vienne they find Charles, mayor of the palace of the
+Franks, waiting for them on a wooded rise, his men on foot in a solid
+mass.  Play either side against the computer, or against a friend at
+the same screen.
+
+Run it with ./tours (Python 3 with Tk, nothing else).  The game is saved
+to ~/.tours.json.  ./tours --selftest checks the map and plays a game
+between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import hexgrid                           # noqa: E402
+
+ID = 'tours'
+TITLE = 'Tours'
+SUBTITLE = 'Between Poitiers and Tours, October 732'
+
+INTRO = [
+    "Autumn 732. Abd al-Rahman al-Ghafiqi, governor of al-Andalus for "
+    "the Umayyad caliph, has led a great raid over the Pyrenees. He "
+    "beat Duke Odo of Aquitaine by the Garonne, sacked Bordeaux, and "
+    "burnt the church of Saint-Hilaire outside Poitiers. His camp is "
+    "heavy with the plunder of Aquitaine.",
+
+    "Now his horsemen ride north up the old Roman road for a richer "
+    "prize: the abbey of Saint-Martin at Tours. Odo has fled to the "
+    "Franks and bowed to their mayor of the palace, Charles, who has "
+    "brought his army south to meet the raiders.",
+
+    "For a week the two armies have watched each other. Charles has "
+    "chosen his ground: a wooded rise across the road, between the "
+    "rivers Clain and Vienne, where horsemen can't ride round him. His "
+    "men stand on foot, shield to shield. The cavalry of al-Andalus have "
+    "never yet failed to break an army that waited for them.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='um', name='Umayyads', adj='Umayyad', colour='#e4dcc4',
+         ink='#1e4a2a', posture='attack',
+         about='Break the Frankish shield wall and ride on to Tours, and '
+               "don't lose the plunder in the camp."),
+    dict(id='fr', name='Franks', adj='Frankish', colour='#a8443a',
+         ink='#f8ecd0', posture='defend',
+         about='Stand on the rise, shield to shield, and let the horsemen '
+               'break themselves on you. Odo and his Aquitanians will '
+               'come for the camp.'),
+]
+ORDER = ['um', 'fr']
+
+TURNS = 10
+
+
+def TURN_NAME(t):
+    """An hour a turn, from eight in the morning."""
+    h = 8 + t - 1
+    return ('Oct 732', '%d %s' % ((h - 1) % 12 + 1, 'AM' if h < 12 else 'PM'))
+
+
+STACK = 2
+
+# Hand to hand, horse against foot: a charge that doesn't break the line
+# still costs the defenders, and only big odds drive them off.
+CRT = {
+    'columns': ['1:2', '1:1', '1.5:1', '2:1', '3:1', '4:1', '5:1'],
+    'rows': [
+        ['A2', 'A1', 'A1', 'EX', 'EX', 'DR', 'D1R'],
+        ['A1', 'A1', 'EX', 'EX', 'DR', 'D1R', 'D1R'],
+        ['A1', 'EX', 'EX', 'DR', 'D1R', 'D1R', 'D2R'],
+        ['A1', 'EX', 'DR', 'D1R', 'D1R', 'D2R', 'D2R'],
+        ['EX', 'DR', 'D1R', 'D1R', 'D2R', 'D2R', 'DE'],
+        ['DR', 'D1R', 'D1R', 'D2R', 'D2R', 'DE', 'DE'],
+    ],
+}
+FOG = True              # the Franks wait in the trees
+DEFENSIVE_FIRE = 0      # no guns
+STEP_VP = 1
+
+WEATHER = {1: 'clear', 10: 'dusk'}
+WEATHER_TYPES = {
+    'dusk': dict(name='Dusk', icon='fog', air=False, spot=1),
+}
+
+CREST = hexgrid.parse('0904')
+MOUSSAIS = hexgrid.parse('1106')
+CAMP = hexgrid.parse('0913')
+
+
+PLUNDER = 6
+
+
+def ON_TURN(e, side):
+    """The plunder: the first time a Frankish unit stands in the camp,
+    at the start of either side's turn, the plunder of Aquitaine is
+    scattered and the Franks score PLUNDER VP, whoever holds the camp
+    later."""
+    if not e.flags.get('plundered') and \
+            any(u.side == 'fr' for u in e.at(CAMP)):
+        e.flags['plundered'] = True
+        e.bonus['fr'] += PLUNDER
+        e.say('The Franks are in the camp! The plunder of Aquitaine is '
+              'scattered (%d VP).' % PLUNDER)
+
+
+def ON_ELIMINATE(e, u, where):
+    """The emir falls: his army loses heart."""
+    if u.id == 'emir':
+        e.flags['emir'] = True
+        e.say('Abd al-Rahman is dead! The Umayyad army loses heart.')
+    elif u.id == 'charles':
+        e.flags['charles'] = True
+        e.say('Charles has fallen! The Franks waver.')
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Horsemen can't break a shield wall: an attack made only by
+    cavalry on a hex held by Frankish heavy infantry loses a column.
+    With the emir dead the Umayyads attack a column worse; with Charles
+    dead, the Franks."""
+    out = []
+    if e.side == 'um':
+        if attackers and all(u.kind == 'cavalry' for u in attackers) and \
+                any(u.spec.get('wall') for u in e.at(target, 'fr')):
+            out.append((-1, 'shield wall'))
+        if e.flags.get('emir'):
+            out.append((-1, 'the emir is dead'))
+    elif e.flags.get('charles'):
+        out.append((-1, 'Charles is dead'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'H': 'woodhill', 'c': 'camp'}
+
+TERRAIN = {
+    'clear':  dict(name='Open ground', colour='#b4b878', ink='#949a58',
+                   edge='#7a7e48'),
+    'fields': dict(name='Stubble', colour='#cbb874', ink='#a8964e',
+                   edge='#8a7a40'),
+    'woods':  dict(colour='#5e7a3a', ink='#3a5222', edge='#24401a'),
+    'forest': dict(name='Forest', colour='#3a5a2a', ink='#22401a',
+                   edge='#122a0c'),
+    'hills':  dict(name='The rise', colour='#b4a46e', ink='#86744a',
+                   edge='#6a5a34', shift=0,
+                   move={'foot': 1, 'track': 2, 'wheel': 2}),
+    'woodhill': dict(name='Wooded rise', colour='#6e7a40', ink='#3e5224',
+                     pattern='trees', edge='#2a3a18', z=5, shift=-1,
+                     open=False, los=False,
+                     move={'foot': 2, 'track': 3, 'wheel': 4}),
+    'marsh':  dict(name='Water meadows', colour='#8aa47a',
+                   ink='#4a7a9a', edge='#3e6a6a'),
+    'town':   dict(name='Hamlet', colour='#c0b090', ink='#8a4a2e'),
+    'camp':   dict(name='The camp', colour='#d8cca8', ink='#a04030',
+                   pattern='town', edge='#6a5a40', z=7, shift=0,
+                   open=True, los=True,
+                   move={'foot': 1, 'track': 1, 'wheel': 1}),
+    'water':  dict(colour='#4a74a8'),
+}
+
+MAP = [
+    '~..FFF:.:.:FFFm~~',
+    '~.FF.:..:..:FFm~~',
+    '~.Ff.hhHhhh.fFm~~',
+    '~f.f.hHHhHHh.fm~~',
+    '~.:.hhhhhhhhh.m~~',
+    '~.:..h.h.ht...m~~',
+    '~f.:...........m~',
+    '~:.:..:...:..:.m~',
+    '~.:....:.......m~',
+    '~.f..:...:...:.m~',
+    '~:..:.......:..m~',
+    '~f.:..f..:.f...m~',
+    '~.:..:..c..:...m~',
+    '~.f..:..:....:.m~',
+]
+
+ROADS = [
+    ('road', ['0914', '0901']),                         # the Roman road
+    ('trail', ['0913', '1307', '1106']),
+    ('trail', ['1106', '1302', '1401']),                # to Vieux-Poitiers
+    ('trail', ['0913', '0310']),
+]
+
+LABELS = {
+    '0904': 'The crest', '1106': 'Moussais', '0913': 'The camp',
+    '0901': 'to Tours', '0914': 'to Poitiers', '0108': 'Clain',
+    '1609': 'Vienne', '1401': 'Vieux-Poitiers', '0605': 'The rise',
+}
+
+OBJECTIVES = {
+    '0904': dict(name='Crest', vp=6, owner='fr', **{'for': 'um'}),
+    '1106': dict(name='Moussais', vp=2, owner='fr', **{'for': 'um'}),
+    '0913': dict(name='Camp', vp=8, owner='um', **{'for': 'fr'}),
+}
+
+# What gets through to Tours: the abbey of Saint-Martin and its treasure.
+EXITS = {'um': dict(hexes=['N'], vp=1)}
+
+SUPPLY = {
+    'um': dict(**{'from': ['S', '0913'], 'range': 12}),
+    'fr': dict(**{'from': ['N'], 'range': 12}),
+}
+
+
+def VICTORY(e):
+    """The Umayyads score the crest and Moussais if they hold them at
+    the end, one for every step that rides off the north edge for Tours,
+    and every Frankish step destroyed (and Charles, 4); the Franks score
+    the camp, the plunder if they ever reached it, and every Umayyad step
+    (and the emir, 4).  The Umayyads must come out ahead (the margins
+    were set from games between computer players: ./tours --simulate
+    30)."""
+    um, fr = e.vp('um'), e.vp('fr')
+    m = um - fr
+    score = 'Umayyads %d VP, Franks %d.' % (um, fr)
+    if m >= 6:
+        return 'um', ('Umayyad victory. %s The Frankish wall breaks, and '
+                      'the road to Tours lies open.' % score)
+    if m >= 1:
+        return 'um', ('Umayyad marginal victory. %s The Franks give '
+                      'ground, and Charles must fight again another '
+                      'day.' % score)
+    if m > -5:
+        return 'fr', ('Frankish marginal victory. %s The wall holds, and '
+                      'in the night the raiders slip away south.' % score)
+    return 'fr', ('Frankish victory. %s The Franks stand like a wall of '
+                  'ice; at dawn they find the tents empty, and the '
+                  "raiders' power north of the Pyrenees broken." % score)
+
+
+# ----------------------------------------------------------------- units
+
+ARAB = '#e4dcc4'        # Arab horse
+BERBER = '#d4c8a4'      # Berber light horse and foot
+EMIR = '#f0ead8'
+FRANK = '#a8443a'       # Charles's veterans
+NEUSTRIA = '#b4584a'
+LEVY = '#bc7262'
+AQUITAINE = '#c8846a'
+
+
+UNIT_TYPES = {
+    'spear': dict(name='Spearmen', symbol='infantry', move='foot',
+                  at=True),
+}
+
+
+def unit(uid, side, a, d, m, hx, long, colour, formation, steps=2, **kw):
+    """A contingent: attack, defence, movement and the hex it starts in
+    (None to arrive later, with arrive and at)."""
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kw.pop('type', 'infantry'), size=kw.pop('size', 'III'),
+                a=a, d=d, m=m, steps=steps, hex=hx, long=long,
+                colour=colour, formation=formation)
+    spec.update(kw)
+    return spec
+
+
+def horse(uid, side, a, d, m, hx, long, colour, formation, **kw):
+    return unit(uid, side, a, d, m, hx, long, colour, formation,
+                type='cavalry', **kw)
+
+
+def wall(uid, a, d, hx, long, colour, formation, steps=3, **kw):
+    """Frankish foot in close order: spears and locked shields (they
+    cancel the horsemen's shock, and cavalry alone lose a column against
+    them)."""
+    return unit(uid, 'fr', a, d, 2, hx, long, colour, formation,
+                steps=steps, type='spear', wall=True, **kw)
+
+
+UNITS = [
+    # ---- the army of al-Andalus
+    horse('emir', 'um', 6, 4, 5, '0911',
+          'Abd al-Rahman al-Ghafiqi and his guard', EMIR, 'The emir',
+          vp=4, size='II'),
+    horse('yaman', 'um', 6, 3, 5, '0810', 'Arab horse of the Yemeni tribes',
+          ARAB, 'Arab horse', steps=3, name='YAMAN'),
+    horse('qays', 'um', 6, 3, 5, '1010', 'Arab horse of the Qaysi tribes',
+          ARAB, 'Arab horse', steps=3, name='QAYS'),
+    horse('syria', 'um', 5, 3, 5, '0710', 'Syrian horse of the junds',
+          ARAB, 'Arab horse', steps=3, name='SYRIA'),
+    horse('andal', 'um', 5, 3, 5, '1110', 'Horsemen of al-Andalus', ARAB,
+          'Arab horse', steps=3, name='ANDLUS'),
+    horse('ber1', 'um', 4, 2, 6, '0509', 'Berber light horse', BERBER,
+          'Berber horse', name='BERBR1'),
+    horse('ber2', 'um', 4, 2, 6, '1309', 'Berber light horse', BERBER,
+          'Berber horse', name='BERBR2'),
+    horse('ber3', 'um', 4, 2, 6, '0411', 'Berber light horse', BERBER,
+          'Berber horse', name='BERBR3'),
+    horse('ber4', 'um', 4, 2, 6, '1211', 'Berber light horse', BERBER,
+          'Berber horse', name='BERBR4'),
+    unit('foot1', 'um', 3, 3, 3, '0812', 'Berber foot', BERBER,
+         'Foot', name='FOOT1'),
+    unit('foot2', 'um', 3, 3, 3, '1012', 'Berber foot', BERBER,
+         'Foot', name='FOOT2'),
+    unit('camp', 'um', 1, 2, 2, '0913',
+         'Camp guards, servants and the plunder train', BERBER, 'The camp',
+         steps=1, size='II', name='CAMP'),
+
+    # ---- the Franks
+    wall('charles', 6, 6, '0904', 'Charles and his household warriors',
+         FRANK, "Charles's host", vp=4, name='CHARLS', size='X'),
+    wall('aus1', 4, 5, '0904', 'Austrasian veterans', FRANK,
+         "Charles's host", name='AUSTR1'),
+    wall('aus2', 4, 5, '0805', 'Austrasian veterans', FRANK,
+         "Charles's host", name='AUSTR2'),
+    wall('aus3', 4, 5, '1005', 'Austrasian veterans', FRANK,
+         "Charles's host", name='AUSTR3'),
+    wall('aus4', 4, 5, '0605', 'Austrasian veterans', FRANK,
+         "Charles's host", name='AUSTR4'),
+    wall('neu1', 3, 4, '0505', 'Neustrian foot', NEUSTRIA, 'Neustrians',
+         name='NEUST1'),
+    wall('neu2', 3, 4, '1205', 'Neustrian foot', NEUSTRIA, 'Neustrians',
+         name='NEUST2'),
+    wall('neu3', 3, 4, '1305', 'Neustrian foot', NEUSTRIA, 'Neustrians',
+         name='NEUST3'),
+    unit('lev1', 'fr', 2, 3, 2, '0304', 'Frankish levies', LEVY, 'Levies',
+         name='LEVY1'),
+    unit('lev2', 'fr', 2, 3, 2, '1404', 'Frankish levies', LEVY, 'Levies',
+         name='LEVY2'),
+    horse('odo', 'fr', 5, 3, 5, None, "Duke Odo's Aquitanian horse",
+          AQUITAINE, 'Duke Odo of Aquitaine', arrive=4,
+          at=['0212', '0213', '0214'], name='ODO', posture='attack'),
+    horse('gascon', 'fr', 4, 2, 6, None, 'Gascon horsemen', AQUITAINE,
+          'Duke Odo of Aquitaine', arrive=4, at=['0212', '0213', '0214'],
+          name='GASCON', posture='attack'),
+]
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1e1812', panel='#2e261c', light='#7e6a4e',
+              dark='#080604', accent='#e8c070', button='#5a4630',
+              button_hi='#a08462', button_lo='#1e1812', red='#b03020')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE BATTLE. The Umayyads move first. The Franks stand on a rise "
+    "across the old Roman road, the river Clain on one side of the field "
+    "and the Vienne on the other. The rise costs 2 to climb and gives a "
+    "column; where it's wooded, two. The Franks are hidden: units are "
+    "seen only within 2 hexes (1 in woods), and at dusk only next door.",
+
+    "HORSE AND FOOT. Almost the whole Umayyad army is mounted, and in "
+    "the open cavalry gain a column for their shock, unless the "
+    "defenders are spearmen in close order: Charles's veterans and the "
+    "Neustrians. Against them an attack by horsemen alone loses a "
+    "column too (the shield wall). The Frankish foot move only 2.",
+
+    "THE CAMP. On turn 4 Duke Odo's Aquitanian and Gascon horse ford the "
+    "Clain in the south-west and make for the Umayyad camp and its "
+    "plunder. If Abd al-Rahman is killed, Umayyad attacks lose a column "
+    "for the rest of the day; if Charles is, Frankish attacks do.",
+
+    "WINNING. The Umayyads score the crest (6) and Moussais (2) if they "
+    "hold them at the end, 1 for each step that rides off the north "
+    "edge for Tours, and every Frankish step destroyed (Charles 4 more). "
+    "The Franks score the camp (8) if they hold it at the end, 6 more "
+    "the first time they get into it (the plunder is scattered), and "
+    "every Umayyad step (the emir 4 more). The Umayyads must finish "
+    "ahead to win, 6 ahead for a clear victory; the Franks win clearly "
+    "if 5 or more ahead.",
+]
+
+ICON = 'tours'
+
+
+@grognard.icon('tours')
+def draw_icon(p, n):
+    """A row of round shields and spears on the rise, against an
+    evening sky."""
+    p.fill('#e8b070')
+    p.rect(0, 0, n, n * 0.3, '#c87a4a')
+    p.disc(n * 0.5, n * 1.25, n * 0.75, '#6e7a40')
+    for k in range(5):
+        x = n * (0.14 + k * 0.18)
+        p.line(x + n * 0.03, n * 0.12, x + n * 0.03, n * 0.6, '#3a2a1a',
+               max(1, n // 48))
+        p.rect(x + n * 0.015, n * 0.1, n * 0.03, n * 0.05, '#d8d8d0')
+    for k in range(5):
+        x = n * (0.14 + k * 0.18)
+        p.disc(x, n * 0.62, n * 0.11, '#a8443a')
+        p.disc(x, n * 0.62, n * 0.035, '#d8c070')
+    p.rect(0, n * 0.82, n, n * 0.18, '#4e5a2a')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

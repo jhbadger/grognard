@@ -17,14 +17,15 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are seven games so far: a Second World War battle, a raid in a
+There are eight games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
 Mexican-American War, a dawn rising in the streets of Belém in
-Brazil's war of independence, a battle at sea: Trafalgar, and Far
+Brazil's war of independence, a battle at sea: Trafalgar, Far
 Suns, a game of exploring, settling and conquering a cluster of stars,
-where you build your own units.
+where you build your own units, and the oldest battle: Tours, where the
+Frankish foot stood against the horsemen of al-Andalus in 732.
 
 ```bash
 ./crossroads
@@ -52,6 +53,10 @@ where you build your own units.
 
 ```bash
 ./farsuns
+```
+
+```bash
+./tours
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -316,6 +321,50 @@ where the other is.
   end. Computer against computer the two sides win about equally
   often, four games in five end with a homeworld taken, on turn 34 on
   average.
+
+## Tours: between Poitiers and Tours, October 732
+
+The eighth game. Abd al-Rahman al-Ghafiqi, governor of al-Andalus, has
+raided over the Pyrenees, beaten Duke Odo of Aquitaine and sacked
+Bordeaux, and his horsemen are riding north for the abbey of
+Saint-Martin at Tours. On the old Roman road between the Clain and the
+Vienne, Charles, mayor of the palace of the Franks, waits for them on a
+wooded rise, his men on foot and shield to shield.
+
+- **Ten turns** of an hour, from eight in the morning until dusk. The
+  Umayyads move first. The Franks are hidden in the trees: units are
+  seen within 2 hexes, 1 in woods, and at dusk only next door.
+- **The field**: the two rivers close in to the north, so the horsemen
+  can't ride round. The rise is slow going for horses; where it's
+  wooded it gives the defenders a column. The fight is hand to hand,
+  on a table of its own: a charge that doesn't break the line still
+  costs the defenders a step as often as not.
+- **Horse against foot**: almost all the Umayyads are mounted (the
+  emir's guard, Arab horse of the Yemeni and Qaysi tribes, the Syrian
+  junds and al-Andalus, and Berber light horse), and gain a column
+  attacking into the open; but not against Charles's household, the
+  Austrasian veterans and the Neustrians, spearmen in close order,
+  and against them an attack by horsemen alone loses a column (the
+  shield wall). The Frankish foot move only 2.
+- **The camp**: on turn 4 Duke Odo's Aquitanian and Gascon horse ford
+  the Clain in the south-west and go for the Umayyad camp and the
+  plunder of Aquitaine. The first time a Frankish unit gets into the
+  camp the plunder is scattered, for 6 VP. If Abd al-Rahman is killed,
+  Umayyad attacks lose a column for the rest of the day; if Charles
+  is, Frankish attacks do.
+- **Winning**: the Umayyads score the crest (6) and Moussais (2) if
+  they hold them at the end, a point for every step that rides off the
+  north edge for Tours, and every Frankish step destroyed; the Franks
+  the camp (8), the plunder, and every Umayyad step. Each leader is
+  worth 4 more. The Umayyads must finish ahead. Computer against
+  computer the Franks win a little more often than not (34 games in
+  60, 15 of them clearly), and when Odo appears the emir
+  and his best horse ride back to save the camp, as they did.
+
+How the battle went is known only in outline, and its date, its place
+and the size of the armies are all argued over. The order of battle and
+the map follow the usual account (Moussais-la-Bataille, north of
+Poitiers), not a survey.
 
 ## Playing
 
@@ -608,7 +657,9 @@ ships on a map of open water, the wind worked out in `ENTER_COST`, its
 own widget (the wind) and its own counter symbol and picture; and
 `farsuns` for production, units made in play, a map dealt out by
 `SETUP`, its own orders, a side that never moves, and its own computer
-player.
+player; and `tours` for a unit type of its own (spearmen who cancel the
+cavalry's shock), `ON_ELIMINATE` (a leader's death), and a VP bonus
+kept in `engine.bonus` (the plunder).
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)
