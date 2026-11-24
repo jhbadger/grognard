@@ -957,6 +957,8 @@ class Engine:
         hook = getattr(self.d, 'ON_END_TURN', None)
         if hook:
             hook(self)
+            if self.over:           # the game's own ending came first
+                return
         for side, hexes in getattr(self.d, 'SUDDEN_DEATH', {}).items():
             hs = self.board.hex_list(hexes)
             if hs and all(self.control.get(h) == side for h in hs):

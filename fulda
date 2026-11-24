@@ -62,9 +62,8 @@ SIDES = [
          about='Break through the Fulda Gap and down the Kinzig valley '
                'to Gelnhausen before NATO can stop you, or before it '
                'decides it must go nuclear to do so.'),
-    dict(id='nato', name='NATO', adj='NATO', colour='#8ab0cc',
+    dict(id='nato', name='NATO forces', adj='NATO', colour='#8ab0cc',
          ink='#081018', flag='cross', posture='defend',
-         singular=True,
          about='Hold the covering force line as long as it can live, '
                'bring up the 3rd Armored and the 8th Infantry Divisions, '
                'and keep the Soviets out of the Kinzig valley.'),

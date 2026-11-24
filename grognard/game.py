@@ -1167,6 +1167,11 @@ class Game:
                 if ev[2] is not None:
                     self.anims.append(Popup(ev[2], 'destroyed',
                                             rgb('#ff6040'), 2.0))
+            elif kind == 'sound':           # a game's own: ('sound', name)
+                self.sound.play(ev[1])
+            elif kind == 'popup':           # ('popup', hex, text, colour)
+                self.anims.append(Popup(ev[1], ev[2], rgb(
+                    ev[3] if len(ev) > 3 else '#e0c0ff'), 2.0))
             elif kind == 'turn':
                 self.play.undo = []
                 self.play.clear()
