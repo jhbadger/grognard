@@ -1,0 +1,1051 @@
+#!/usr/bin/env python3
+"""Nightspire: the storming of the Witch-King's citadel.  A fantasy game
+for the Grognard engine.
+
+Men, elves and dwarves march together on Nightspire, the citadel of
+Malgrith the Witch-King, while his orcs, trolls and walking dead march
+the other way to burn Aldermere.  Malgrith and two of his captains are
+sorcerers, and the spell they like best turns a regiment, or a hero,
+into a sheep.  Play either side against the computer, or against a
+friend at the same screen.
+
+Run it with ./nightspire (Python 3 with Tk, nothing else).  The game is
+saved to ~/.nightspire.json.  ./nightspire --selftest checks the map and
+plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import ai, counters, sound               # noqa: E402
+from grognard.hexgrid import distance, neighbours, hid, parse  # noqa: E402
+
+ID = 'nightspire'
+TITLE = 'Nightspire'
+SUBTITLE = "The storming of the Witch-King's citadel"
+
+INTRO = [
+    "For three hundred years Malgrith the Witch-King has ruled the Ash "
+    "Wastes from Nightspire, a black citadel on a crag among dead "
+    "mountains. This spring his orcs came over the Greywater, and the "
+    "smoke of burning farms can be seen from the walls of Aldermere.",
+
+    "Aldermere has not stood alone. Prince Aldric has the Knights of the "
+    "Silver Lance and the city's levies; out of Silverwood comes Lady "
+    "Elowen Starbough with the wardens and archers of the elves; and "
+    "out of the Ironhills, a day behind, Brokk Stonehelm with the axes "
+    "of Ironhold and an engine for breaking walls.",
+
+    "Malgrith is not afraid of swords. He and his captains, Vesska the "
+    "hag and the lich Morrowgast, have a spell for armies: it turns "
+    "the bravest regiment into a flock of bewildered sheep. And orcs "
+    "are very fond of mutton.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='al', name='Alliance', adj='Allied', colour='#b8c4d8',
+         ink='#101418', flag='cross', posture='attack', singular=True,
+         about='Take Nightspire and end the Witch-King, while holding '
+               'Aldermere against his horde. Get any sheep he makes back '
+               'off the west edge before the orcs eat them.'),
+    dict(id='wk', name='Dark Host', adj='Dark', colour='#5c4a66',
+         ink='#ece4d4', flag='star', posture='attack', singular=True,
+         about='Burn Aldermere, hold Nightspire, and turn the champions '
+               'of the Alliance into sheep. Then eat the sheep.'),
+]
+ORDER = ['al', 'wk']
+
+# Three days of four turns: dawn, day, dusk and night.
+TURNS = 12
+PARTS = ['Dawn', 'Day', 'Dusk', 'Night']
+
+
+def TURN_NAME(t):
+    return ('Day %d' % ((t - 1) // 4 + 1), PARTS[(t - 1) % 4])
+
+
+WEATHER = {1: 'day', 3: 'dusk', 4: 'night', 5: 'day', 7: 'dusk',
+           8: 'night', 9: 'day', 11: 'dusk', 12: 'night'}
+WEATHER_TYPES = {
+    'day': dict(name='Daylight', icon='sun', air=False),
+    'dusk': dict(name='Dusk', icon='fog', air=False, spot=2),
+    'night': dict(name='Night: the dead walk', icon='cloud', air=False,
+                  spot=1),
+}
+
+STACK = 3
+FOG = True
+DEFENSIVE_FIRE = 1
+COMBAT_SOUND = 'swords'
+STYLE = 'pictures'
+
+CITADEL = '2207'
+CITY = '0207'
+KING = 'malgrith'
+WARDEN = 'elowen'           # her ward makes spells near her harder
+SAPPER = 'brokk'            # and he is good at walls
+
+SHEEP_VP = 2                # a sheep eaten, to the Dark Host
+HERO_SHEEP_VP = 4           # a hero eaten
+SAFE_VP = 1                 # a sheep driven off the west edge
+STEP_VP = 1
+MARGIN = 10                 # set from ./nightspire --simulate 60
+
+# ----------------------------------------------------------------- spells
+# A sorcerer casts at most one spell a turn, in the movement phase, at
+# an enemy unit his side can see.  Power comes back a point a turn.
+
+SPELLS = {
+    'sheep': dict(name='Sheep', cost=3, need=4, range=3),
+    'bolt':  dict(name='Bolt', cost=1, need=4, range=2),
+    'raise': dict(name='Raise', cost=3),
+}
+RAISE_MAX = 3               # bands of the dead raised in a game, at most
+CASTERS = {
+    'malgrith':   dict(power=6, spells=['sheep', 'bolt', 'raise'], need=-1),
+    'vesska':     dict(power=3, spells=['sheep', 'bolt']),
+    'morrowgast': dict(power=3, spells=['sheep', 'raise']),
+}
+HEROES = ('hero', 'mage')
+
+
+def power(e, uid):
+    return e.flags.setdefault('power', {}).get(uid, CASTERS[uid]['power'])
+
+
+def spend(e, uid, n):
+    e.flags.setdefault('power', {})[uid] = power(e, uid) - n
+    e.flags.setdefault('cast', {})[uid] = e.turn
+
+
+def has_cast(e, uid):
+    return e.flags.get('cast', {}).get(uid) == e.turn
+
+
+def worth(t):
+    """How much the Witch-King would like to see t become a sheep."""
+    return (t.attack + t.defense) * t.steps / 2.0 + \
+        (8 if t.kind in HEROES else 0)
+
+
+def targets(e, u):
+    """Enemy units u's side can see within 3 hexes of u, nearest first
+    (sheep are not worth a spell)."""
+    seen = e.visible(u.side)
+    out = [t for t in e.alive() if t.side != u.side and t.kind != 'sheep'
+           and t.id in seen and distance(u.hex, t.hex) <= 3]
+    out.sort(key=lambda t: (distance(u.hex, t.hex), t.id))
+    return out
+
+
+def aimed(e, u, ts):
+    """The target u's spells are aimed at: the one chosen, or the one
+    most worth it."""
+    want = e.flags.get('aim', {}).get(u.id)
+    for t in ts:
+        if t.id == want:
+            return t
+    return max(ts, key=lambda t: (worth(t), t.id)) if ts else None
+
+
+def called(t):
+    """A unit as the log names it: 'Prince Aldric of Aldermere', 'the
+    Knights of the Silver Lance', 'the King's Spears'."""
+    if t.kind in HEROES:
+        return t.long
+    return 'the ' + (t.long[4:] if t.long.startswith('The ') else t.long)
+
+
+def warded(e, t):
+    w = e.units.get(WARDEN)
+    return bool(w and w.alive and distance(w.hex, t.hex) <= 2)
+
+
+def need(e, caster, t, spell):
+    """The roll a spell needs: 4 or more on a die; the Witch-King 3;
+    one more near Elowen."""
+    n = SPELLS[spell]['need'] + CASTERS[caster.id].get('need', 0)
+    if warded(e, t):
+        n += 1
+    return max(2, min(6, n))
+
+
+def raise_hex(e, u):
+    """Where the dead would rise for u: its own hex or one next to it
+    with room, not next to the enemy if it can help it."""
+    from grognard.units import Unit
+    probe = Unit(dict(id='?', side=u.side, type='skeleton'), e.types)
+    eh = e.enemy_hexes(u.side)
+    cands = [u.hex] + [n for n in neighbours(u.hex) if e.board.on_map(n)
+                       and e.enter_cost(probe, u.hex, n) is not None]
+    ok = [h for h in cands if h not in eh and e.room(h, probe)]
+    ok.sort(key=lambda h: (any(n in eh for n in neighbours(h)), h != u.hex,
+                           h))
+    return ok[0] if ok else None
+
+
+def ACTIONS(e, u):
+    if u.id not in CASTERS or e.phase != 'move':
+        return []
+    ts = targets(e, u)
+    t = aimed(e, u, ts)
+    p = power(e, u.id)
+    out = [('Power %d/%d' % (p, CASTERS[u.id]['power']), 'power',
+            'power comes back a point a turn'),
+           ('At: %s' % t.name if t else 'No target', 'aim',
+            None if len(ts) > 1 else 'nothing else in reach' if ts else
+            'no enemy in sight within 3 hexes')]
+    for k in CASTERS[u.id]['spells']:
+        sp = SPELLS[k]
+        why = None
+        if has_cast(e, u.id):
+            why = 'has cast a spell this turn'
+        elif p < sp['cost']:
+            why = 'needs %d power, has %d' % (sp['cost'], p)
+        elif k == 'raise':
+            if e.flags.get('raised', 0) >= RAISE_MAX:
+                why = 'the barrows are empty'
+            elif raise_hex(e, u) is None:
+                why = 'no room for the dead to rise'
+        elif t is None:
+            why = 'no enemy in sight within 3 hexes'
+        elif distance(u.hex, t.hex) > sp['range']:
+            why = 'out of range: %d hexes' % sp['range']
+        out.append(('%s (%d)' % (sp['name'], sp['cost']), k, why))
+    return out
+
+
+def ACT(e, u, key):
+    ts = targets(e, u)
+    t = aimed(e, u, ts)
+    if key == 'aim':
+        i = ts.index(t)
+        t = ts[(i + 1) % len(ts)]
+        e.flags.setdefault('aim', {})[u.id] = t.id
+        e.say('%s turns to %s at %s, %d hexes off (needs %d+).' % (
+            u.name.title(), called(t), e.place(t.hex), distance(u.hex, t.hex),
+            need(e, u, t, 'sheep')), u.side)
+        return
+    sp = SPELLS[key]
+    spend(e, u.id, sp['cost'])
+    e.events.append(('sound', 'spell'))
+    if key == 'raise':
+        h = raise_hex(e, u)
+        e.flags['raised'] = e.flags.get('raised', 0) + 1
+        r = e.spawn(dict(side=u.side, type='skeleton', name='RISEN',
+                         long='Risen dead of the Ash Wastes', a=3, d=3,
+                         m=3, steps=2, hex=hid(h), colour=UNDEAD,
+                         formation='The risen dead', posture='attack'))
+        r.mp = 0
+        r.attacked = True
+        e.say('%s raises the dead: skeletons climb out of the ash at %s.'
+              % (u.long, e.place(h)))
+        e.events.append(('popup', h, 'risen', '#c0c8e0'))
+        return
+    roll = e.rng.randint(1, 6)
+    n = need(e, u, t, key)
+    t.seen = True
+    if roll < n:
+        e.say('%s casts %s at %s: rolled %d, needed %d. The spell '
+              'fails.' % (u.long, sp['name'].lower(), called(t), roll, n))
+        e.events.append(('popup', t.hex, 'resisted', '#c0c0ff'))
+        return
+    if key == 'bolt':
+        e.say('%s hurls a bolt of black fire at %s (rolled %d).'
+              % (u.long, called(t), roll))
+        e.events.append(('popup', t.hex, 'blasted', '#ff80ff'))
+        e.take_losses([t], 1)
+        return
+    e.say('%s casts the sheep spell at %s (rolled %d).' % (
+        u.long, called(t), roll))
+    ovinate(e, t)
+
+
+FATES = ['is eaten', 'ends up as mutton', 'is roasted on an orc spit',
+         'is eaten, wool and all', 'goes into a troll stew']
+
+
+def ovinate(e, t):
+    """t becomes a sheep: a new unit of the Alliance's in its place, worth
+    points to the Dark Host if it is killed, and to the Alliance if it is
+    driven off the west edge."""
+    h = t.hex
+    hero = t.kind in HEROES
+    s = e.spawn(dict(
+        id='sheep-' + t.id, side=t.side, type='sheep',
+        name=t.name if hero else 'SHEEP', a=0, d=1, m=4, steps=1,
+        long=('A sheep that was %s' % called(t)) if hero else
+        'A flock that was %s' % called(t),
+        vp=HERO_SHEEP_VP if hero else SHEEP_VP, hex=hid(h),
+        colour='#f2eee2', formation='The flock', was=t.id,
+        fate=e.rng.choice(FATES)))
+    s.mp = 0
+    s.seen = True
+    e.remove(t)
+    e.flags.setdefault('sheep', []).append(t.id)
+    if hero:
+        e.say('%s is now a sheep!' % t.long)
+    else:
+        e.say('Baa! The spell turns %s into a flock of sheep.' % called(t))
+    e.events.append(('sound', 'baa'))
+    e.events.append(('popup', h, 'Baa!', '#ffffff'))
+
+
+def unbind(e):
+    """The Witch-King is dead, and his spells die with him: every sheep
+    still on the map is itself again."""
+    back = []
+    for s in [x for x in e.alive() if x.kind == 'sheep']:
+        u = e.units[s.spec['was']]
+        h = s.hex
+        e.remove(s)
+        u.status = 'map'
+        u.hex = h
+        u.mp = 0
+        u.moved = u.attacked = u.fired = True
+        back.append(u)
+        e.flags.setdefault('restored', []).append(u.id)
+        e.events.append(('popup', h, 'restored', '#ffe080'))
+    e.changed()
+    if back:
+        e.say('His spells die with him: %d sheep %s %s again.' % (
+            len(back), 'is' if len(back) == 1 else 'are',
+            'itself' if len(back) == 1 else 'themselves'))
+
+
+# ----------------------------------------------------------- the turns
+
+def ON_TURN(e, side):
+    if side == 'wk':
+        for uid, c in CASTERS.items():
+            u = e.units[uid]
+            if u.alive and power(e, uid) < c['power']:
+                e.flags.setdefault('power', {})[uid] = power(e, uid) + 1
+    if e.turn == 1:
+        if side == 'al':
+            e.say("Prince Aldric's banners go up over Aldermere. In "
+                  "Silverwood the elves string their bows.")
+        else:
+            e.say('In Nightspire the Witch-King opens his book of '
+                  'spells. His horde is already on the road west.')
+    if e.turn == 2 and side == 'al':
+        e.say('Horns in the Ironhills: the dwarves of Ironhold are '
+              'coming.')
+    if e.weather()['id'] == 'night' and side == 'wk' and \
+            e.weather(e.turn - 1)['id'] != 'night':
+        e.say('Night falls, and the dead walk.')
+
+
+def ON_ELIMINATE(e, u, where):
+    if u.id == KING:
+        e.flags['king_dead'] = e.turn
+        e.say('The Witch-King is dead, and the dead falter.')
+        for x in [x for x in e.alive('wk') if x.type.get('undead')]:
+            e.take_losses([x], 1)
+        unbind(e)
+
+
+def ON_END_TURN(e):
+    if e.control.get(parse(CITADEL)) == 'al':
+        e.finish('al', 'Allied victory: Nightspire has fallen. The '
+                 'banners of Aldermere, Silverwood and Ironhold fly '
+                 'over the Witch-King\'s tower. %s %s'
+                 % (_score(e), epilogue(e)))
+    elif e.control.get(parse(CITY)) == 'wk':
+        e.finish('wk', 'Dark victory: Aldermere burns. The Witch-King '
+                 'has his revenge, and the Alliance has nothing to go '
+                 'home to. %s %s' % (_score(e), epilogue(e)))
+
+
+def lead(e, side, hexes):
+    """The heroes of side in hexes: the column shift they give, at most
+    2, and their names."""
+    hs = [u for u in e.alive(side) if u.kind in HEROES and u.hex in hexes]
+    n = min(2, sum(u.spec.get('lead', 0) for u in hs))
+    return n, ', '.join(u.name.title() for u in hs)
+
+
+FORTRESSES = ('citadel', 'tower', 'city')
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Heroes lead: those with the attackers add their columns, those
+    with the defenders take them away.  Brokk is good at walls, and at
+    night the dead fight harder."""
+    out = []
+    me, them = e.side, e.enemy(e.side)
+    if attackers:
+        n, names = lead(e, me, {u.hex for u in attackers})
+        if n:
+            out.append((n, names))
+        b = e.units.get(SAPPER)
+        if b and b.alive and b.side == me and \
+                b.hex in {u.hex for u in attackers} and \
+                e.board.terrain_name(target) in FORTRESSES:
+            out.append((1, "Brokk's sappers"))
+        if me == 'wk' and e.weather()['id'] == 'night' and \
+                any(u.type.get('undead') for u in attackers):
+            out.append((1, 'the dead by night'))
+    n, names = lead(e, them, {target})
+    if n:
+        out.append((-n, names))
+    return out
+
+
+# ---------------------------------------------------------------- winning
+
+def _score(e):
+    return 'Alliance %d VP, Dark Host %d.' % (e.vp('al'), e.vp('wk'))
+
+
+# What became of each hero who was turned into a sheep: still grazing
+# at the end, driven to safety, eaten, or turned back when the
+# Witch-King died.
+SHEEP_TALES = {
+    'aldric': dict(
+        grazing="Prince Aldric ends the battle as a sheep. The king "
+                "calls it a temporary arrangement, and the court tailor "
+                "is measuring him for a very small crown.",
+        safe="Prince Aldric was driven home with the flock and changed "
+             "back by the court wizard, mostly. He still flinches at the "
+             "sight of shears.",
+        eaten="Prince Aldric, alas, was eaten. The orcs called him the "
+              "finest mutton in the kingdom, and the minstrels have been "
+              "asked not to sing about it.",
+        restored="Prince Aldric turned back into himself when the "
+                 "Witch-King fell, in the middle of a mouthful of grass. "
+                 "He insists he was scouting."),
+    'elowen': dict(
+        grazing="Lady Elowen Starbough is still a sheep: by common "
+                "consent the most graceful sheep anyone has ever seen. "
+                "The elves are composing a lament of four hundred verses.",
+        safe="Lady Elowen was led to safety on a silken halter. The elves "
+             "are confident the spell will wear off in a century or two.",
+        eaten="Lady Elowen Starbough was eaten. The orcs complained that "
+              "she tasted faintly of moonlight.",
+        restored="Lady Elowen came back to herself when the Witch-King "
+                 "fell, and has asked that nobody, ever, mention the "
+                 "bleating."),
+    'brokk': dict(
+        grazing="Brokk Stonehelm is still a sheep, a very bad-tempered "
+                "one with a fleece the colour of his beard. He has "
+                "head-butted two healers so far.",
+        safe="Brokk Stonehelm was herded back to Aldermere by his own "
+             "axemen, who will be telling the story in the halls of "
+             "Ironhold for three hundred years.",
+        eaten="Brokk Stonehelm was eaten by trolls, who broke three teeth "
+              "on him. Ironhold has sworn a blood-feud against all "
+              "trolls, and all mint sauce.",
+        restored="Brokk Stonehelm turned back into a dwarf when the "
+                 "Witch-King fell and went straight back to the fighting "
+                 "without a word. His beard has never quite lost its "
+                 "curl."),
+}
+
+
+def fate_of(e, s):
+    if s.status == 'dead':
+        return 'eaten'
+    if s.status == 'exited':
+        return 'safe'
+    if s.status == 'gone':
+        return 'restored'
+    return 'grazing'
+
+
+def epilogue(e):
+    """What became of the sheep, and of the Witch-King."""
+    flock = [u for u in e.units.values() if u.kind == 'sheep']
+    lines = []
+    plain = [s for s in flock if s.spec['was'] not in SHEEP_TALES]
+    if plain:
+        n = {}
+        for s in plain:
+            f = fate_of(e, s)
+            n[f] = n.get(f, 0) + 1
+        bits = []
+        for f, words in (('safe', 'driven to safety'),
+                         ('eaten', 'eaten'),
+                         ('restored', 'turned back'),
+                         ('grazing', 'still grazing')):
+            if n.get(f):
+                bits.append('%d %s' % (n[f], words))
+        lines.append('%d regiment%s became sheep: %s.' % (
+            len(plain), '' if len(plain) == 1 else 's', ', '.join(bits)))
+    for s in flock:
+        tale = SHEEP_TALES.get(s.spec['was'])
+        if tale:
+            lines.append(tale[fate_of(e, s)])
+    if e.flags.get('king_dead'):
+        lines.append('Malgrith the Witch-King is dead.')
+    elif e.units[KING].alive:
+        lines.append('Malgrith the Witch-King still watches from his '
+                     'tower.')
+    return ' '.join(lines)
+
+
+def VICTORY(e):
+    """The margin decides: each side scores the enemy steps it
+    destroys, the places it holds, sheep (eaten for the Dark Host,
+    saved for the Alliance) and heroes slain; the Witch-King is worth
+    10 to whoever kills him.  The Dark Host must finish MARGIN ahead
+    (set from ./nightspire --simulate 60)."""
+    m = e.vp('wk') - e.vp('al')
+    if m >= MARGIN + 10:
+        w, t = 'wk', 'Dark victory. The Alliance is broken.'
+    elif m >= MARGIN:
+        w, t = 'wk', ('Dark marginal victory. The Alliance falls back on '
+                      'Aldermere to count its dead, and its sheep.')
+    elif m > MARGIN - 10:
+        w, t = 'al', ('Allied marginal victory. Nightspire still stands, '
+                      'but its horde is spent.')
+    else:
+        w, t = 'al', 'Allied victory. The Dark Host is broken.'
+    return w, '%s %s %s' % (t, _score(e), epilogue(e))
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'a': 'ash', 'M': 'mountains', 'b': 'barrows', 'X': 'citadel',
+          'T': 'tower'}
+
+TERRAIN = {
+    'clear':  dict(name='Plains', move={'fly': 1}),
+    'fields': dict(name='Farmland', move={'fly': 1}),
+    'woods':  dict(name='Woods', move={'elf': 1, 'fly': 1}),
+    'forest': dict(name='Silverwood', colour='#2e5e3e', ink='#183c26',
+                   move={'elf': 1, 'fly': 1}),
+    'hills':  dict(name='Ironhills', move={'dwarf': 1, 'fly': 1}),
+    'rough':  dict(name='Moor', colour='#9a9474', move={'dwarf': 1,
+                                                        'fly': 1}),
+    'marsh':  dict(name='The Fenmire', move={'fly': 1}),
+    'town':   dict(name='Hamlet', move={'fly': 1}),
+    'city':   dict(name='Aldermere', move={'fly': 1}),
+    'ash':    dict(name='Ash wastes', colour='#8e867a', ink='#6c6458',
+                   pattern='rough', edge='#4c463e', z=2,
+                   move={'foot': 1, 'track': 1, 'wheel': 2, 'fly': 1},
+                   shift=0, open=True, los=True),
+    'mountains': dict(name='Ashen peaks', colour='#5c5458', ink='#38323a',
+                      pattern='hills', edge='#28222a', z=8,
+                      move={'foot': 3, 'track': None, 'wheel': None,
+                            'elf': 3, 'dwarf': 2, 'fly': 1},
+                      shift=-2, open=False, los=False),
+    'barrows': dict(name='The Barrows', colour='#86907a', ink='#545c4c',
+                    pattern='rough', edge='#3a4234', z=4,
+                    move={'foot': 2, 'track': 3, 'wheel': None,
+                          'dwarf': 1, 'fly': 1},
+                    shift=-1, open=False, los=True),
+    'citadel': dict(name='Nightspire', colour='#4a4252', ink='#1c1824',
+                    pattern='city', edge='#120e18', z=10,
+                    move={'foot': 1, 'track': 2, 'wheel': 2, 'fly': 1},
+                    shift=-2, open=False, los=False, stand=True),
+    'tower':  dict(name='The Black Tower', colour='#5c5460', ink='#221e28',
+                   pattern='town', edge='#18121c', z=9,
+                   move={'foot': 1, 'track': 2, 'wheel': 2, 'fly': 1},
+                   shift=-2, open=False, los=False, stand=True),
+}
+
+HEXSIDES = {
+    'river': dict(name='The Greywater',
+                  cost={'foot': 1, 'track': 2, 'wheel': 2, 'elf': 1,
+                        'dwarf': 1, 'fly': 0}, halve=False),
+}
+
+#       west     mid   |  moor     dead
+MAP = [
+    ':..:.f' 'FFFFF' 'h' '.mm.rr' 'aaMMMM',
+    ':.:..f' 'FFFFF' '.' '.mmm.r' 'aaaMMM',
+    '.:.:.F' 'FFFFf' '.' 'mmm..r' 'raaaMM',
+    ':.f.:.' 'FFFf.' 'r' '.m...r' 'aaaaaM',
+    '.:.:.:' '.ff..' '.' 'r...Tr' 'raaaaa',
+    ':.:t.:' '..:..' '.' '.r..r.' 'aarMMa',
+    '.C:.:.' ':..:.' '.' '..r..r' 'aaaXMa',
+    ':t.:.:' '.:..:' '.' '.r..r.' 'araMaa',
+    '.:.:.:' ':.:..' 'r' '...r.r' 'raaaaa',
+    ':.:.f.' '.h.:.' '.' '.rbb.r' 'aaaaaM',
+    '.:..fh' 'hrh..' '.' 'r.b..r' 'raaaMM',
+    ':.:.hh' 'rhhrh' '.' '.r..r.' 'aaaMMM',
+    '.:.hhr' 'hhMhr' 'h' '.r.r..' 'aMMMMM',
+    ':.:hhM' 'Mhhrh' 'h' 'r..r.r' 'MMMMMM',
+]
+ROWS = len(MAP)
+
+# The Greywater runs down the map between the tenth and eleventh columns.
+RIVERS = [
+    ('river', ['11%02d:NE,SE' % r for r in range(1, ROWS + 1)]),
+]
+
+ROADS = [
+    ('road', [CITY, '0607', '1107', '1207', '1707', '2108', CITADEL]),
+    ('trail', ['0406', '0705', '0903']),               # to Silverwood
+    ('trail', ['0507', '0811', '0914']),               # to Ironhold
+    ('trail', ['2108', '1905', '1705']),               # the Black Tower
+    ('trail', ['1707', '1510']),                       # the Barrows
+]
+
+LABELS = {
+    CITY: 'Aldermere', CITADEL: 'Nightspire', '1705': 'Black Tower',
+    '1107': 'Greyford', '1510': 'Barrows', '0406': 'Millbrook',
+    '0802': 'Silverwood', '0912': 'Ironhills', '1402': 'Fenmire',
+    '2003': 'Ash Wastes', '0914': 'To Ironhold',
+}
+
+OBJECTIVES = {
+    CITY: dict(name='Aldermere', vp=10, owner='al'),
+    CITADEL: dict(name='Nightspire', vp=10, owner='wk'),
+    '1705': dict(name='The Black Tower', vp=3, owner='wk'),
+    '1107': dict(name='Greyford', vp=2, owner='al'),
+    '1510': dict(name='The Barrows', vp=2, owner='wk'),
+}
+
+# The sheep are safe once they are off the west edge.
+EXITS = {'al': dict(hexes=['W'], vp=SAFE_VP, types=['sheep'])}
+
+SUPPLY = {
+    'al': dict(**{'from': ['W'], 'range': 20}),
+    'wk': dict(**{'from': ['E'], 'range': 20}),
+}
+
+# ----------------------------------------------------------------- units
+
+
+def hero_values(u):
+    """A hero's counter: +lead-defence-movement."""
+    return '+%d-%d-%d' % (u.spec.get('lead', 0), u.defense, u.max_mp)
+
+
+UNIT_TYPES = {
+    # the Alliance
+    'guard':    dict(name='City watch', symbol='infantry', move='foot'),
+    'foot':     dict(name='Men-at-arms', symbol='infantry', move='foot'),
+    'knights':  dict(name='Knights', symbol='horse', move='track',
+                     armor=True, sound='hooves'),
+    'outriders': dict(name='Light horse', symbol='horse', move='track',
+                      spot=3, sound='hooves'),
+    'archers':  dict(name='Longbowmen', symbol='bow', move='foot',
+                     zoc=False, support=True, fight='bow'),
+    'wardens':  dict(name='Elven wardens', symbol='infantry', move='elf'),
+    'elfbows':  dict(name='Elven archers', symbol='bow', move='elf',
+                     zoc=False, support=True, fight='bow', spot=3),
+    'elfhorse': dict(name='Elven riders', symbol='horse', move='track',
+                     spot=3, sound='hooves'),
+    'axes':     dict(name='Dwarf axemen', symbol='axe', move='dwarf',
+                     at=True),
+    'xbows':    dict(name='Dwarf crossbows', symbol='bow', move='dwarf',
+                     zoc=False, support=True, fight='bow'),
+    'engine':   dict(name='Siege engine', symbol='artillery', move='dwarf',
+                     zoc=False, support=True, fate='is smashed'),
+    # the Dark Host
+    'orcs':     dict(name='Orc warband', symbol='infantry', move='foot'),
+    'blackguard': dict(name='Black Guard', symbol='infantry', move='foot',
+                       at=True),
+    'wolves':   dict(name='Wolf riders', symbol='wolf', move='track',
+                     spot=3),
+    'orcbows':  dict(name='Orc archers', symbol='bow', move='foot',
+                     zoc=False, support=True, fight='bow'),
+    'troll':    dict(name='Troll', symbol='troll', move='foot', at=True,
+                     fate='falls with a crash'),
+    'wyvern':   dict(name='Wyvern', symbol='wyvern', move='fly', spot=4,
+                     fate='falls out of the sky'),
+    'skeleton': dict(name='Skeletons', symbol='skull', move='foot',
+                     undead=True, fate='crumbles to dust'),
+    'wights':   dict(name='Barrow-wights', symbol='skull', move='foot',
+                     undead=True, fate='fades into the dark'),
+    'dread':    dict(name='Dread riders', symbol='horse', move='track',
+                     undead=True, armor=True, sound='hooves',
+                     fate='crumbles to dust'),
+    # both: heroes lead, and don't count for stacking
+    'hero':     dict(name='Hero', symbol='hero', move='foot', zoc=False,
+                     stack=0, under=True, values=hero_values,
+                     fate='is slain'),
+    'mage':     dict(name='Sorcerer', symbol='mage', move='foot',
+                     zoc=False, stack=0, under=True, values=hero_values,
+                     fate='is slain'),
+    'sheep':    dict(name='Sheep', symbol='sheep', move='foot', zoc=False,
+                     stack=0, under=True),
+}
+
+HUMAN = '#a8bedc'
+ELF = '#a6d09c'
+DWARF = '#d4b48a'
+GOLD = '#e8d48c'
+ORC = '#6c6a48'
+UNDEAD = '#585a70'
+BEAST = '#7a4a42'
+DARK = '#38283e'
+
+
+def u(uid, side, a, d, m, hx, kind, formation, colour, long, **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, a=a, d=d, m=m, steps=kw.pop('steps', 2),
+                hex=hx, formation=formation, colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+def hero(uid, side, d, m, hx, lead, colour, long, **kw):
+    return u(uid, side, 0, d, m, hx, kw.pop('type', 'hero'),
+             kw.pop('formation', 'Heroes'), colour, long, steps=1,
+             lead=lead, **kw)
+
+
+UNITS = [
+    # ---- Aldermere
+    u('guard1', 'al', 3, 5, 3, CITY, 'guard', 'Aldermere', HUMAN,
+      'City Watch of Aldermere', name='WATCH', posture='defend'),
+    u('guard2', 'al', 3, 4, 3, '0208', 'guard', 'Aldermere', HUMAN,
+      'Militia of the Lower Town', name='MILITIA', posture='defend'),
+    u('foot1', 'al', 5, 5, 4, '0407', 'foot', 'Aldermere', HUMAN,
+      "The King's Spears", name='SPEARS'),
+    u('foot2', 'al', 5, 5, 4, '0507', 'foot', 'Aldermere', HUMAN,
+      'Men-at-arms of the Marches', name='MARCHES'),
+    u('foot3', 'al', 4, 5, 4, '0406', 'foot', 'Aldermere', HUMAN,
+      'Levies of Millbrook', name='LEVIES'),
+    u('kn1', 'al', 7, 4, 6, '0306', 'knights', 'Silver Lance', HUMAN,
+      'Knights of the Silver Lance', name='LANCE 1'),
+    u('kn2', 'al', 7, 4, 6, '0308', 'knights', 'Silver Lance', HUMAN,
+      'Knights of the Silver Lance, second company', name='LANCE 2'),
+    u('riders', 'al', 3, 2, 7, '0606', 'outriders', 'Aldermere', HUMAN,
+      'Outriders of the Marches', name='RIDERS', steps=1),
+    u('bow1', 'al', 4, 3, 4, '0307', 'archers', 'Aldermere', HUMAN,
+      'Longbowmen of Aldermere', name='BOWS', range=2),
+    u('bow2', 'al', 4, 3, 4, '0507', 'archers', 'Aldermere', HUMAN,
+      'Yeoman archers', name='YEOMEN', range=2),
+    hero('aldric', 'al', 2, 6, '0306', 1, GOLD,
+         'Prince Aldric of Aldermere', name='ALDRIC',
+         fate='falls, his lance broken', move='track',
+         sound='hooves', vp=4),
+    # ---- Silverwood
+    u('ward1', 'al', 4, 5, 5, '0803', 'wardens', 'Silverwood', ELF,
+      'Wardens of Silverwood', name='WARDENS'),
+    u('ward2', 'al', 4, 5, 5, '1004', 'wardens', 'Silverwood', ELF,
+      'Wardens of the Greywater', name='GREYWAT'),
+    u('ebow1', 'al', 5, 3, 5, '0903', 'elfbows', 'Silverwood', ELF,
+      'Archers of Silverwood', name='ARCHERS', range=3),
+    u('ebow2', 'al', 5, 3, 5, '1003', 'elfbows', 'Silverwood', ELF,
+      'Starbough archers', name='STARBOW', range=3),
+    u('eride', 'al', 5, 3, 7, '0705', 'elfhorse', 'Silverwood', ELF,
+      'Elven riders of the glades', name='GLADES'),
+    hero('elowen', 'al', 2, 5, '0903', 1, GOLD,
+         'Lady Elowen Starbough', name='ELOWEN',
+         fate='falls, and the elves sing no more that day', move='elf',
+         vp=4),
+    # ---- Ironhold, a day behind
+    u('axe1', 'al', 6, 7, 3, None, 'axes', 'Ironhold', DWARF,
+      'Axes of Ironhold', name='AXES 1', steps=3, arrive=2,
+      at=['0814', '0914']),
+    u('axe2', 'al', 6, 7, 3, None, 'axes', 'Ironhold', DWARF,
+      'Hearthguard of Ironhold', name='AXES 2', steps=3, arrive=2,
+      at=['0914', '1014']),
+    u('axe3', 'al', 6, 7, 3, None, 'axes', 'Ironhold', DWARF,
+      'Deepdelvers', name='DELVERS', steps=3, arrive=2,
+      at=['1014', '0814']),
+    u('xbow', 'al', 4, 4, 3, None, 'xbows', 'Ironhold', DWARF,
+      'Crossbows of Ironhold', name='XBOWS', range=2, arrive=2,
+      at=['0914']),
+    u('engine', 'al', 6, 2, 2, None, 'engine', 'Ironhold', DWARF,
+      'The Wallbreaker, a dwarf siege engine', name='ENGINE', range=3,
+      steps=1, arrive=3, at=['0914', '0814']),
+    hero('brokk', 'al', 3, 3, None, 1, GOLD, 'Brokk Stonehelm',
+         name='BROKK', fate='falls, axe in hand, on a heap of orcs',
+         move='dwarf', arrive=2, at=['0914'], vp=4),
+
+    # ---- Nightspire
+    u('bg1', 'wk', 6, 6, 3, CITADEL, 'blackguard', 'Nightspire', ORC,
+      'The Black Guard', name='BLACK GD', posture='defend', steps=3),
+    u('bg2', 'wk', 6, 6, 3, CITADEL, 'blackguard', 'Nightspire', ORC,
+      'The Iron Fangs', name='FANGS', posture='defend'),
+    hero('malgrith', 'wk', 3, 5, CITADEL, 2, DARK,
+         'Malgrith the Witch-King', name='MALGRITH', type='mage',
+         vp=10, fate='falls, and his crown rolls across the stones'),
+    u('orc3', 'wk', 5, 4, 4, '1705', 'orcs', 'The Black Horde', ORC,
+      'Tower warband', name='TOWER', posture='defend'),
+    u('obow', 'wk', 3, 3, 4, '1705', 'orcbows', 'The Black Horde', ORC,
+      'Orc archers', name='O BOWS', range=2, posture='defend'),
+    u('wyvern', 'wk', 5, 3, 8, '2005', 'wyvern', 'Beasts', BEAST,
+      "The Witch-King's wyvern", name='WYVERN'),
+    # ---- the horde on the road west
+    u('orc1', 'wk', 5, 4, 4, '1506', 'orcs', 'The Black Horde', ORC,
+      'Skullsplitters', name='SKULLS'),
+    u('orc2', 'wk', 5, 4, 4, '1507', 'orcs', 'The Black Horde', ORC,
+      'Bloodhands', name='BLOODHND'),
+    u('orc4', 'wk', 5, 4, 4, '1407', 'orcs', 'The Black Horde', ORC,
+      'Ash Goblins', name='GOBLINS'),
+    u('troll1', 'wk', 8, 6, 3, '1508', 'troll', 'Beasts', BEAST,
+      'Hill trolls', name='TROLLS', steps=3),
+    u('wolf1', 'wk', 4, 3, 7, '1405', 'wolves', 'The Black Horde', ORC,
+      'Wolf riders of the north', name='WOLVES'),
+    u('wolf2', 'wk', 4, 3, 7, '1409', 'wolves', 'The Black Horde', ORC,
+      'Wolf riders of the south', name='WARGS'),
+    hero('uzgar', 'wk', 3, 5, '1506', 1, DARK, 'Uzgar Skullsplitter',
+         name='UZGAR',
+         fate='is slain, and his warband howls', vp=3),
+    hero('vesska', 'wk', 2, 5, '1507', 1, DARK, 'Vesska the hag',
+         name='VESSKA',
+         fate='is cut down, cursing', type='mage', vp=3),
+    # ---- the dead
+    u('wights', 'wk', 5, 5, 3, '1510', 'wights', 'The dead', UNDEAD,
+      'Barrow-wights', name='WIGHTS'),
+    u('skel1', 'wk', 4, 5, 3, '1610', 'skeleton', 'The dead', UNDEAD,
+      'Skeleton legion', name='BONES', steps=3),
+    u('skel2', 'wk', 4, 5, 3, '1511', 'skeleton', 'The dead', UNDEAD,
+      'The drowned legion', name='DROWNED', steps=3),
+    hero('morrowgast', 'wk', 2, 4, '1610', 1, DARK, 'Morrowgast the lich',
+         name='MORROW', type='mage', vp=3,
+         fate='crumbles into dust and a smell of old books'),
+    # ---- coming up
+    u('troll2', 'wk', 8, 6, 3, None, 'troll', 'Beasts', BEAST,
+      'Cave trolls', name='CAVE TRL', steps=3, arrive=2,
+      at=['2407', '2408']),
+    u('dread', 'wk', 6, 4, 6, None, 'dread', 'The dead', UNDEAD,
+      'Dread riders', name='DREAD', arrive=2, at=['2406', '2407']),
+    u('orc5', 'wk', 5, 4, 4, None, 'orcs', 'The Black Horde', ORC,
+      'Ashmaw warband', name='ASHMAW', arrive=3, at=['2408', '2409']),
+]
+
+
+# ------------------------------------------------------ the computer
+
+class Host(ai.AI):
+    """The stock computer player, with heroes who keep with the
+    strongest stack near the fighting (the Witch-King stays home),
+    sheep who look for an escort on the way west, and sorcerers who
+    cast once everyone has moved."""
+
+    def begin(self):
+        super().begin()
+        self.declined = set()
+
+    def next_move(self):
+        act = super().next_move()
+        if act == ('end',) and self.e.phase == 'move':
+            c = self.next_cast()
+            if c:
+                return c
+        return act
+
+    def next_cast(self):
+        e = self.e
+        for uid in sorted(CASTERS):
+            u = e.units[uid]
+            if u.side != self.side or not u.alive or uid in self.declined \
+                    or has_cast(e, uid):
+                continue
+            self.declined.add(uid)
+            best = self.spell_for(u)
+            if best is None:
+                continue
+            key, t = best
+            if t is not None:
+                e.flags.setdefault('aim', {})[uid] = t.id
+            for label, k, why in e.actions(u):
+                if k == key and not why:
+                    return ('act', uid, key)
+        return None
+
+    def spell_for(self, u):
+        e = self.e
+        p = power(e, u.id)
+        spells = CASTERS[u.id]['spells']
+        best = None
+        for t in targets(e, u):
+            d = distance(u.hex, t.hex)
+            for k in ('sheep', 'bolt'):
+                sp = SPELLS[k]
+                if k not in spells or p < sp['cost'] or d > sp['range']:
+                    continue
+                chance = (7 - need(e, u, t, k)) / 6.0
+                if k == 'sheep':
+                    v = worth(t) * chance
+                else:
+                    v = chance * (1.5 + (8 if t.kind in HEROES and
+                                         t.steps == 1 else 0))
+                    if 'sheep' in spells and p - 1 < SPELLS['sheep']['cost']\
+                            and p >= SPELLS['sheep']['cost']:
+                        v -= 1.5            # don't spend the sheep's power
+                if best is None or v > best[0]:
+                    best = (v, k, t)
+        if 'raise' in spells and p >= SPELLS['raise']['cost'] and \
+                e.flags.get('raised', 0) < RAISE_MAX and \
+                raise_hex(e, u) is not None:
+            v = 2.0 - (1.5 if targets(e, u) else 0)
+            if best is None or v > best[0]:
+                best = (v, 'raise', None)
+        if best is None or best[0] < 1.0:
+            return None
+        return best[1], best[2]
+
+    def score(self, u, h):
+        e = self.e
+        if u.kind in HEROES:
+            return self.hero_score(u, h)
+        s = super().score(u, h)
+        if u.kind == 'sheep':
+            # west, with an escort, and away from the wolves
+            s -= h[0] * 1.5
+            if any(x.attack > 0 and not x.supports for x in e.at(h, u.side)
+                   if x is not u):
+                s += 6
+        return s
+
+    def hero_score(self, u, h):
+        e = self.e
+        if u.id == KING:
+            return -distance(h, parse(CITADEL)) * 6 + (0.3 if h == u.hex
+                                                        else 0)
+        friends = [x for x in e.at(h, u.side) if x is not u and
+                   x.attack > 0 and not x.supports and
+                   x.kind not in HEROES]
+        strength = sum(x.attack for x in friends)
+        s = min(strength, 16) * 0.5 if friends else -25 - \
+            self.threat.get(h, 0) * 0.1
+        known = [k for _, k in self.enemies()]
+        d = min([distance(h, k) for k in known] or [12])
+        if u.id in CASTERS:
+            s += 6 if 2 <= d <= 3 else 3 if d == 1 else -d
+        else:
+            s += 6 if d == 1 else -d
+        s -= e.board.terrain(h).get('shift', 0)
+        if h == u.hex:
+            s += 0.3
+        return s
+
+
+AI_CLASS = Host
+
+# ------------------------------------------------------------- the screen
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#16121c', panel='#26202e', light='#6e6280',
+              dark='#06040a', accent='#d8b870', button='#3e3450',
+              button_hi='#8a7ca0', button_lo='#16121c', red='#b02a3a')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE WAR. The Alliance moves first. Its men, elves and dwarves "
+    "must cross the Greywater and storm Nightspire, the Witch-King's "
+    "citadel in the east, while his horde marches on Aldermere in the "
+    "west. The dwarves arrive from the south on turn 2 and their siege "
+    "engine on turn 3. Each day has four turns, dawn, day, dusk and "
+    "night; at night units see only the next hex and the dead gain a "
+    "column attacking.",
+
+    "HEROES. Aldric, Elowen and Brokk, and Malgrith, Vesska, Morrowgast "
+    "and Uzgar, don't count for stacking and can't attack alone. A "
+    "hero in the hex of a unit that attacks gives the attack his lead "
+    "in columns (+1, the Witch-King +2); a hero in a hex attacked "
+    "takes his lead away. No more than 2 columns either way. Brokk "
+    "gives one more against walls. Heroes take losses last in their "
+    "hex, but alone they are easily killed.",
+
+    "SPELLS. Malgrith, Vesska and Morrowgast are sorcerers. In the "
+    "movement phase each can cast one spell a turn at an enemy unit "
+    "the Dark Host can see: select the sorcerer and use the buttons. "
+    "'At:' picks the target. SHEEP (3 power, 3 hexes) turns the target, "
+    "hero or regiment, into a sheep on a roll of 4 or more (Malgrith "
+    "3); BOLT (1 power, 2 hexes) takes a step; RAISE (3 power) brings "
+    "up a band of skeletons, three in a game at most. A spell at a unit "
+    "within 2 hexes of Elowen needs one more. Power comes back a point "
+    "a turn.",
+
+    "SHEEP. A sheep can't fight. If the Dark Host kills it, it scores "
+    "%d (%d for a hero); if the Alliance gets it off the west edge it "
+    "scores %d. Keep sheep stacked with troops: they take losses last. "
+    "If Malgrith dies, every sheep still on the map is itself again, "
+    "and the dead each lose a step." % (SHEEP_VP, HERO_SHEEP_VP, SAFE_VP),
+
+    "WINNING. If the Alliance holds Nightspire, or the Dark Host "
+    "Aldermere, at the end of a turn, it wins at once. Otherwise each "
+    "side scores every enemy step destroyed, the places it holds "
+    "(Aldermere and Nightspire 10, the Black Tower 3, Greyford and the "
+    "Barrows 2) and the sheep; heroes slain are worth 4 to the Dark "
+    "Host and 3 to the Alliance, Malgrith 10. Aldermere's and "
+    "Nightspire's walls give two columns, as do the Black Tower's, and "
+    "their defenders lose a step rather than retreat. The Dark Host "
+    "must finish %d VP ahead to win." % MARGIN,
+]
+
+ICON = 'nightspire'
+
+
+@grognard.icon('nightspire')
+def draw_icon(p, n):
+    """A sheep on a green hill before a black tower under a purple sky."""
+    p.fill('#4a3a6a')
+    p.disc(n * 0.8, n * 0.2, n * 0.08, '#e8e0c0')          # the moon
+    p.rect(n * 0.52, n * 0.18, n * 0.2, n * 0.6, '#16121c')  # the tower
+    for i in range(3):
+        p.rect(n * (0.52 + i * 0.075), n * 0.12, n * 0.05, n * 0.07,
+               '#16121c')
+    p.rect(n * 0.6, n * 0.32, n * 0.04, n * 0.06, '#e0c040')
+    p.disc(n * 0.5, n * 1.25, n * 0.62, '#5a8a40')          # the hill
+    for x, y in ((0.26, 0.66), (0.36, 0.62), (0.44, 0.68), (0.32, 0.74),
+                 (0.22, 0.74), (0.42, 0.76)):
+        p.disc(n * x, n * y, n * 0.09, '#f2eee2')           # wool
+    p.disc(n * 0.52, n * 0.62, n * 0.07, '#26202a')         # head
+    for x in (0.24, 0.3, 0.38, 0.44):
+        p.rect(n * x, n * 0.8, n * 0.03, n * 0.1, '#26202a')
+
+
+# ------------------------------------------------- symbols and pictures
+
+counters.PICTURES.update({
+    'sheep': ['...........', '..+++++.##.', '.+++++++###', '+++++++++#.',
+              '.+++++++...', '..#.#..#.#.', '..#.#..#.#.', '...........'],
+    'hero':  ['...........', '.#...#...#.', '.##.###.##.', '.#########.',
+              '.#+#+#+#+#.', '.#########.', '...........', '...........'],
+    'mage':  ['.....#.....', '....###..+.', '...#####.#.', '..#######..',
+              '.#########.', '....###..#.', '...#####.#.', '..#######..'],
+    'bow':   ['...##......', '..#..#.....', '.#....#....', '.#+++++####',
+              '.#....#....', '..#..#.....', '...##......', '...........'],
+    'axe':   ['.##..#..##.', '###..#..###', '####.#.####', '###..#..###',
+              '.##..#..##.', '.....#.....', '.....#.....', '.....#.....'],
+    'troll': ['....###....', '...#####...', '.#.#####.#.', '.#########.',
+              '...#####...', '...#####...', '...##.##...', '..###.###..'],
+    'skull': ['...#####...', '..#+++++#..', '..#.#+#.#..', '..#+++++#..',
+              '...#+#+#...', '...#####...', '...........', '...........'],
+    'wolf':  ['.........#.', '........###', '#.######.##', '.#########.',
+              '..#######..', '..#.....#..', '..#.....#..', '.##....##..'],
+    'wyvern': ['#.........#', '##.......##', '###.###.###', '.#########.',
+               '..#######..', '....###....', '.....#.....', '....#.#....'],
+})
+
+
+def _pictured(name):
+    def draw(p, x, y, w, h, c):
+        counters.picture(p, name, x, y, w, h, c, c)
+    grognard.symbol(name)(draw)
+
+
+for _name in ('sheep', 'hero', 'mage', 'bow', 'axe', 'troll', 'skull',
+              'wolf', 'wyvern'):
+    _pictured(_name)
+
+# A sheep's bleat, and the shimmer of a spell.
+sound.EFFECTS['baa'] = lambda: sound.seq(
+    *[sound.tone(410 + 40 * (k % 2) - 4 * k, 0.035, 'saw', 0.16)
+      for k in range(16)])
+sound.EFFECTS['spell'] = lambda: sound.mixdown(
+    sound.seq(*[sound.tone(440 * 2 ** (k / 5), 0.06, 'sine', 0.16)
+                for k in range(10)]),
+    sound.whoosh(0.6, 0.4))
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

@@ -17,7 +17,7 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are eighteen games so far: a Second World War battle, a raid in a
+There are nineteen games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
@@ -40,7 +40,10 @@ against the Zulu reserve on the night of Isandlwana, and Pegasus Bridge,
 the glider-borne company holding the bridges over the Caen Canal and the
 Orne in the first hours of D-Day, and Drvar, the SS parachute raid on
 Tito's headquarters in the mountains of Bosnia in May 1944, and
-the Fulda Gap, a Soviet attack in November 1983 that never happened.
+the Fulda Gap, a Soviet attack in November 1983 that never happened,
+and one that never could have: Nightspire, men, elves and dwarves
+storming a witch-king's citadel against orcs, trolls, the walking dead
+and a spell that turns regiments into sheep.
 
 ```bash
 ./crossroads
@@ -112,6 +115,10 @@ the Fulda Gap, a Soviet attack in November 1983 that never happened.
 
 ```bash
 ./fulda
+```
+
+```bash
+./nightspire
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -795,7 +802,7 @@ cave over the river, the road to Šipovljani), not a survey.
 
 ## Fulda Gap: Hesse, November 1983
 
-The eighteenth game, and the only one about a battle that wasn't
+The eighteenth game, and the first about a battle that wasn't
 fought. In November 1983 NATO rehearsed the release of its nuclear
 weapons in a command post exercise, Able Archer 83, and in Moscow some
 took it for cover for a real first strike. Here they act on the fear:
@@ -847,6 +854,53 @@ regiments are numbered by division rather than by their real numbers,
 the timing of each echelon is a planner's, not a historian's, and the
 strengths are set for play. The map follows the country, not a survey.
 The game stops at the nuclear threshold and doesn't go past it.
+
+## Nightspire: the storming of the Witch-King's citadel
+
+The nineteenth game, and a fantasy. For three hundred years Malgrith
+the Witch-King has ruled the Ash Wastes from Nightspire, a black
+citadel among dead mountains. Now his horde is over the Greywater and
+on the road to Aldermere, and the men of Aldermere, the elves of
+Silverwood and the dwarves of Ironhold march the other way to end him.
+
+- **Twelve turns**, three days of dawn, day, dusk and night. The
+  Alliance moves first. At night units see only the next hex and the
+  dead gain a column attacking.
+- **The map**: 24 by 14 hexes from Aldermere on the west edge to
+  Nightspire in the east: Silverwood, where elves move freely, the
+  Ironhills, where dwarves do, the Greywater and its bridge at
+  Greyford, the Fenmire, the Barrows, the Black Tower and the Ash
+  Wastes. Nightspire can be attacked from only three hexes.
+- **The Alliance**: knights, men-at-arms, longbowmen and outriders of
+  Aldermere; wardens, archers and riders of the elves; and from the
+  second turn the dwarves' axes and crossbows, with a siege engine on
+  the third. Archers support attacks from two or three hexes.
+- **The Dark Host**: orc warbands and wolf riders, the Black Guard in
+  the citadel, hill and cave trolls, a wyvern that flies over
+  anything, skeleton legions, barrow-wights and dread riders.
+- **Heroes**: Prince Aldric, Lady Elowen and Brokk Stonehelm against
+  Malgrith, Uzgar, Vesska and Morrowgast. They don't count for
+  stacking and can't attack alone; with an attacking unit they give
+  their lead in columns (the Witch-King 2, the rest 1), and in a hex
+  attacked they take it away. Brokk gives one more against walls.
+- **Spells**: Malgrith, Vesska the hag and Morrowgast the lich each
+  cast one spell a turn from a pool of power that comes back a point a
+  turn. Sheep turns a regiment or a hero within three hexes into a
+  sheep, on 4 or more (Malgrith 3, and one more near Elowen); Bolt
+  takes a step; Raise brings up a band of skeletons. Sheep can't
+  fight: the Dark Host scores 2 for each one it kills (4 for a hero)
+  and the Alliance 1 for each it drives off the west edge, so sheep
+  want an escort. If Malgrith dies his spells die with him, and every
+  sheep left on the map is itself again.
+- **Winning**: holding Nightspire, or for the Dark Host Aldermere, at
+  the end of a turn wins at once. Otherwise each side scores enemy
+  steps, places held (Aldermere and Nightspire 10), sheep and heroes;
+  Malgrith is worth 10. The Dark Host must finish 10 VP ahead to win.
+  Computer against computer it wins 33 games in 60. The end of the
+  game tells what became of every hero who was turned into a sheep.
+
+The world, its people and its numbers are all made up; the mechanics
+are the engine's, with spells built on a game's own orders.
 
 ## Playing
 
@@ -980,7 +1034,7 @@ The rules are the classic ones, and each part can be changed by a game:
   reinforcements arrive, supply is traced, it moves, then it attacks.
   `ON_TURN(engine, side)` and `ON_END_TURN(engine)` hook in, and can
   keep their own state in `engine.flags`, a dict that's saved with the
-  game.
+  game. If `ON_END_TURN` ends the game, `SUDDEN_DEATH` isn't looked at.
 - **Movement**: movement points, terrain costs by movement class, roads
   at their own cost (and over rivers: bridges), rivers adding to the cost
   of crossing (or forbidding it), weather multiplying costs off the
@@ -1065,7 +1119,9 @@ The rules are the classic ones, and each part can be changed by a game:
   off without a fight.
 - **A game's own orders**: `ACTIONS(engine, unit)` gives the active
   side's unit buttons, `[(label, key, why not)]` (`why not` None when
-  it can), and `ACT(engine, unit, key)` carries one out (Colonize).
+  it can), and `ACT(engine, unit, key)` carries one out (Colonize,
+  Nightspire's spells). `ACT` can add `('sound', name)` and
+  `('popup', hex, text, colour)` to `engine.events` for the screen.
 - **Sides that never move**: a side in `SIDES` but not in `ORDER` has
   no turns and no player (Far Suns' natives); its units are everyone's
   enemy. `BRIEFING = False` keeps each side from knowing where the
