@@ -1,0 +1,460 @@
+#!/usr/bin/env python3
+"""Pegasus Bridge: Normandy, 6 June 1944.  A sample game for the
+Grognard engine.
+
+Ten minutes after midnight on D-Day, three gliders land beside the
+bridge over the Caen Canal at Bénouville and two more by the bridge
+over the Orne.  D Company of the Ox and Bucks takes both in a few
+minutes.  Now it must hold them, through the night and the morning,
+until the commandos come up from Sword Beach.  Play either side against
+the computer, or against a friend at the same screen.
+
+Run it with ./pegasus (Python 3 with Tk, nothing else).  The game is
+saved to ~/.pegasus.json.  ./pegasus --selftest checks the map and
+plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import hexgrid                           # noqa: E402
+
+ID = 'pegasus'
+TITLE = 'Pegasus Bridge'
+SUBTITLE = 'Normandy, 6 June 1944'
+
+INTRO = [
+    "The night of 5 June 1944. Before the seaborne landings at dawn, "
+    "the British 6th Airborne Division is to drop east of the Orne and "
+    "guard the left flank of the invasion. Its only way back to the "
+    "beaches is over two bridges a few hundred yards apart: one over "
+    "the Caen Canal at Bénouville, one over the River Orne.",
+
+    "Major John Howard's D Company of the 2nd Oxfordshire and "
+    "Buckinghamshire Light Infantry, with a party of Royal Engineers, "
+    "has come in by glider to take them before they can be blown. "
+    "At sixteen minutes past midnight the first glider ploughed through "
+    "the wire fifty yards from the canal bridge. Lieutenant Brotheridge "
+    "led his platoon across it and was shot down at the far end.",
+
+    "Both bridges are taken. The sappers find the charges were never "
+    "laid in them. The wireless operator is sending the codewords: "
+    "Ham and Jam.",
+
+    "Now the company must hold. The 7th Parachute Battalion is "
+    "gathering on its drop zone east of the Orne and will come over "
+    "the bridges to help. The 21st Panzer Division is south of Caen. "
+    "And Lord Lovat's commandos are to land on Sword Beach at dawn and "
+    "march here, to be across the bridges by noon.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='de', name='Germans', adj='German', colour='#9aa2a4',
+         ink='#101010', flag='cross', posture='attack',
+         about='Retake the bridges, the canal bridge above all, and '
+               'cut the airborne division off from the beaches.'),
+    dict(id='br', name='British', adj='British', colour='#b4a474',
+         ink='#101010', posture='defend',
+         about='Hold both bridges until relieved: the 7th Parachute '
+               "Battalion tonight, Lovat's commandos at midday."),
+]
+ORDER = ['de', 'br']
+
+TURNS = 14
+
+
+def TURN_NAME(t):
+    """An hour a turn, from half past midnight."""
+    m = 30 + (t - 1) * 60
+    h = m // 60
+    return ('6 Jun 1944', '%d:%02d %s' % ((h - 1) % 12 + 1, m % 60,
+                                          'AM' if h < 12 else 'PM'))
+
+
+STACK = 2
+FOG = True
+DEFENSIVE_FIRE = 1
+
+PARAS = 3               # 7th Para's first company is over the Orne
+SCHMIDT = 2             # the bridge commandant drives into the bag
+DAWN = 6                # 5:30: first light, and the guns off Sword Beach
+LOVAT = 13              # 12:30: the commandos come up the road
+COMMANDOS = ('6cdo', '45cdo')
+HOWARD = 'howard'
+
+WEATHER = {1: 'night', DAWN: 'dawn', DAWN + 1: 'clear'}
+WEATHER_TYPES = {
+    'night': dict(name='Night', icon='cloud', air=False, spot=1),
+    'dawn': dict(name='First light', icon='fog', air=False),
+}
+
+
+def dark(e):
+    return e.weather()['id'] == 'night'
+
+
+def ON_TURN(e, side):
+    """What happened round the bridges."""
+    if side == 'de':
+        if e.turn == 1:
+            e.say('In Bénouville the garrison is stirring. Shots from '
+                  'the gardens; flares over the canal.')
+        if e.turn == SCHMIDT:
+            e.say('Major Schmidt, the bridge commandant, drives up from '
+                  'Ranville in his car to see what the firing is about, '
+                  'and is taken prisoner at the Orne bridge.')
+        if e.turn == DAWN + 1:
+            e.say('A Luftwaffe bomber drops a bomb on the canal bridge. '
+                  'It bounces off the girders and fails to go off.')
+    else:
+        if e.turn == PARAS:
+            e.say('The first of the 7th Parachute Battalion come over '
+                  'the Orne at the double: Lieutenant-Colonel '
+                  'Pine-Coffin has a third of his men.')
+        if e.turn == DAWN:
+            e.say('First light. Out at sea the bombardment of Sword '
+                  'Beach rolls like thunder.')
+        if e.turn == LOVAT:
+            e.say('Bagpipes on the Ouistreham road. Lord Lovat\'s '
+                  'commandos are coming, piper Bill Millin playing '
+                  '"Blue Bonnets over the Border".')
+
+
+def ON_MOVE(e, unit, path):
+    """The commandos crossing the canal bridge: Lovat apologises for
+    being two and a half minutes late, and the British score 2 VP."""
+    if unit.id in COMMANDOS and not e.flags.get('relieved') and \
+            any(hexgrid.distance(h, CANAL_EAST) == 0 for h in path[1:]):
+        e.flags['relieved'] = True
+        e.bonus['br'] += RELIEF_VP
+        e.say("The commandos march over the canal bridge under fire. "
+              "Lovat shakes Howard's hand and apologises for being two "
+              "and a half minutes late.")
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """In the dark, every attack is a column worse.  Major Howard in a
+    hex costs a German attack on it a column."""
+    out = []
+    if attackers and dark(e):
+        out.append((-1, 'darkness'))
+    if e.side == 'de' and any(u.id == HOWARD for u in e.at(target)):
+        out.append((-1, 'Howard'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'c': 'cafe', 'p': 'park'}
+
+TERRAIN = {
+    'clear':  dict(name='Pasture', colour='#8eb466', ink='#76984e',
+                   edge='#5e7e3e'),
+    'fields': dict(name='Fields', colour='#b0be6e', ink='#94a456',
+                   edge='#76863e'),
+    'woods':  dict(name='Orchards and woods', colour='#4e7a3a',
+                   ink='#2e5424'),
+    'marsh':  dict(name='Water meadows', colour='#7a9e7e', ink='#4a7a98'),
+    'town':   dict(name='Village', colour='#b4ac96', ink='#7e3e2e'),
+    'cafe':   dict(name='Café Gondrée', colour='#b4ac96', ink='#8a4a32',
+                   pattern='town', edge='#5a5048', z=7,
+                   move={'foot': 1, 'track': 1, 'wheel': 1}, shift=-1,
+                   open=False, los=False, stand=True),
+    'park':   dict(name='Château park', colour='#5a8446', ink='#36602c',
+                   pattern='trees', edge='#24401a', z=5,
+                   move={'foot': 2, 'track': 3, 'wheel': 4}, shift=-1,
+                   open=False, los=False),
+}
+
+# The canal and the Orne: no way over but the bridges, and an attack
+# over a bridge is at half strength.
+HEXSIDES = {
+    'canal': dict(name='Caen Canal', colour='#2e64b0', width=3,
+                  cost={'foot': None, 'track': None, 'wheel': None},
+                  halve=True),
+    'orne':  dict(name='River Orne', colour='#3a74c0', width=3,
+                  cost={'foot': None, 'track': None, 'wheel': None},
+                  halve=True),
+}
+
+MAP = [
+    ':.:.::..:.mm.m:.::',
+    '.:..:...:.m.mm.:.:',
+    ':..:.f..:.mm.m.f..',
+    '..:..tt.:.m..:.ff:',
+    '.:..:.tt:..:.:..:.',
+    ':..:...:...:.:.:..',
+    '..:..:..c::.:tt..:',
+    '.:..:..:.:..:t.:.:',
+    '..:..tt.:..:..::t.',
+    ':.:..ttt..m.m.:tt:',
+    '..:..:t.:mm.m:.:..',
+    '.:..fp..:.mm.m.:.:',
+    '..:.ppt.:..m.m:..:',
+    ':..:.p.:.:mm.m.:..',
+]
+
+ROWS = len(MAP)
+CANAL_COL = 9           # the canal runs down the east side of column 9
+ORNE_COL = 12           # the Orne down the east side of column 12
+
+RIVERS = [
+    ('canal', ['%02d%02d:NE,SE' % (CANAL_COL, r) for r in
+               range(1, ROWS + 1)]),
+    ('orne', ['%02d%02d:NE,SE' % (ORNE_COL, r) for r in
+              range(1, ROWS + 1)]),
+]
+
+ROADS = [
+    ('road', ['0801', '0814']),                    # Ouistreham to Caen
+    ('road', ['0807', '0907', '1007', '1307', '1407', '1608', '1709',
+              '1809']),                            # the bridges, Ranville
+    ('road', ['0805', '0104']),                    # to Colleville
+    ('road', ['0810', '0111']),                    # to the west
+    ('trail', ['1307', '1301']),                   # to Sallenelles
+    ('trail', ['1709', '1814']),                   # to Hérouvillette
+]
+
+LABELS = {
+    '0907': 'Canal bridge', '1307': 'Orne bridge', '0705': 'Le Port',
+    '0710': 'Bénouville', '0613': 'Château', '1508': 'Le Bas de Ranville',
+    '1710': 'Ranville', '1104': 'Water meadows', '0801': 'To Ouistreham',
+    '0814': 'To Caen', '0104': 'To Colleville',
+}
+
+CANAL_EAST = hexgrid.parse('1007')
+RELIEF_VP = 2
+
+# Objectives count for whoever holds them.
+OBJECTIVES = {
+    '0907': dict(name='Canal bridge', vp=10, owner='br'),
+    '1307': dict(name='Orne bridge', vp=6, owner='br'),
+    '0705': dict(name='Le Port', vp=3, owner='de'),
+    '0710': dict(name='Bénouville', vp=3, owner='de'),
+}
+CANAL_BRIDGE = hexgrid.parse('0907')
+STEP_VP = 1
+MARGIN = 13             # set from ./pegasus --simulate 60
+
+SUPPLY = {
+    'de': dict(**{'from': ['W', 'S'], 'range': 12}),
+    'br': dict(**{'from': ['E', '1007', '1107'], 'range': 12}),
+}
+
+
+def _score(e):
+    return 'British %d VP, Germans %d.' % (e.vp('br'), e.vp('de'))
+
+
+def VICTORY(e):
+    """The British must still hold the canal bridge (the Café Gondrée at
+    its western end) and finish ahead by the margin set from games
+    between computer players (./pegasus --simulate 60)."""
+    br, de = e.vp('br'), e.vp('de')
+    m = br - de
+    held = e.control.get(CANAL_BRIDGE) == 'br'
+    if held and m >= MARGIN + 4:
+        return 'br', ('British victory. %s The bridges hold, the airborne '
+                      'division east of the Orne is joined to the '
+                      'beaches, and the café is serving champagne.'
+                      % _score(e))
+    if held and m >= MARGIN:
+        return 'br', ('British marginal victory. %s The canal bridge '
+                      'holds, at a price.' % _score(e))
+    if held:
+        return 'de', ('German marginal victory. %s The British still '
+                      'hold the canal bridge, but the 21st Panzer has '
+                      'the villages round it under its guns.' % _score(e))
+    return 'de', ('German victory. %s The canal bridge is German again; '
+                  'the 6th Airborne Division is cut off east of the Orne.'
+                  % _score(e))
+
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'leader': dict(name='Commander', symbol='hq', move='foot', zoc=False,
+                   stack=0, fate='is killed'),
+    'piat':   dict(name='PIAT', symbol='antitank', move='foot', at=True),
+    'sniper': dict(name='Snipers', symbol='infantry', move='foot',
+                   spot=3),
+    'commando': dict(name='Commandos', symbol='infantry', move='foot'),
+}
+
+OXF = '#c8b880'         # D Company, Ox and Bucks
+RE = '#b4a46c'          # the sappers
+PARA = '#c0a478'        # 7th Parachute Battalion
+CDO = '#a8b070'         # 1st Special Service Brigade
+GR = '#a6aaa4'          # 716th Infantry Division: field grey
+PZ = '#94a0b0'          # 21st Panzer Division: blue-grey
+
+
+def u(uid, side, a, d, hx, formation, colour, long, **kw):
+    """A unit: attack, defence, and the hex it starts in (None if it
+    arrives later, with arrive and at)."""
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kw.pop('type', 'infantry'), size=kw.pop('size', '***'),
+                a=a, d=d, m=kw.pop('m', 4), steps=kw.pop('steps', 2),
+                hex=hx, formation=formation, colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+UNITS = [
+    # ---- D Company, 2nd Ox and Bucks, and the sappers
+    u(HOWARD, 'br', 0, 1, '1007', 'D Company', OXF,
+      'Major John Howard', type='leader', size='', steps=1, vp=3,
+      name='HOWARD'),
+    u('25pl', 'br', 3, 3, '0907', 'D Company', OXF,
+      "25 Platoon (Lt Brotheridge's, now Sgt Ollis's)", name='25 PL'),
+    u('14pl', 'br', 3, 3, '0807', 'D Company', OXF,
+      '14 Platoon (Lt Smith, wounded)', name='14 PL'),
+    u('24pl', 'br', 3, 3, '1007', 'D Company', OXF,
+      '24 Platoon (Lt Wood, wounded)', name='24 PL'),
+    u('17pl', 'br', 3, 3, '1207', 'D Company', OXF,
+      '17 Platoon (Lt Fox)', name='17 PL'),
+    u('23pl', 'br', 3, 3, '1307', 'D Company', OXF,
+      '23 Platoon (Lt Sweeney)', name='23 PL'),
+    u('piat', 'br', 2, 2, '0807', 'D Company', OXF,
+      "Sgt Thornton's PIAT team", type='piat', steps=1, name='PIAT'),
+    u('sappers', 'br', 2, 2, '1107', 'Royal Engineers', RE,
+      '249th Field Company RE (Capt Neilson)', type='engineer',
+      steps=1, name='RE'),
+
+    # ---- 7th Parachute Battalion, from the drop zone east of the Orne
+    u('7a', 'br', 4, 4, None, '7th Parachute Battalion', PARA,
+      'A Company, 7th Parachute Battalion', type='para', size='I',
+      arrive=PARAS, at=['1809', '1808'], name='7 A'),
+    u('7b', 'br', 4, 4, None, '7th Parachute Battalion', PARA,
+      'B Company, 7th Parachute Battalion', type='para', size='I',
+      arrive=PARAS + 1, at=['1809', '1808'], name='7 B'),
+    u('7c', 'br', 4, 4, None, '7th Parachute Battalion', PARA,
+      'C Company, 7th Parachute Battalion', type='para', size='I',
+      arrive=PARAS + 1, at=['1809', '1810'], name='7 C'),
+
+    # ---- 1st Special Service Brigade, from Sword Beach
+    u('6cdo', 'br', 6, 5, None, '1st Special Service Brigade', CDO,
+      'No. 6 Commando', type='commando', size='II', steps=3,
+      arrive=LOVAT, at=['0104', '0103'], posture='attack', name='6 CDO'),
+    u('45cdo', 'br', 5, 5, None, '1st Special Service Brigade', CDO,
+      'No. 45 (Royal Marine) Commando', type='commando', size='II',
+      steps=3, arrive=LOVAT, at=['0104', '0105'], posture='attack',
+      name='45 CDO'),
+
+    # ---- the bridge guard and the 716th Infantry Division
+    u('wache', 'de', 2, 2, '0710', '736th Grenadier Regiment', GR,
+      'The bridge guard, what is left of it', steps=1, name='WACHE'),
+    u('sniper', 'de', 1, 2, '0705', '736th Grenadier Regiment', GR,
+      'Snipers in the church tower at Le Port', type='sniper',
+      steps=1, name='SNIPER'),
+    u('736', 'de', 4, 4, None, '736th Grenadier Regiment', GR,
+      'A company of the 736th Grenadiers, from Ouistreham',
+      size='I', arrive=5, at=['0801', '0701'], name='736'),
+
+    # ---- the 21st Panzer Division, from south of Caen
+    u('pz', 'de', 5, 3, None, '21st Panzer Division', PZ,
+      'Panzer IVs of the 22nd Panzer Regiment', type='armor',
+      arrive=SCHMIDT, at=['0814', '0714'], m=8, name='PZ IV'),
+    u('1/192', 'de', 4, 4, None, '192nd Panzergrenadier Regiment', PZ,
+      '1st Company, 192nd Panzergrenadiers', type='mech', size='I',
+      arrive=SCHMIDT, at=['0814', '0914'], m=6, name='1/192'),
+    u('2/192', 'de', 4, 4, None, '192nd Panzergrenadier Regiment', PZ,
+      '2nd Company, 192nd Panzergrenadiers', type='mech', size='I',
+      arrive=3, at=['0111', '0112'], m=6, name='2/192'),
+    u('3/192', 'de', 4, 4, None, '192nd Panzergrenadier Regiment', PZ,
+      '3rd Company, 192nd Panzergrenadiers', type='mech', size='I',
+      arrive=4, at=['0814', '0714'], m=6, name='3/192'),
+    u('grw', 'de', 4, 2, None, '192nd Panzergrenadier Regiment', PZ,
+      'Mortars of the 192nd Panzergrenadiers', type='artillery',
+      size='I', range=3, steps=1, arrive=4, at=['0114', '0214'], m=3,
+      name='GRW'),
+    u('pz2', 'de', 5, 3, None, '21st Panzer Division', PZ,
+      'More Panzer IVs of the 22nd Panzer Regiment', type='armor',
+      arrive=DAWN, at=['0111', '0112'], m=8, name='PZ IV'),
+    u('stug', 'de', 6, 4, None, '21st Panzer Division', PZ,
+      "Major Becker's assault guns", type='armor', arrive=8,
+      at=['0814', '0714'], m=8, name='STUG'),
+    u('aufkl', 'de', 3, 3, None, '21st Panzer Division', PZ,
+      'A troop of the 21st Panzer Reconnaissance Battalion',
+      type='recon', size='I', arrive=6, at=['1814', '1714'], m=8,
+      name='AUFKL'),
+    u('2/125', 'de', 4, 4, None, '125th Panzergrenadier Regiment', PZ,
+      "A company of von Luck's 125th Panzergrenadiers", type='mech',
+      size='I', arrive=9, at=['1814', '1714'], m=6, name='2/125'),
+]
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#181c1e', panel='#262c2e', light='#748078',
+              dark='#06080a', accent='#c8b06a', button='#3e4a46',
+              button_hi='#8a9a90', button_lo='#181c1e', red='#a8302a')
+
+HELP = [
+    "THE BRIDGES. The Germans move first. D Company holds both bridges: "
+    "the canal bridge, with the Café Gondrée at its western end, and "
+    "the Orne bridge a few hundred yards east. The canal and the river "
+    "can be crossed only at the bridges, and an attack over a bridge is "
+    "made at half strength.",
+
+    "THE NIGHT. Until 5:30 it's dark: units see only the next hex, and "
+    "every attack is a column worse. The 7th Parachute Battalion comes "
+    "over the Orne from 2:30. The 21st Panzer Division's tanks and "
+    "panzergrenadiers come up the Caen road and in from the west from "
+    "1:30, with more tanks at 5:30 and assault guns at 7:30; the "
+    "716th Division's grenadiers down from Ouistreham at 4:30, and "
+    "von Luck's men up the east bank from 5:30. Major Howard in a "
+    "hex costs a German attack on it a column.",
+
+    "THE COMMANDOS. Lord Lovat's No. 6 and No. 45 Commandos come in on "
+    "the Colleville road at 12:30. The first of them over the canal "
+    "bridge scores the British 2 VP.",
+
+    "WINNING. Each side scores the objectives it holds at the end (the "
+    "canal bridge 10, the Orne bridge 6, Le Port and Bénouville 3 "
+    "each) and every enemy step destroyed (Howard 3 more). The British "
+    "must still hold the canal bridge and finish %d VP ahead to win (%d "
+    "for a clear victory); otherwise the Germans win, clearly if they "
+    "hold the canal bridge." % (MARGIN, MARGIN + 4),
+]
+
+ICON = 'pegasus'
+
+
+@grognard.icon('pegasus')
+def draw_icon(p, n):
+    """The canal bridge at night, its great counterweight against the
+    sky, and a glider in the field beside it."""
+    p.fill('#1a2236')
+    p.disc(n * 0.8, n * 0.2, n * 0.08, '#e8e4c8')
+    p.rect(0, n * 0.62, n, n * 0.38, '#3e5a34')
+    p.rect(0, n * 0.7, n, n * 0.14, '#2e64b0')
+    p.rect(n * 0.1, n * 0.6, n * 0.8, n * 0.06, '#6a7480')
+    p.rect(n * 0.18, n * 0.36, n * 0.18, n * 0.24, '#5a6470')
+    p.disc(n * 0.27, n * 0.34, n * 0.1, '#5a6470')
+    for i in range(4):
+        x = n * (0.4 + i * 0.12)
+        p.line(x, n * 0.6, x + n * 0.06, n * 0.48, '#7a848e')
+    p.line(n * 0.36, n * 0.48, n * 0.9, n * 0.48, '#7a848e')
+    p.rect(n * 0.2, n * 0.88, n * 0.6, n * 0.05, '#c8b880')
+    p.rect(n * 0.42, n * 0.85, n * 0.08, n * 0.1, '#c8b880')
+    p.rect(n * 0.72, n * 0.84, n * 0.04, n * 0.06, '#c8b880')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

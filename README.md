@@ -17,7 +17,7 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are fifteen games so far: a Second World War battle, a raid in a
+There are sixteen games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
@@ -36,7 +36,9 @@ oldest battle: Carrhae, where the Parthian horse archers shot Crassus's
 legions to pieces in 53 BC, San Juan Hill, where Roosevelt and the
 Rough Riders went up Kettle Hill outside Santiago de Cuba in 1898, and
 Rorke's Drift, a company of the 24th Foot behind a wall of mealie bags
-against the Zulu reserve on the night of Isandlwana.
+against the Zulu reserve on the night of Isandlwana, and Pegasus Bridge,
+the glider-borne company holding the bridges over the Caen Canal and the
+Orne in the first hours of D-Day.
 
 ```bash
 ./crossroads
@@ -96,6 +98,10 @@ against the Zulu reserve on the night of Isandlwana.
 
 ```bash
 ./rorkes
+```
+
+```bash
+./pegasus
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -694,6 +700,46 @@ are set for play, the counters are sections rather than men, and the
 map is the station's few buildings and the ground round them as the
 accounts describe it, not a survey.
 
+## Pegasus Bridge: Normandy, 6 June 1944
+
+The sixteenth game, and a small one: two bridges a few hundred yards
+apart, over the Caen Canal at Bénouville and over the Orne, the only
+way between the beaches and the 6th Airborne Division east of the
+river. Just after midnight Major Howard's D Company of the Ox and
+Bucks, with a party of sappers, lands beside them in six gliders and
+takes both in minutes. The game begins with the codewords Ham and Jam
+going out, and the company has to hold until relieved.
+
+- **Fourteen turns** of an hour, from 12:30 in the morning to 1:30 in
+  the afternoon. The Germans move first. The British counters are D
+  Company's platoons, Sergeant Thornton's PIAT, the sappers and Howard
+  himself; the 7th Parachute Battalion's companies come over the Orne
+  from 2:30, and Lovat's No. 6 and No. 45 Commandos up the Colleville
+  road at 12:30. The 21st Panzer Division's tanks and panzergrenadiers
+  come up from Caen and in from the west from 1:30, the 716th
+  Division's grenadiers down from Ouistreham at 4:30, assault guns at
+  7:30, and von Luck's men up the east bank of the Orne from 5:30.
+- **The bridges**: the canal and the river can be crossed only on
+  them, and an attack over a bridge is at half strength. The canal
+  bridge's objective is the Café Gondrée at its western end, where the
+  defenders lose a step rather than retreat.
+- **The night**: until 5:30 units see only the next hex and every
+  attack is a column worse. Howard in a hex costs a German attack on it
+  a column. The first commando over the canal bridge scores the British
+  2 VP (Lovat apologises for being two and a half minutes late).
+- **Winning**: each side scores the objectives it holds at the end (the
+  canal bridge 10, the Orne bridge 6, Le Port and Bénouville 3 each)
+  and every enemy step, Howard 3 more. The British must hold the canal
+  bridge and finish 13 VP ahead. Computer against computer they win 31
+  games in 60. The canal bridge almost never falls, as it didn't in
+  1944; the game turns on the Orne bridge and the villages.
+
+The German order of battle round the bridges that night is uncertain,
+and the counters here (which companies, how many tanks, when they came)
+are a guess set for play. The map is drawn from the landmarks (the
+café, the T-junction, Le Port's church, the château), not surveyed,
+and the strip between the canal and the river is wider than it was.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -1011,7 +1057,10 @@ out at the start of a turn (`engine.take_losses` from `ON_TURN`); and
 `rorkes` for a barricade and an inner wall worked out in code from the
 hexes they enclose, ammunition that runs out (in `engine.flags`), a
 building set on fire, a unit carried out of it by `ON_TURN`, and
-the stock computer player taught to keep out of the flames (`AI_CLASS`).
+the stock computer player taught to keep out of the flames (`AI_CLASS`);
+and `pegasus` for a canal and a river that can be crossed only on
+their bridges (hexsides of their own with no cost but along a road),
+night, and a bonus for crossing a bridge (`ON_MOVE`).
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)
