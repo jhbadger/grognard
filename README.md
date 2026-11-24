@@ -17,7 +17,7 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are sixteen games so far: a Second World War battle, a raid in a
+There are seventeen games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
@@ -38,7 +38,8 @@ Rough Riders went up Kettle Hill outside Santiago de Cuba in 1898, and
 Rorke's Drift, a company of the 24th Foot behind a wall of mealie bags
 against the Zulu reserve on the night of Isandlwana, and Pegasus Bridge,
 the glider-borne company holding the bridges over the Caen Canal and the
-Orne in the first hours of D-Day.
+Orne in the first hours of D-Day, and Drvar, the SS parachute raid on
+Tito's headquarters in the mountains of Bosnia in May 1944.
 
 ```bash
 ./crossroads
@@ -102,6 +103,10 @@ Orne in the first hours of D-Day.
 
 ```bash
 ./pegasus
+```
+
+```bash
+./drvar
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -740,6 +745,49 @@ are a guess set for play. The map is drawn from the landmarks (the
 café, the T-junction, Le Port's church, the château), not surveyed,
 and the strip between the canal and the river is wider than it was.
 
+## Drvar: Bosnia, 25-26 May 1944
+
+The seventeenth game, and a fight with partisans: Operation
+Rösselsprung, the Knight's Move. At seven in the morning on Tito's
+birthday the 500th SS Parachute Battalion comes down by parachute and
+glider on Drvar, the little sawmill town that is the capital of the
+Partisans' liberated territory, to take Tito dead or alive. He is in a
+cave in the cliff across the Unac with his escort; the cadets of the
+officers' school are up the road at Šipovljani, and the youth congress
+has been celebrating his birthday in the town all night.
+
+- **Fourteen turns**: an hour each from 7:00 AM to 3:00 PM, then three
+  hours each through the night to 6:00 AM. The Germans move first.
+  The paratroopers start on the map: five glider assault groups named
+  for their targets and three parachute companies, with a second wave
+  at noon. The Partisans have the escort, the town guard, the youth
+  delegates and the cadets, and the 3rd Lika Brigade's battalions come
+  in from 8:00, the 1st Proletarian and 5th Krajina Brigades at dusk
+  and in the night. The German ground columns from Bihać and Petrovac
+  arrive at dawn on the 26th.
+- **Tito** is a counter of his own, held in the cave until 9:00, when
+  the escort has cut a way out through its floor. If he's killed the
+  Germans win at once; if he gets off the east edge, over the mountains,
+  the Partisans score 8.
+- **Day and night**: in daylight the Luftwaffe gives German attacks a
+  column and drops them supplies. From dusk units see only the next
+  hex, the Partisans gain a column attacking and the Germans lose one,
+  and paratroopers cut off from the Petrovac road are out of supply.
+  The cemetery's walls give its defenders two columns, and they lose a
+  step rather than retreat. The Unac costs 2 to cross and halves an
+  attack over it, except at the bridge.
+- **Winning**: each side scores every enemy step destroyed and the
+  places it holds at the end (Drvar 5, the cemetery 4, the cave 3,
+  Šipovljani 2). The Germans must finish 1 VP ahead. Computer against
+  computer they win 32 games in 60. Tito gets away in every one, as he
+  did; a German player who pushes over the Unac at once may catch him.
+
+The order of battle is simplified and the strengths set for play; the
+assault groups' names and targets are as the accounts give them, but
+which Partisan battalions came when is a guess. The map is the valley
+as the accounts describe it (the town, the cemetery on its knoll, the
+cave over the river, the road to Šipovljani), not a survey.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -1060,7 +1108,10 @@ building set on fire, a unit carried out of it by `ON_TURN`, and
 the stock computer player taught to keep out of the flames (`AI_CLASS`);
 and `pegasus` for a canal and a river that can be crossed only on
 their bridges (hexsides of their own with no cost but along a road),
-night, and a bonus for crossing a bridge (`ON_MOVE`).
+night, and a bonus for crossing a bridge (`ON_MOVE`); and `drvar` for
+a leader who must escape off the map (`EXITS` with `types`) and whose
+death ends the game (`ON_ELIMINATE` and `ON_TURN`), turns of different
+lengths (`TURN_NAME`), and weather that supplies one side from the air.
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)

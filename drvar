@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+"""Drvar: Bosnia, 25-26 May 1944.  A sample game for the Grognard engine.
+
+At seven in the morning, on Tito's birthday, Stukas bomb the little
+town of Drvar in western Bosnia, and SS paratroopers and gliders come
+down on it: Operation Rösselsprung, the Knight's Move, to take the
+leader of the Yugoslav Partisans dead or alive.  Tito is in a cave in
+the cliff above the Unac.  Play either side against the computer, or
+against a friend at the same screen.
+
+Run it with ./drvar (Python 3 with Tk, nothing else).  The game is
+saved to ~/.drvar.json.  ./drvar --selftest checks the map and plays a
+game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+
+ID = 'drvar'
+TITLE = 'Drvar'
+SUBTITLE = 'Bosnia, 25-26 May 1944'
+
+INTRO = [
+    "Spring 1944. In the mountains of western Bosnia the Partisans hold "
+    "a liberated territory the size of a small country. Its capital is "
+    "Drvar, a sawmill town in the valley of the Unac, and there, in a "
+    "cave in the cliff above the river, Marshal Tito has his "
+    "headquarters. The Allied missions are in the villages round about.",
+
+    "The Germans have found him. On 25 May, Tito's fifty-second "
+    "birthday, the 500th SS Parachute Battalion, a punishment unit "
+    "given a chance to redeem itself, is to drop on the town by "
+    "parachute and glider while ground columns converge from every "
+    "side. The orders are to take Tito alive if they can.",
+
+    "Seven in the morning. The Stukas have just finished with the town. "
+    "Out of the smoke come the parachutes, and the gliders crash down "
+    "in the fields by the river. In the town the Partisans' youth "
+    "congress has been celebrating the birthday all night. At "
+    "Šipovljani, up the road, are the cadets of the officers' school.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='de', name='Germans', adj='German', colour='#9ea490',
+         ink='#101010', flag='cross', posture='attack',
+         about='Find Tito and take him, dead or alive; then hold out '
+               'in Drvar until the ground columns get through.'),
+    dict(id='nj', name='Partisans', adj='Partisan', colour='#b88a5e',
+         ink='#101010', flag='star', posture='attack',
+         about='Get Tito out of his cave and away over the mountains, '
+               'then destroy the paratroopers before they are '
+               'relieved.'),
+]
+ORDER = ['de', 'nj']
+
+# An hour a turn through the day, then three hours a turn through the
+# night, to six the next morning.
+TIMES = [7, 8, 9, 10, 11, 12, 13, 14, 15, 18, 21, 24, 27, 30]
+TURNS = len(TIMES)
+
+
+def TURN_NAME(t):
+    h = TIMES[t - 1]
+    day = '25 May 1944' if h < 24 else '26 May 1944'
+    h %= 24
+    return (day, '%d:00 %s' % ((h - 1) % 12 + 1, 'AM' if h < 12 else 'PM'))
+
+
+STACK = 2
+FOG = True
+DEFENSIVE_FIRE = 1
+
+ESCAPE = 3              # the floor of the cave is cut through
+SECOND = 6              # noon: the second wave
+DUSK = 10               # 6 PM
+NIGHT = 11              # 9 PM to dawn
+RELIEF = 14             # the ground columns from Bihać
+TITO = 'tito'
+
+# In daylight the Luftwaffe bombs for the Germans and drops them
+# supplies; at night they have only what they carry.
+WEATHER = {1: 'day', DUSK: 'dusk', NIGHT: 'night', RELIEF: 'dawn'}
+WEATHER_TYPES = {
+    'day': dict(name='Clear: Luftwaffe', icon='sun', air=True,
+                airdrop='de'),
+    'dusk': dict(name='Dusk', icon='fog', air=False, spot=1),
+    'night': dict(name='Night', icon='cloud', air=False, spot=1),
+    'dawn': dict(name='Dawn', icon='fog', air=False),
+}
+AIR = ['de']
+
+
+def ON_TURN(e, side):
+    """What happened in the valley, and Tito taken."""
+    if e.flags.get('tito'):
+        e.finish('de', 'German victory. Tito is dead. The Partisan '
+                 'movement has lost its leader on his birthday, and '
+                 'the 500th SS Parachute Battalion its stain. %s'
+                 % _score(e))
+        return
+    if side == 'de':
+        if e.turn == 1:
+            e.say("Hauptsturmführer Rybka's men gather by the gliders. "
+                  'Somewhere in this town is Tito.')
+        if e.turn == SECOND:
+            e.say('Noon: the second wave drops into the valley, '
+                  'straight into Partisan fire.')
+        if e.turn == NIGHT:
+            e.say('Darkness. The paratroopers are out of ammunition '
+                  'and the Luftwaffe cannot find them.')
+    else:
+        if e.turn == 1:
+            e.say("Tito's escort holds the mouth of the cave. Below it "
+                  'the paratroopers are in the streets.')
+        if e.turn == ESCAPE:
+            e.say('The escort has cut a hole in the floor of the cave. '
+                  'Tito climbs down a rope to the stream bed below.')
+        if e.turn == RELIEF:
+            e.say('Dawn. The German column from Bihać is in the '
+                  'valley.')
+
+
+def ON_ELIMINATE(e, u, where):
+    if u.id == TITO:
+        e.flags['tito'] = True
+        e.say('Tito is dead!')
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """At dusk and night the Partisans, who know every path, gain a
+    column attacking, and the Germans lose one."""
+    out = []
+    if attackers and e.weather()['id'] in ('dusk', 'night'):
+        out.append((1, 'knowing the ground') if e.side == 'nj' else
+                   (-1, 'darkness'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'g': 'cemetery', 'c': 'cave'}
+
+TERRAIN = {
+    'clear':  dict(name='Meadows', colour='#94b866', ink='#7a9c50',
+                   edge='#5e7e3c'),
+    'fields': dict(name='Fields', colour='#b0c070', ink='#94a456',
+                   edge='#768640'),
+    'hills':  dict(name='Hillside', colour='#a8a070', ink='#7c7248',
+                   edge='#5e5432'),
+    'forest': dict(name='Mountain forest', colour='#34603a',
+                   ink='#1c3e22'),
+    'town':   dict(name='Drvar', colour='#b4ac98', ink='#7a3e2c'),
+    'cemetery': dict(name='Cemetery', colour='#a8a890', ink='#6a6a5a',
+                     pattern='rough', edge='#4a4a3a', z=7,
+                     move={'foot': 1, 'track': 2, 'wheel': 2}, shift=-2,
+                     open=False, los=True, stand=True),
+    'cave':   dict(name="Tito's cave", colour='#8a7c5a', ink='#3a3020',
+                   pattern='rough', edge='#2a2418', z=8,
+                   move={'foot': 2, 'track': None, 'wheel': None},
+                   shift=-1, open=False, los=False),
+}
+
+MAP = [
+    'FFFhhF..:.hFFFhFFF',
+    'FFhh..:.:..hhFFhFF',
+    'Fhh.:..:.:..hhFFhF',
+    'Fh..:.:t..:..hhhFF',
+    'h.:.:..g:..:..hFFF',
+    'h..:..tttc..h.hhFF',
+    'F.t:.:ttt..hhh.hFF',
+    'Fh.:..:tt:..hhhFFF',
+    'Fht..:..:...:.hhFF',
+    'FFh.:.:..:..:..hhF',
+    'FFhh..:.:.:..:.hFF',
+    'FFFh.:..:..:..hhFF',
+    'FFFhh.:...:.:hhFFF',
+    'FFFFhh.:.:.:hhFFFF',
+]
+
+ROWS = len(MAP)
+
+# The Unac comes down the valley and past the town on its east side.
+RIVERS = [
+    ('river', ['09%02d:NE,SE' % r for r in range(1, ROWS + 1)]),
+]
+
+ROADS = [
+    ('road', ['0801', '0805', '0807', '0814']),        # Petrovac to Grahovo
+    ('road', ['0807', '1006', '1206', '1808']),        # over the Unac
+    ('road', ['0807', '0507', '0307', '0108']),        # to Šipovljani
+    ('trail', ['1006', '1304', '1802']),               # up to Potoci
+    ('trail', ['0309', '0114']),
+]
+
+LABELS = {
+    '0807': 'Drvar', '0805': 'Cemetery', '1006': "Tito's cave",
+    '0307': 'Šipovljani', '0801': 'To Petrovac and Bihać',
+    '0814': 'To Grahovo', '1802': 'To Potoci', '1808': 'To Mlinište',
+    '1010': 'Unac', '0704': 'Šobić Glavica',
+}
+
+OBJECTIVES = {
+    '0807': dict(name='Drvar', vp=5, owner='nj'),
+    '0805': dict(name='Cemetery', vp=4, owner='nj'),
+    '1006': dict(name="Tito's cave", vp=3, owner='nj'),
+    '0307': dict(name='Šipovljani', vp=2, owner='nj'),
+}
+STEP_VP = 1
+ESCAPE_VP = 8
+MARGIN = 1              # set from ./drvar --simulate 60
+
+# Tito gets away over the mountains to the east.
+EXITS = {'nj': dict(hexes=['E'], vp=ESCAPE_VP, types=['leader'])}
+
+SUPPLY = {
+    'de': dict(**{'from': ['N'], 'range': 20}),
+    'nj': dict(**{'from': ['E', 'S', 'W'], 'range': 20}),
+}
+
+
+def _score(e):
+    return 'Germans %d VP, Partisans %d.' % (e.vp('de'), e.vp('nj'))
+
+
+def VICTORY(e):
+    """Tito dead is a German victory at once (ON_TURN).  Otherwise the
+    margin decides: the Germans score the steps they destroy and the
+    places they hold; the Partisans the steps they destroy, the places,
+    and Tito's escape (set from ./drvar --simulate 60)."""
+    de, nj = e.vp('de'), e.vp('nj')
+    m = de - nj
+    escaped = e.exited.get('nj')
+    away = ' Tito is safe in the mountains.' if escaped else \
+        ' Tito is still hiding in the valley.'
+    if m >= MARGIN + 6:
+        return 'de', ('German victory. %s%s The paratroopers hold Drvar '
+                      'until the columns come.' % (_score(e), away))
+    if m >= MARGIN:
+        return 'de', ('German marginal victory. %s%s' % (_score(e), away))
+    if m > MARGIN - 8:
+        return 'nj', ('Partisan marginal victory. %s%s The paratroopers '
+                      'are relieved, but Drvar cost them dear.'
+                      % (_score(e), away))
+    return 'nj', ('Partisan victory. %s%s The 500th SS Parachute '
+                  'Battalion is all but destroyed, and the Knight\'s '
+                  'Move has failed.' % (_score(e), away))
+
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'leader': dict(name='Leader', symbol='hq', move='foot', zoc=False,
+                   stack=0, fate='is killed'),
+    'partisan': dict(name='Partisans', symbol='infantry', move='foot'),
+    'cadets': dict(name='Cadets', symbol='infantry', move='foot'),
+    'youth': dict(name='Youth congress', symbol='infantry', move='foot'),
+}
+
+SS = '#a4aa8c'          # 500th SS Parachute Battalion: camouflage
+SS2 = '#98a084'
+WH = '#a6aaa4'          # the Wehrmacht columns
+ESC = '#c49466'         # Tito's escort battalion
+NJ = '#b88a5e'          # the Partisan divisions
+NJ2 = '#a87e58'
+
+
+def u(uid, side, a, d, hx, formation, colour, long, **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kw.pop('type', 'para' if side == 'de' else
+                            'partisan'),
+                size=kw.pop('size', 'I'), a=a, d=d, m=kw.pop('m', 4),
+                steps=kw.pop('steps', 2), hex=hx, formation=formation,
+                colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+UNITS = [
+    # ---- the 500th SS Parachute Battalion: the gliders' assault groups
+    u('panther', 'de', 5, 4, '0907', 'Gliders', SS,
+      'Assault group Panther: the "citadel"', name='PANTHER', steps=3),
+    u('greifer', 'de', 3, 3, '0705', 'Gliders', SS,
+      'Assault group Greifer: the British mission', name='GREIFER'),
+    u('sturmer', 'de', 3, 3, '0508', 'Gliders', SS,
+      'Assault group Stürmer: the Soviet mission', name='STURMER'),
+    u('brecher', 'de', 3, 3, '0909', 'Gliders', SS,
+      'Assault group Brecher: the American mission', name='BRECHER'),
+    u('drauf', 'de', 3, 3, '0606', 'Gliders', SS,
+      'Assault group Draufgänger: the signals centre', name='DRAUF'),
+    # ---- the parachute companies
+    u('rot', 'de', 4, 3, '0804', 'Parachute companies', SS2,
+      'Parachute group Red', name='ROT'),
+    u('gruen', 'de', 4, 3, '0610', 'Parachute companies', SS2,
+      'Parachute group Green', name='GRUEN'),
+    u('blau', 'de', 4, 3, '0908', 'Parachute companies', SS2,
+      'Parachute group Blue', name='BLAU'),
+    u('welle', 'de', 5, 4, None, 'Parachute companies', SS2,
+      'The second wave', arrive=SECOND, at=['0803', '0904', '0703'],
+      name='2 WELLE', steps=3),
+    # ---- the ground columns
+    u('373', 'de', 6, 5, None, '373rd (Croatian) Division', WH,
+      'Kampfgruppe of the 373rd Division, from Bihać', type='infantry',
+      size='II', arrive=RELIEF, at=['0801', '0701'], name='373', steps=3),
+    u('92mot', 'de', 6, 5, None, '92nd Motorized Regiment', WH,
+      '92nd Motorized Grenadier Regiment, from Petrovac',
+      type='motorized', size='II', arrive=RELIEF, at=['0801', '0901'],
+      m=6, name='92 MOT', steps=3),
+
+    # ---- Tito and his escort
+    u(TITO, 'nj', 0, 1, '1006', 'Supreme Headquarters', ESC,
+      'Marshal Josip Broz Tito', type='leader', size='', steps=1,
+      release=ESCAPE, name='TITO'),
+    u('esc1', 'nj', 3, 4, '1006', 'Escort Battalion', ESC,
+      "1st Company, Tito's Escort Battalion", name='ESC 1'),
+    u('esc2', 'nj', 3, 3, '1105', 'Escort Battalion', ESC,
+      "2nd Company, Tito's Escort Battalion", name='ESC 2'),
+    u('youth', 'nj', 1, 2, '0807', 'Youth congress', NJ,
+      'Delegates of the youth congress (SKOJ)', type='youth', steps=1,
+      name='SKOJ'),
+    u('town', 'nj', 2, 2, '0707', 'Drvar garrison', NJ,
+      'Drvar town guard and the workshops', steps=1, name='DRVAR'),
+    u('cadets', 'nj', 4, 4, '0307', "Officers' school", NJ,
+      "Cadets of the officers' school at Šipovljani", type='cadets',
+      size='II', name='CADETS'),
+    # ---- the 6th Lika and 1st Proletarian Divisions, as they come up
+    u('3lk1', 'nj', 4, 4, None, '6th Lika Division', NJ2,
+      '1st Battalion, 3rd Lika Brigade', size='II', arrive=2,
+      at=['0814', '0714'], name='3LK/1'),
+    u('3lk2', 'nj', 4, 4, None, '6th Lika Division', NJ2,
+      '2nd Battalion, 3rd Lika Brigade', size='II', arrive=4,
+      at=['0814', '0914'], name='3LK/2'),
+    u('3lk3', 'nj', 4, 4, None, '6th Lika Division', NJ2,
+      '3rd Battalion, 3rd Lika Brigade', size='II', arrive=7,
+      at=['1808', '1809'], name='3LK/3'),
+    u('1pr', 'nj', 5, 4, None, '1st Proletarian Division', NJ2,
+      'A battalion of the 1st Proletarian Brigade', size='II',
+      arrive=DUSK, at=['0108', '0109'], name='1PR', steps=3),
+    u('5kr', 'nj', 4, 4, None, '1st Proletarian Division', NJ2,
+      'A battalion of the 5th Krajina Brigade', size='II',
+      arrive=NIGHT, at=['1808', '1809'], name='5KR'),
+]
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1c1a16', panel='#2c2822', light='#7e765e',
+              dark='#080604', accent='#d0a868', button='#4a4232',
+              button_hi='#968a6a', button_lo='#1c1a16', red='#b02a22')
+
+HELP = [
+    "THE RAID. The Germans move first. The 500th SS Parachute Battalion "
+    "has just landed round Drvar: five glider assault groups and three "
+    "parachute companies, with a second wave at noon. Tito is in his "
+    "cave across the Unac with his escort, and can't leave it until "
+    "9:00, when the escort has cut a way out through the floor.",
+
+    "THE DAY AND THE NIGHT. Turns are an hour until 3:00 PM, then three "
+    "hours. In daylight the Luftwaffe gives German attacks a column "
+    "and drops them supplies; at 6:00 PM dusk falls, and from 9:00 the "
+    "paratroopers are on their own: units see only the next hex, the "
+    "Partisans gain a column attacking and the Germans lose one, and "
+    "Germans cut off from the Petrovac road are out of supply. The "
+    "German ground columns arrive at dawn on the 26th. The Unac costs "
+    "2 to cross and halves an attack across it, except on the bridge.",
+
+    "WINNING. If Tito is killed the Germans win at once. Tito getting "
+    "off the east edge scores the Partisans %d. Otherwise each side "
+    "scores every enemy step destroyed and the places it holds at the "
+    "end (Drvar 5, the cemetery 4, the cave 3, Šipovljani 2). The "
+    "cemetery's walls give its defenders two columns, and they lose a "
+    "step rather than retreat. The Germans must finish %d VP ahead to "
+    "win." % (ESCAPE_VP, MARGIN),
+]
+
+ICON = 'drvar'
+
+
+@grognard.icon('drvar')
+def draw_icon(p, n):
+    """Parachutes over a mountain valley, and a red star."""
+    p.fill('#9ec4e0')
+    p.disc(n * 0.15, n * 1.0, n * 0.55, '#34603a')
+    p.disc(n * 0.9, n * 1.05, n * 0.6, '#2c5432')
+    p.rect(0, n * 0.82, n, n * 0.18, '#94b866')
+    for x, y in ((0.3, 0.22), (0.6, 0.14), (0.74, 0.42), (0.44, 0.5)):
+        p.disc(n * x, n * y, n * 0.1, '#e8e4d8')
+        p.rect(n * (x - 0.1), n * y, n * 0.2, n * 0.05, '#9ec4e0')
+        p.line(n * (x - 0.09), n * y, n * x, n * (y + 0.14), '#4a4a40')
+        p.line(n * (x + 0.09), n * y, n * x, n * (y + 0.14), '#4a4a40')
+        p.rect(n * (x - 0.02), n * (y + 0.13), n * 0.04, n * 0.05,
+               '#5a5e48')
+    p.disc(n * 0.5, n * 0.88, n * 0.07, '#c02a22')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])
