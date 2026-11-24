@@ -17,7 +17,7 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are fourteen games so far: a Second World War battle, a raid in a
+There are fifteen games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
@@ -33,8 +33,10 @@ Wisconsin River in 1832, Little Round Top, the fight for the left
 of the Union line on the second day at Gettysburg, Maida, British
 line against French column on a plain in Calabria in 1806, and the
 oldest battle: Carrhae, where the Parthian horse archers shot Crassus's
-legions to pieces in 53 BC, and San Juan Hill, where Roosevelt and the
-Rough Riders went up Kettle Hill outside Santiago de Cuba in 1898.
+legions to pieces in 53 BC, San Juan Hill, where Roosevelt and the
+Rough Riders went up Kettle Hill outside Santiago de Cuba in 1898, and
+Rorke's Drift, a company of the 24th Foot behind a wall of mealie bags
+against the Zulu reserve on the night of Isandlwana.
 
 ```bash
 ./crossroads
@@ -90,6 +92,10 @@ Rough Riders went up Kettle Hill outside Santiago de Cuba in 1898.
 
 ```bash
 ./sanjuan
+```
+
+```bash
+./rorkes
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -641,6 +647,53 @@ The map is drawn from the landmarks (El Pozo, the ford, the pond
 between the hills, the blockhouse), not surveyed. Lawton's fight at El
 Caney the same day is off the map.
 
+## Rorke's Drift: Natal, 22-23 January 1879
+
+The fifteenth game, and the smallest battlefield: a mission station by
+the drift over the Buffalo River, a few acres a side. The afternoon the
+Zulus destroy Chelmsford's camp at Isandlwana, their reserve, three or
+four thousand men under Prince Dabulamanzi, comes on to the station.
+Lieutenants Chard and Bromhead, with B Company of the 2nd/24th, a few
+commissariat men and the sick, wall in the hospital and the storehouse
+with mealie bags and biscuit boxes, and fight until dawn.
+
+- **Twelve turns** of an hour, from 4:30 in the afternoon. The Zulus
+  move first: the uDloko and inDluyengwe round Shiyane on turn 1, the
+  uThulwana from the south-west on turn 2 and the inDlondlo from the
+  north-west on turn 3, with riflemen in the caves of Shiyane. The
+  British counters are sections of the company, Hook's men in the
+  hospital, Dalton's commissariat men, the sick, and Chard and
+  Bromhead. No fog of war.
+- **The barricade**: the mealie bags round the station cost 2 to climb,
+  and an attack made wholly across them is two columns worse; the line
+  of biscuit boxes across the yard, one. The hospital and storehouse
+  give a column more and their defenders lose a step rather than
+  retreat. Chard or Bromhead in a hex costs a Zulu attack a column.
+- **Volleys**: at the start of each Zulu turn every Zulu unit within 2
+  hexes of a British section, outside the bush, loses a step on a 1 or
+  2 (a 1 at night away from the firelight), at a box of cartridges a
+  shot. There are 100 boxes; when they're gone, Zulu attacks gain a
+  column. From 7:30 it's dark, and Zulu attacks away from the firelight
+  lose a column.
+- **The hospital**: from 6:30 a Zulu next to it sets the thatch alight.
+  No one may go in after that, and British units still inside lose a
+  step at the start of each Zulu turn. Once the Zulus reach the
+  hospital, Hook and Williams cut through the walls and the sick are
+  carried to the storehouse at the start of a British turn. The fire
+  lights the ground for 4 hexes round.
+- **Winning**: the Zulus score the storehouse (8), its door (3), the
+  yard (3) and the kraal (2) if they hold them at dawn, 3 for every
+  British step, 4 for the sick and 3 for each officer killed; the
+  British score every Zulu step. The British must hold the storehouse
+  and finish 3 VP ahead. Computer against computer the Zulus win 32
+  games in 60. The kraal always falls, as it did; the storehouse
+  hardly ever does, and the sick get out alive in nearly every game.
+
+In 1879 the Zulus lost about 350 killed and the British 17. The strengths
+are set for play, the counters are sections rather than men, and the
+map is the station's few buildings and the ground round them as the
+accounts describe it, not a survey.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -954,7 +1007,11 @@ stock computer player taught to ride back to the camels (`AI_CLASS`);
 and `sanjuan` for a river that can be crossed only at fords (one of
 them closed until a given turn, in `ENTER_COST`), a leader as a
 counter of his own who helps the attacks he joins, and losses dealt
-out at the start of a turn (`engine.take_losses` from `ON_TURN`).
+out at the start of a turn (`engine.take_losses` from `ON_TURN`); and
+`rorkes` for a barricade and an inner wall worked out in code from the
+hexes they enclose, ammunition that runs out (in `engine.flags`), a
+building set on fire, a unit carried out of it by `ON_TURN`, and
+the stock computer player taught to keep out of the flames (`AI_CLASS`).
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)

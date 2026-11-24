@@ -1,0 +1,632 @@
+#!/usr/bin/env python3
+"""Rorke's Drift: Natal, 22-23 January 1879.  A sample game for the
+Grognard engine.
+
+The afternoon of Isandlwana.  At the mission station by the drift over
+the Buffalo River, a company of the 24th Foot, a few commissariat men
+and the sick in the hospital have an hour's warning that the Zulu
+reserve is coming: three or four thousand men under Prince
+Dabulamanzi.  Lieutenants Chard and Bromhead build a wall of mealie bags
+and biscuit boxes between the hospital and the storehouse, and wait.
+Play either side against the computer, or against a friend at the same
+screen.
+
+Run it with ./rorkes (Python 3 with Tk, nothing else).  The game is
+saved to ~/.rorkes.json.  ./rorkes --selftest checks the map and plays
+a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import ai, hexgrid                       # noqa: E402
+
+ID = 'rorkes'
+TITLE = "Rorke's Drift"
+SUBTITLE = 'Natal, 22-23 January 1879'
+
+INTRO = [
+    "Natal, the twenty-second of January. Lord Chelmsford's column "
+    "crossed into Zululand at the drift over the Buffalo River eleven "
+    "days ago, and left a company of the 2nd Battalion, 24th Foot, to "
+    "guard the crossing and the stores at the old mission: a thatched "
+    "house turned into a hospital, and a stone church turned into a "
+    "storehouse.",
+
+    "At a quarter past three two officers ride in from Isandlwana with "
+    "the news that the camp there has been overrun and the column "
+    "destroyed, and that the Zulu reserve, the uThulwana, uDloko, "
+    "inDlondlo and inDluyengwe, is coming on to Rorke's Drift under "
+    "Prince Dabulamanzi kaMpande.",
+
+    "Lieutenant Chard of the Royal Engineers, who has the station, and "
+    "Lieutenant Bromhead, who has the company, decide to stay: in the "
+    "open, with the sick, they would be caught and killed. With "
+    "Assistant Commissary Dalton they build a wall of mealie bags and "
+    "biscuit boxes from the hospital to the storehouse and round the "
+    "cattle kraal. At half past four the first of the Zulus come round "
+    "the shoulder of Shiyane hill.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='zu', name='Zulus', adj='Zulu', colour='#5a3e28',
+         ink='#f0e4cc', posture='attack',
+         about="Dabulamanzi's regiments: break into the station before "
+               'dawn, take the storehouse, and kill the redcoats.'),
+    dict(id='br', name='British', adj='British', colour='#b0302a',
+         ink='#f4f0e4', posture='defend',
+         about='B Company, 2nd/24th: hold the barricade until dawn, save '
+               'the sick, and keep the storehouse to the end.'),
+]
+ORDER = ['zu', 'br']
+
+TURNS = 12
+
+
+def TURN_NAME(t):
+    """An hour a turn, from half past four."""
+    m = 16 * 60 + 30 + (t - 1) * 60
+    day = '22 Jan 1879' if m < 24 * 60 else '23 Jan 1879'
+    m %= 24 * 60
+    return (day, '%d:%02d %s' % ((m // 60 - 1) % 12 + 1, m % 60,
+                                 'AM' if m < 12 * 60 else 'PM'))
+
+
+DUSK = 3                # 6:30 PM
+NIGHT = 4               # 7:30 PM
+WEATHER = {1: 'clear', DUSK: 'dusk', NIGHT: 'night'}
+WEATHER_TYPES = {
+    'dusk': dict(name='Dusk', icon='fog', air=False),
+    'night': dict(name='Night', icon='cloud', air=False),
+}
+
+STACK = 2
+FOG = False             # a few acres of ground: everyone sees everyone
+DEFENSIVE_FIRE = 1
+COMBAT_SOUND = 'gun'
+
+# Breech-loaders against the assegai at close quarters.
+CRT = {
+    'columns': ['1:2', '1:1', '1.5:1', '2:1', '3:1', '4:1', '5:1'],
+    'rows': [
+        ['A2', 'A2', 'A1', 'A1', 'A1', 'EX', 'EX'],
+        ['A2', 'A1', 'A1', 'A1', 'EX', 'EX', 'DR'],
+        ['A1', 'A1', 'EX', 'EX', 'EX', 'DR', 'D1R'],
+        ['A1', 'EX', 'EX', 'DR', 'D1R', 'D1R', 'D1R'],
+        ['EX', 'DR', 'DR', 'D1R', 'D1R', 'D2R', 'D2R'],
+        ['DR', 'D1R', 'D1R', 'D2R', 'D2R', 'D2R', 'DE'],
+    ],
+}
+
+FIRE_FROM = 3           # from 6:30 PM the Zulus can fire the thatch
+AMMO = 100              # boxes of Martini-Henry cartridges
+VOLLEY = 2              # how far a volley reaches
+LIGHT = 4               # how far the burning hospital lights the night
+LEADERS = ('chard', 'bromhd')
+PATIENTS = 'sick'
+
+
+def dark(e, h):
+    """Night, and too far from the burning hospital to see by."""
+    if e.weather()['id'] != 'night':
+        return False
+    if e.flags.get('fire'):
+        return min(hexgrid.distance(h, x) for x in HOSPITAL) > LIGHT
+    return True
+
+
+def burning(e, h):
+    return e.flags.get('fire') and h in HOSPITAL
+
+
+def ENTER_COST(e, unit, a, b, cost):
+    """No one goes into the hospital once its roof is alight.  The sick,
+    once carried out, stay behind the biscuit boxes."""
+    if burning(e, b):
+        return None
+    if getattr(unit, 'id', None) == PATIENTS and b not in STORE:
+        return None
+    return cost
+
+
+def volleys(e):
+    """At the start of each Zulu turn, every Zulu unit within 2 hexes of
+    a British rifle section, outside the bush, is fired on: it loses a
+    step on a 1 or 2 (a 1 in the dark, away from the firelight).  Each
+    unit fired on costs a box of cartridges."""
+    rifles = [u.hex for u in e.alive('br') if u.kind == 'redcoats']
+    hits = 0
+    for z in e.alive('zu'):
+        if e.flags['ammo'] <= 0:
+            break
+        if not e.board.terrain(z.hex).get('los', True):
+            continue
+        if not any(hexgrid.distance(z.hex, r) <= VOLLEY for r in rifles):
+            continue
+        e.flags['ammo'] -= 1
+        if e.rng.randint(1, 6) <= (1 if dark(e, z.hex) else 2):
+            e.take_losses([z], 1)
+            hits += 1
+    if hits:
+        e.say('Volleys from the barricade: the Zulus lose %d step%s.'
+              % (hits, '' if hits == 1 else 's'))
+
+
+def carry_out(e):
+    """Once the Zulus are at the hospital walls (or the roof is alight),
+    Hook and Williams hack holes through the inner walls and pass the
+    sick out of a window: at the start of each British turn the sick in
+    the hospital move to a free yard hex next to them, if there is
+    one."""
+    sick = e.units[PATIENTS]
+    if not sick.alive or sick.hex not in HOSPITAL:
+        return
+    if not e.flags.get('fire') and not any(
+            e.at(n, 'zu') for h in HOSPITAL for n in hexgrid.neighbours(h)):
+        return
+    for n in STORE + sorted(INSIDE - WEST - set(STORE)):
+        if not e.at(n, 'zu') and e.room(n, sick):
+            sick.hex = n
+            e.changed()
+            e.say('Private Hook and Private Williams hack through the '
+                  'inner walls with a pick; the sick are passed out of a '
+                  'window and carried across the yard, under fire, to the '
+                  'storehouse.')
+            return
+    e.say('The sick are trapped in the hospital: there is no room for '
+          'them behind the biscuit boxes.')
+
+
+def ON_TURN(e, side):
+    f = e.flags
+    f.setdefault('ammo', AMMO)
+    if side == 'zu':
+        if e.turn == 1:
+            e.say("Captain Stephenson's company of the Natal Native "
+                  'Contingent climbs the barricade and runs; a corporal '
+                  'is shot as he goes. The wall is too long for the men '
+                  'left: Chard starts a line of biscuit boxes across the '
+                  'yard.')
+        if f.get('fire'):
+            for u in [u for u in e.alive('br') if u.hex in HOSPITAL]:
+                e.say('The roof falls in on %s.' % u.long)
+                e.take_losses([u], 1)
+        volleys(e)
+        if not f.get('fire') and e.turn >= FIRE_FROM and \
+                any(n in HOSPITAL for z in e.alive('zu')
+                    for n in hexgrid.neighbours(z.hex)):
+            f['fire'] = True
+            e.say('The Zulus set the hospital thatch alight. Anyone left '
+                  'inside at the start of the next Zulu turn will be '
+                  'caught in it; but the blaze lights the ground round '
+                  'the station.')
+    else:
+        carry_out(e)
+        if f['ammo'] <= 0 and not f.get('dry'):
+            f['dry'] = True
+            e.say('The last box of cartridges is broken open. From now on '
+                  'it is the bayonet.')
+        else:
+            e.say('Boxes of cartridges left: %d.' % max(0, f['ammo']))
+        if e.turn == TURNS:
+            e.say('Dawn. The Zulus are drawing off over Shiyane, and on '
+                  "the far side of the river Chelmsford's column is in "
+                  'sight.')
+    if not e.alive('br'):
+        e.finish('zu', 'Zulu victory. The station is taken and burned, '
+                       'and no one is left alive to tell of it.')
+
+
+def ON_ELIMINATE(e, u, where):
+    if u.id in LEADERS:
+        e.say('%s is killed. The men at the wall waver.' % u.long)
+    elif u.id == PATIENTS:
+        e.say('The last of the sick are lost.')
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """An officer in the hex attacked costs the Zulus a column, and one
+    leading an attack gains the British one.  Zulu attacks in the dark,
+    away from the firelight, lose a column; once the cartridges are gone
+    they gain one."""
+    out = []
+    if e.side == 'zu':
+        if any(u.id in LEADERS for u in e.at(target, 'br')):
+            out.append((-1, 'officers'))
+        if attackers and dark(e, target):
+            out.append((-1, 'darkness'))
+        if e.flags.get('ammo', AMMO) <= 0:
+            out.append((1, 'no cartridges'))
+    elif any(u.id in LEADERS for u in attackers) and len(attackers) > 1:
+        out.append((1, 'officers'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'H': 'hospital', 'S': 'store', 'k': 'kraal', 'y': 'yard',
+          'L': 'ledge', 'b': 'bush'}
+
+TERRAIN = {
+    'clear':  dict(name='Veld', colour='#b4b070', ink='#94904e',
+                   edge='#7a7640'),
+    'fields': dict(name='Mealie garden', colour='#a8b45e', ink='#7a8a3a',
+                   edge='#6a7a30'),
+    'bush':   dict(name='Bush and orchard', colour='#5e7a3a',
+                   ink='#3a5222', pattern='trees', edge='#2a4018', z=5,
+                   shift=-1, open=False, los=False,
+                   move={'foot': 2, 'track': 3, 'wheel': None}),
+    'ledge':  dict(name='Rocky ledge', colour='#a89a7a', ink='#6e624c',
+                   pattern='rough', edge='#5e543e', z=4, shift=0,
+                   open=False, los=True,
+                   move={'foot': 2, 'track': 3, 'wheel': None}),
+    'rough':  dict(name='Terraces', colour='#a49870', ink='#6a604a',
+                   edge='#5a5038'),
+    'hills':  dict(name='Shiyane', colour='#8a8a58', ink='#5e5e3a',
+                   edge='#4e4e2e', shift=-1),
+    'yard':   dict(name='Yard', colour='#c4b48a', ink='#a49468',
+                   pattern='grass', edge='#8a7a54', z=2, shift=0,
+                   open=False, los=True,
+                   move={'foot': 1, 'track': 1, 'wheel': 1}),
+    'hospital': dict(name='Hospital', colour='#c8b490', ink='#8a6a3a',
+                     pattern='town', edge='#4a3a24', z=8, shift=-1,
+                     open=False, los=True, stand=True,
+                     move={'foot': 1, 'track': 2, 'wheel': None}),
+    'store':  dict(name='Storehouse', colour='#b4a890', ink='#6a5a4a',
+                   pattern='town', edge='#3a3024', z=8, shift=-1,
+                   open=False, los=True, stand=True,
+                   move={'foot': 1, 'track': 2, 'wheel': None}),
+    'kraal':  dict(name='Cattle kraal', colour='#a89878', ink='#6a5a44',
+                   pattern='rough', edge='#4a3e2a', z=6, shift=-1,
+                   open=False, los=True,
+                   move={'foot': 1, 'track': 2, 'wheel': None}),
+}
+
+MAP = [
+    'bb..::bbb.::..bb',
+    'b.::bbb.....::.b',
+    '..::bb......::..',
+    '..b..LLLLLLL..b.',
+    '.b...HyyySkk...b',
+    '.....HyyySkk....',
+    '...:..........:.',
+    '..::...rr.rr....',
+    '.::.rrrrrrrrr...',
+    '..rrhhhhhhhhrr..',
+    '.rhhhhhhhhhhhhr.',
+    'rhhhhhhhhhhhhhhr',
+]
+
+INSIDE = {(c, r) for r, row in enumerate(MAP) for c, ch in enumerate(row)
+          if ch in 'HySk'}
+WEST = {h for h in INSIDE if h[0] <= 7}         # the hospital's end
+HOSPITAL = [h for h in INSIDE if MAP[h[1]][h[0]] == 'H']
+STORE = [h for h in INSIDE if MAP[h[1]][h[0]] == 'S']
+
+
+def _sides(a_set, b_set):
+    """Every hexside between a hex of a_set and one of b_set."""
+    out = []
+    for a in sorted(a_set):
+        for n in hexgrid.neighbours(a):
+            if n in b_set and 0 <= n[0] < 16 and 0 <= n[1] < len(MAP):
+                out.append('%s/%s' % (hexgrid.hid(a), hexgrid.hid(n)))
+    return out
+
+
+def _outside():
+    return {(c, r) for r in range(len(MAP)) for c in range(16)} - INSIDE
+
+
+HEXSIDES = {
+    'mealies': dict(name='Mealie-bag barricade', colour='#e0d4a8',
+                    width=3, cost={'foot': 2, 'track': 3, 'wheel': None},
+                    halve=False, shift=-2),
+    'boxes':  dict(name='Biscuit-box wall', colour='#b08a5a', width=2,
+                   cost={'foot': 1, 'track': 2, 'wheel': None},
+                   halve=False, shift=-1),
+}
+RIVERS = [
+    ('mealies', _sides(INSIDE, _outside())),
+    ('boxes', _sides(WEST, INSIDE - WEST)),
+]
+
+ROADS = [
+    ('trail', ['1001', '1004']),                       # to the drift
+    ('trail', ['1001', '1601']),
+]
+
+LABELS = {
+    '0605': 'Hospital', '1005': 'Storehouse', '1106': 'Kraal',
+    '0805': 'Yard', '0904': 'the ledge', '0811': 'Shiyane',
+    '1001': 'to the drift', '0301': 'Orchard', '0108': 'Mealies',
+}
+
+OBJECTIVES = {
+    '1005': dict(name='Storehouse', vp=8, owner='br', **{'for': 'zu'}),
+    '1006': dict(name='Store door', vp=3, owner='br', **{'for': 'zu'}),
+    '0805': dict(name='Yard', vp=3, owner='br', **{'for': 'zu'}),
+    '1106': dict(name='Kraal', vp=2, owner='br', **{'for': 'zu'}),
+}
+# The Zulus score every British step three times over: there are very
+# few of them.
+STEP_VP = {'zu': 3, 'br': 1}
+
+SUPPLY = {
+    'zu': dict(**{'from': ['S', 'E', 'W'], 'range': 20}),
+    'br': dict(**{'from': ['1005'], 'range': 4}),
+}
+
+
+def VICTORY(e):
+    """The Zulus score the ground they hold and British losses, the
+    British Zulu losses.  The Zulus win outright with the storehouse;
+    otherwise the British must finish WIN ahead (set from games between
+    computer players: ./rorkes --simulate 60)."""
+    zu, br = e.vp('zu'), e.vp('br')
+    m = br - zu
+    score = 'Zulus %d VP, British %d.' % (zu, br)
+    if e.control.get(hexgrid.parse('1005')) == 'zu' or m <= -WIN_BIG:
+        return 'zu', ('Zulu victory. %s The storehouse is taken, and the '
+                      'way into Natal is open.' % score)
+    if m < WIN:
+        return 'zu', ('Zulu marginal victory. %s The barricade is broken, '
+                      'and the survivors hold out in the storehouse.'
+                      % score)
+    if m < WIN_BIG:
+        return 'br', ('British marginal victory. %s The station holds, but '
+                      'few of its defenders are left on their feet.'
+                      % score)
+    sick = e.units[PATIENTS].alive
+    return 'br', ('British victory. %s The station holds%s. Eleven '
+                  'Victoria Crosses will be given for this night.'
+                  % (score, ', and the sick are saved' if sick else ''))
+
+
+WIN = 3                 # how far ahead the British must finish
+WIN_BIG = 15
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'redcoats': dict(name='Infantry', symbol='infantry', move='foot',
+                     fate='is overwhelmed'),
+    'leader':   dict(name='Officer', symbol='leader', move='foot',
+                     zoc=False, stack=0, fate='is killed'),
+    'patients': dict(name='The sick', symbol='patients', move='foot',
+                     zoc=False, under=True, stack=0, fate='are killed'),
+    'impi':     dict(name='Warriors', symbol='shield', move='foot',
+                     fight='swords', fate='is shot down'),
+    'marksmen': dict(name='Riflemen', symbol='infantry', move='foot',
+                     zoc=False, support=True, fate='is driven off'),
+}
+
+
+@grognard.symbol('leader')
+def s_leader(p, x, y, w, h, c):
+    """An officer: a five-pointed star."""
+    import math
+    cx, cy = x + (w - 1) / 2, y + (h - 1) / 2
+    r = max(2, min(w, h) / 2 - 1)
+    pts = []
+    for i in range(10):
+        a = -math.pi / 2 + i * math.pi / 5
+        rr = r if i % 2 == 0 else r * 0.42
+        pts.append((cx + rr * math.cos(a), cy + rr * math.sin(a)))
+    for i in range(10):
+        (x0, y0), (x1, y1) = pts[i], pts[(i + 1) % 10]
+        p.line(x0, y0, x1, y1, c)
+
+
+@grognard.symbol('patients')
+def s_patients(p, x, y, w, h, c):
+    """The sick: a cross."""
+    cx, cy = x + (w - 1) / 2, y + (h - 1) / 2
+    r = max(2, min(w, h) // 2 - 1)
+    for k in (-1, 0, 1):
+        p.line(cx - r, cy + k, cx + r, cy + k, c)
+        p.line(cx + k, cy - r, cx + k, cy + r, c)
+
+
+@grognard.symbol('shield')
+def s_shield(p, x, y, w, h, c):
+    """Zulu warriors: a tall cowhide shield with a spear behind it."""
+    cx, cy = x + (w - 1) / 2, y + (h - 1) / 2
+    p.oval(cx, cy, max(1.5, w / 6), max(2, h / 2 - 1), c)
+    p.line(cx, y, cx, y + h - 1, c)
+    p.line(x + 1, y + h - 1, x + w - 2, y, c)
+
+
+B24 = '#b0302a'         # the 24th Foot
+B24_2 = '#a42a26'
+STAFF = '#c0403a'
+SICK = '#d8c8b8'
+ULUND = '#e8e0d0'       # uThulwana: white shields
+UDLO = '#8a5a3a'        # uDloko: red-brown
+INDL = '#4a3a2e'        # inDlondlo: black and white
+INDY = '#3a2e24'        # inDluyengwe: black
+RIFLES = '#6a5a44'
+
+
+def unit(uid, side, kind, a, d, hx, formation, colour, long, steps=2,
+         **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, size=kw.pop('size', 'I'), a=a, d=d,
+                m=kw.pop('m', 3), steps=steps, hex=hx,
+                formation=formation, colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+def impi(uid, hx, colour, regiment, long, arrive=None, at=None, **kw):
+    return unit(uid, 'zu', 'impi', kw.pop('a', 3), kw.pop('d', 2), hx,
+                regiment, colour, long, steps=kw.pop('steps', 3), m=5,
+                size='II', arrive=arrive, at=at, **kw)
+
+
+SE = ['1612', '1611', '1610', '1609', '1608']
+SW = ['0112', '0111', '0110', '0109', '0108']
+NW = ['0101', '0102', '0103', '0201']
+
+UNITS = [
+    # ---- B Company, 2nd/24th, and the rest of the station
+    unit('sec1', 'br', 'redcoats', 3, 4, '0705', 'B Company, 2nd/24th',
+         B24, '1st Section, B Company, 2nd/24th Foot', name='1/B24', steps=3),
+    unit('sec2', 'br', 'redcoats', 3, 4, '0805', 'B Company, 2nd/24th',
+         B24, '2nd Section, B Company, 2nd/24th Foot', name='2/B24', steps=3),
+    unit('sec3', 'br', 'redcoats', 3, 4, '0605', 'B Company, 2nd/24th',
+         B24, '3rd Section, B Company, 2nd/24th Foot', name='3/B24', steps=3),
+    unit('sec4', 'br', 'redcoats', 3, 4, '0905', 'B Company, 2nd/24th',
+         B24_2, '4th Section, B Company, 2nd/24th Foot', name='4/B24', steps=3),
+    unit('sec5', 'br', 'redcoats', 3, 4, '1106', 'B Company, 2nd/24th',
+         B24_2, '5th Section, B Company, 2nd/24th Foot', name='5/B24', steps=3),
+    unit('sec6', 'br', 'redcoats', 3, 4, '1005', 'B Company, 2nd/24th',
+         B24_2, '6th Section, B Company, 2nd/24th Foot', name='6/B24', steps=3),
+    unit('hook', 'br', 'redcoats', 2, 3, '0606', 'Hospital', B24,
+         'Privates Hook, Williams and the Joneses, holding the hospital',
+         name='HOOK'),
+    unit('dalton', 'br', 'redcoats', 2, 3, '1006', 'Commissariat', STAFF,
+         "Assistant Commissary Dalton's men, and the station's odds and "
+         'ends', name='DALTON'),
+    unit(PATIENTS, 'br', 'patients', 0, 1, '0606', 'Hospital', SICK,
+         'The sick and wounded from the hospital', name='SICK', m=2,
+         vp=4),
+    unit('chard', 'br', 'leader', 1, 1, '0805', 'Royal Engineers', STAFF,
+         'Lieutenant John Chard, Royal Engineers, in command',
+         steps=1, name='CHARD', size='', vp=3),
+    unit('bromhd', 'br', 'leader', 1, 1, '0905', 'B Company, 2nd/24th',
+         STAFF, 'Lieutenant Gonville Bromhead, commanding B Company',
+         steps=1, name='BROMHD', size='', vp=3),
+
+    # ---- the Zulu reserve, Prince Dabulamanzi
+    impi('udl1', None, UDLO, 'uDloko', 'uDloko, first company', 1, SE),
+    impi('udl2', None, UDLO, 'uDloko', 'uDloko, second company', 1, SE),
+    impi('udl3', None, UDLO, 'uDloko', 'uDloko, third company', 1, SE),
+    impi('udl4', None, UDLO, 'uDloko', 'uDloko, fourth company', 1, SE),
+    impi('ndy1', None, INDY, 'inDluyengwe',
+         'inDluyengwe, the young men, first company', 1, SE, a=4),
+    impi('ndy2', None, INDY, 'inDluyengwe',
+         'inDluyengwe, the young men, second company', 1, SE, a=4),
+    unit('rifles', 'zu', 'marksmen', 2, 1, None, 'Riflemen', RIFLES,
+         'Riflemen in the caves and terraces of Shiyane, with guns '
+         'taken over the years and that afternoon', steps=1, range=4,
+         m=2, size='I', arrive=1, at=['0810', '0910']),
+    impi('thu1', None, ULUND, 'uThulwana',
+         "uThulwana, the king's own regiment", 2, SW),
+    impi('thu2', None, ULUND, 'uThulwana', 'uThulwana, second company',
+         2, SW),
+    impi('thu3', None, ULUND, 'uThulwana', 'uThulwana, third company',
+         2, SW),
+    impi('thu4', None, ULUND, 'uThulwana', 'uThulwana, fourth company',
+         2, SW),
+    impi('ndl1', None, INDL, 'inDlondlo', 'inDlondlo, first company', 3,
+         NW),
+    impi('ndl2', None, INDL, 'inDlondlo', 'inDlondlo, second company', 3,
+         NW),
+    impi('ndl3', None, INDL, 'inDlondlo', 'inDlondlo, third company', 3,
+         NW),
+    impi('ndl4', None, INDL, 'inDlondlo', 'inDlondlo, fourth company', 3,
+         NW),
+]
+
+
+class Dabulamanzi(ai.AI):
+    """The stock computer player, with sense about fire: the British get
+    out of a burning hospital, the sick first."""
+
+    def score(self, u, h):
+        s = super().score(u, h)
+        if self.side == 'br':
+            if h in HOSPITAL and self.e.flags.get('fire'):
+                s -= 50
+            if u.id == PATIENTS:
+                s += 3 * (5 - min(hexgrid.distance(h, x) for x in
+                             (hexgrid.parse('1005'), hexgrid.parse('1006'))))
+        return s
+
+
+AI_CLASS = Dabulamanzi
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1e1810', panel='#30261a', light='#8a7454',
+              dark='#0a0804', accent='#e8c47a', button='#4e3e2a',
+              button_hi='#9e8a64', button_lo='#1e160e', red='#b03020')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE STATION. The Zulus move first. The British hold the hospital, "
+    "the storehouse, the yard between them and the cattle kraal, behind a "
+    "barricade of mealie bags (2 to climb, and a Zulu attack made wholly "
+    "across it is two columns worse). A wall of biscuit boxes runs across "
+    "the yard between the hospital's end and the storehouse's (one "
+    "column). The hospital and storehouse give a column more, and their "
+    "defenders lose a step rather than retreat.",
+
+    "VOLLEYS. At the start of each Zulu turn every Zulu unit within 2 "
+    "hexes of a British section, outside the bush, is fired on, and "
+    "loses a step on a 1 or 2 (a 1 at night, away from the firelight). "
+    "Each costs a box of cartridges, and there are 50. When they're "
+    "gone, Zulu attacks gain a column. From 7:30 PM it's dark, and Zulu "
+    "attacks away from the firelight lose a column.",
+
+    "THE HOSPITAL. From 6:30 PM a Zulu next to the hospital sets its "
+    "thatch alight. After that no one may go in, and at the start of "
+    "each Zulu turn every British unit still inside loses a step. Once "
+    "the Zulus are at the hospital, at the start of a British turn Hook "
+    "and Williams pass the sick out and they're carried to the "
+    "storehouse, where they stay. They take no room in a hex, and take "
+    "losses last. The fire "
+    "lights the night "
+    "for 4 hexes round. Chard and Bromhead in a hex cost a Zulu attack "
+    "a column, and lead a British one for a column more.",
+
+    "WINNING. The Zulus score the storehouse (8), its door (3), the yard "
+    "(3) and the kraal (2) if they hold them at dawn, 3 for every "
+    "British step, and 4 more for the sick and 3 for each officer "
+    "killed; the British score every Zulu step. The British must finish "
+    "3 VP ahead and hold the storehouse at dawn; otherwise the Zulus "
+    "win.",
+]
+
+ICON = 'rorkes'
+
+
+@grognard.icon('rorkes')
+def draw_icon(p, n):
+    """The station at night: the burning hospital roof behind a wall of
+    mealie bags."""
+    p.fill('#1e2438')
+    p.disc(n * 0.5, n * 1.3, n * 0.75, '#4a4a2a')
+    p.rect(n * 0.22, n * 0.42, n * 0.56, n * 0.26, '#c8b490')
+    for i in range(6):
+        p.disc(n * (0.28 + i * 0.09), n * (0.38 - (i % 2) * 0.05),
+               n * 0.07, '#e8742a')
+        p.disc(n * (0.28 + i * 0.09), n * (0.33 - (i % 2) * 0.05),
+               n * 0.04, '#f8c84a')
+    for i in range(5):
+        p.rect(n * (0.08 + i * 0.17), n * 0.7, n * 0.15, n * 0.08,
+               '#e0d4a8')
+        p.rect(n * (0.16 + i * 0.17), n * 0.79, n * 0.15, n * 0.08,
+               '#d0c498')
+    p.rect(n * 0.46, n * 0.52, n * 0.06, n * 0.12, '#b0302a')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])
