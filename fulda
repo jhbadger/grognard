@@ -1,0 +1,522 @@
+#!/usr/bin/env python3
+"""Fulda Gap: Hesse, November 1983.  A sample game for the Grognard
+engine, and a war that never happened.
+
+In November 1983 NATO rehearsed the release of its nuclear weapons in a
+command post exercise called Able Archer 83, and in Moscow some feared
+the exercise was cover for a real first strike.  Here they act on the
+fear: the Group of Soviet Forces in Germany attacks first, without
+nuclear weapons, through the Fulda Gap toward Frankfurt.  Play either
+side against the computer, or against a friend at the same screen.
+
+Run it with ./fulda (Python 3 with Tk, nothing else).  The game is
+saved to ~/.fulda.json.  ./fulda --selftest checks the map and plays a
+game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import counters, sound                   # noqa: E402
+
+ID = 'fulda'
+TITLE = 'Fulda Gap'
+SUBTITLE = 'Hesse, November 1983: a war that never was'
+
+INTRO = [
+    "November 1983. Detente is dead. The Americans are putting Pershing "
+    "missiles into West Germany, a Korean airliner has been shot down "
+    "over Sakhalin, and in Moscow the KGB is hunting for signs that the "
+    "West means to strike first. Then NATO begins Able Archer 83, an "
+    "exercise in which its headquarters practise, in new codes and with "
+    "new procedures, the release of nuclear weapons.",
+
+    "In this game the men in Moscow believe it. On the night of 10 "
+    "November, as the exercise reaches its climax, the Group of Soviet "
+    "Forces in Germany is ordered to strike before NATO can: at once, "
+    "and without nuclear weapons, in the hope of reaching the Rhine "
+    "before the West decides to use its own.",
+
+    "The road to Frankfurt runs through the Fulda Gap, the low country "
+    "between the Vogelsberg and the Rhön. On the border is the 11th "
+    "Armored Cavalry Regiment, the Blackhorse. Behind it the 3rd "
+    "Armored Division is still in its barracks round Frankfurt. Coming "
+    "at them is the 8th Guards Army, the army that took Berlin.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='wp', name='Soviets', adj='Soviet', colour='#d0806c',
+         ink='#140806', flag='star', posture='attack',
+         about='Break through the Fulda Gap and down the Kinzig valley '
+               'to Gelnhausen before NATO can stop you, or before it '
+               'decides it must go nuclear to do so.'),
+    dict(id='nato', name='NATO', adj='NATO', colour='#8ab0cc',
+         ink='#081018', flag='cross', posture='defend',
+         singular=True,
+         about='Hold the covering force line as long as it can live, '
+               'bring up the 3rd Armored and the 8th Infantry Divisions, '
+               'and keep the Soviets out of the Kinzig valley.'),
+]
+ORDER = ['wp', 'nato']
+
+# Twelve turns: day and night from the 11th to the 16th of November.
+TURNS = 12
+
+
+def TURN_NAME(t):
+    return ('%d Nov 1983' % (11 + (t - 1) // 2),
+            'Day' if t % 2 else 'Night')
+
+
+STACK = 3
+FOG = True
+DEFENSIVE_FIRE = 2
+
+# November weather: a clear first day (the Soviet air offensive), then
+# cloud and rain; NATO's A-10s fly on the clear days that follow.
+WEATHER = {1: 'strike', 2: 'night', 3: 'overcast', 4: 'night',
+           5: 'rain', 6: 'night', 7: 'clear', 8: 'night', 9: 'fog',
+           10: 'night', 11: 'clear', 12: 'night'}
+WEATHER_TYPES = {
+    'strike': dict(name='Clear: Soviet air', icon='sun', air=False),
+    'clear': dict(name='Clear: A-10s', icon='sun', air=True),
+    'night': dict(name='Night', icon='cloud', air=False, spot=1),
+}
+AIR = ['nato']
+
+GELNHAUSEN = '0816'
+BREAKTHROUGH = 4        # Soviet steps off the west edge: the end
+
+
+def night(e):
+    return e.weather()['id'] == 'night'
+
+
+def ON_TURN(e, side):
+    if side == 'wp':
+        if e.turn == 1:
+            e.say('H-hour. The barrage lifts from the border, and the '
+                  'first regiments of the 39th Guards come across at '
+                  'Rasdorf and Tann.')
+        if e.turn == 3:
+            e.say('The 79th Guards Tank Division, the second echelon, '
+                  'is at the border.')
+        if e.turn == 7:
+            e.say('The 1st Guards Tank Army is coming up behind the 8th '
+                  'Guards Army.')
+    else:
+        if e.turn == 1:
+            e.say('Able Archer is called off. Every unit in V Corps is '
+                  'ordered to its war positions, hours too late.')
+        if e.turn == 2:
+            e.say('The Bundeswehr\'s Panzerbrigade 14 comes down from '
+                  'Neustadt, and the rest of the 3rd Armored from '
+                  'Friedberg and Kirch-Göns.')
+        if e.turn == 5:
+            e.say('The 8th Infantry Division is coming up the Kinzig '
+                  'from Frankfurt.')
+
+
+def ON_END_TURN(e):
+    """The nuclear threshold.  If the Soviets hold Gelnhausen, or get
+    enough of their army off the west edge toward Frankfurt, the Kinzig
+    valley is open and NATO must decide whether to use its nuclear
+    weapons: the conventional war, and the game, is over."""
+    held = e.control.get(grognard.hexgrid.parse(GELNHAUSEN)) == 'wp'
+    out = e.exited.get('wp', 0) >= BREAKTHROUGH
+    if held or out:
+        e.finish('wp', 'Soviet victory: breakthrough. %s The road to '
+                 'Frankfurt is open, and SACEUR asks for the release '
+                 'of nuclear weapons. The war that was to stay '
+                 'conventional is about to end being so. %s'
+                 % ('Gelnhausen has fallen.' if held else
+                    'Soviet tanks are past Hanau.', _score(e)))
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Surprise on the first day; NATO's thermal sights at night; the
+    Soviet air offensive on the first day; helicopters can't fly at
+    night (CAN_SUPPORT)."""
+    out = []
+    if not attackers:
+        return out
+    if e.side == 'wp':
+        if e.turn == 1:
+            out.append((1, 'surprise and the air offensive'))
+        elif night(e):
+            out.append((-1, 'NATO thermal sights'))
+    return out
+
+
+def CAN_SUPPORT(e, u):
+    """Helicopters fly by day, and not in fog."""
+    if u.kind != 'helo':
+        return True
+    return e.weather()['id'] not in ('night', 'fog')
+
+
+# --------------------------------------------------------------- the map
+
+# Every terrain needs a cost for helicopters: a point a hex, anywhere.
+TERRAIN = {
+    'clear':  dict(name='Open', colour='#a8b27a', ink='#8a9660',
+                   edge='#6e7a48',
+                   move={'foot': 1, 'track': 1, 'wheel': 1, 'air': 1}),
+    'fields': dict(name='Farmland', colour='#bcb47e', ink='#9c9460',
+                   edge='#7c7448',
+                   move={'foot': 1, 'track': 1, 'wheel': 2, 'air': 1}),
+    'woods':  dict(colour='#5a6e3c', ink='#3a4a22', edge='#24341a',
+                   move={'foot': 2, 'track': 3, 'wheel': 4, 'air': 1}),
+    'forest': dict(colour='#3c5430', ink='#22361a', edge='#14240e',
+                   move={'foot': 2, 'track': 4, 'wheel': None, 'air': 1}),
+    'hills':  dict(colour='#b2a274', ink='#86764a', edge='#665630',
+                   move={'foot': 2, 'track': 2, 'wheel': 3, 'air': 1}),
+    'town':   dict(colour='#b8ae9c', ink='#7a4436',
+                   move={'foot': 1, 'track': 1, 'wheel': 1, 'air': 1}),
+    'city':   dict(name='Fulda', colour='#aaa498', ink='#6a5048', stack=4,
+                   move={'foot': 1, 'track': 2, 'wheel': 1, 'air': 1}),
+}
+HEXSIDES = {
+    'river': dict(name='The Fulda', colour='#4a7ab0',
+                  cost={'foot': 2, 'track': 3, 'wheel': 3, 'air': 0}),
+}
+ROAD_TYPES = {
+    'road':  dict(name='Autobahn and Bundesstraße',
+                  cost={'foot': 0.5, 'track': 0.5, 'wheel': 0.5,
+                        'air': 1}),
+    'trail': dict(name='Country road',
+                  cost={'foot': 1, 'track': 1, 'wheel': 1, 'air': 1}),
+}
+
+# West on the left: the Wetterau, the Vogelsberg, the valley of the
+# Fulda, and the border along the east edge, with the Seulingswald to
+# the north of the gap and the Rhön to the south of it; the Kinzig
+# valley runs south-west between the Vogelsberg and the Spessart.
+MAP = [
+    '::.:.hhfhh.:..f..:..t.FFFF',
+    '.:.:hhhfhh..:.ff.:..:.FfF.',
+    ':.:.hhFhhh...f..:.:..:.ff.',
+    '.::.hhFFhh.:.:...:..:.:..:',
+    ':.:.hFFhhh.:...:..:..t...:',
+    '.:.:hhFhh..:t...:..:.:..:.',
+    ':.:..hFhh.:...:.:..:..:.h.',
+    '.:.:.hhh.:..:...:.:..:.hhh',
+    ':.:.:.h.:.:..:.:..:C..hhFh',
+    '.:.:..:.:..:...:.hh:.:hFFh',
+    ':.:.:.:..:..:..hhf..:.hhFF',
+    '.:..:.:.:.ff..hhf.:.:hhFhh',
+    ':.:.:..::ff.:.t:hf...:hhhF',
+    '.:.:..:fff:t.::fff.F..hFhh',
+    ':.:..f::FFF.:FFFF.FF.fhhhF',
+    '.:.:..:t:FFFFFFFFFFF.ffhhh',
+    ':.:..:.:FFFFFFFFFFF..f.hhh',
+    '.:..:.FFFFFFFFFFFFF.:..f.h',
+]
+
+ROWS = len(MAP)
+
+# The Fulda runs north from the Rhön, past the city, to Bad Hersfeld.
+RIVERS = [
+    ('river', ['20%02d:NE,SE' % r for r in range(1, 13)]),
+]
+
+ROADS = [
+    ('road', ['2101', '2105', '2009', '2115', '2218']),    # the A7
+    ('road', ['2606', '2205', '2009']),                    # from Rasdorf
+    ('road', ['2009', '1513', '1214', '0816', '0117']),    # to Hanau
+    ('road', ['2009', '1306', '0105']),                    # to Alsfeld
+    ('road', ['2101', '0102']),                            # to Kassel
+    ('trail', ['2612', '2411', '2009']),                   # from Tann
+    ('trail', ['1306', '0910', '0816']),                   # over the hills
+    ('trail', ['2205', '2603']),
+    ('trail', ['2115', '1513']),
+]
+
+LABELS = {
+    '2009': 'Fulda', '2205': 'Hünfeld', '2101': 'Bad Hersfeld',
+    '1306': 'Lauterbach', '1513': 'Schlüchtern', '1214': 'Steinau',
+    '0816': 'Gelnhausen', '2606': 'Rasdorf (Point Alpha)',
+    '2612': 'Tann', '0117': 'To Hanau and Frankfurt',
+    '0105': 'To Alsfeld', '0102': 'To Kassel', '0608': 'Vogelsberg',
+    '2414': 'Rhön', '2412': 'Wasserkuppe', '1316': 'Spessart',
+    '2402': 'Seulingswald',
+}
+
+OBJECTIVES = {
+    '2009': dict(name='Fulda', vp=6, owner='nato'),
+    '2205': dict(name='Hünfeld', vp=2, owner='nato'),
+    '2101': dict(name='Bad Hersfeld', vp=3, owner='nato'),
+    '1306': dict(name='Lauterbach', vp=2, owner='nato'),
+    '1513': dict(name='Schlüchtern', vp=3, owner='nato'),
+    '1214': dict(name='Steinau', vp=2, owner='nato'),
+    GELNHAUSEN: dict(name='Gelnhausen', vp=4, owner='nato'),
+}
+STEP_VP = 1
+EXIT_VP = 3
+MARGIN = 6              # set from ./fulda --simulate 60
+
+# Soviet units off the west edge by the Kinzig valley are on their way
+# to Frankfurt.
+HANAU = ['01%02d' % r for r in range(14, 19)]
+EXITS = {'wp': dict(hexes=HANAU, vp=EXIT_VP)}
+
+SUPPLY = {
+    'wp': dict(**{'from': ['E'], 'range': 14}),
+    'nato': dict(**{'from': ['W', 'S'], 'range': 14}),
+}
+
+
+def _score(e):
+    return 'Soviets %d VP, NATO %d.' % (e.vp('wp'), e.vp('nato'))
+
+
+def VICTORY(e):
+    """Taking Gelnhausen, or getting four steps off the west edge, wins
+    at once (ON_END_TURN).  Otherwise the margin decides: each side
+    scores the places it holds and the enemy steps it destroys, and the
+    Soviets 3 VP a step off the west edge."""
+    m = e.vp('wp') - e.vp('nato')
+    if m >= MARGIN + 8:
+        return 'wp', ('Soviet victory. %s Fulda and the gap are lost, and '
+                      'V Corps is broken. NATO must choose between the '
+                      'Rhine and the bomb.' % _score(e))
+    if m >= MARGIN:
+        return 'wp', ('Soviet marginal victory. %s The gap is through, '
+                      'but the Kinzig valley holds, for now.' % _score(e))
+    if m > MARGIN - 8:
+        return 'nato', ('NATO marginal victory. %s V Corps has bent and '
+                        'not broken. In Moscow and Washington, someone '
+                        'has time to pick up a telephone.' % _score(e))
+    return 'nato', ('NATO victory. %s The 8th Guards Army has spent '
+                    'itself in the gap, and the war stops short of the '
+                    'nuclear threshold.' % _score(e))
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'armcav': dict(name='Armored cavalry', symbol='armcav', move='track',
+                   armor=True, spot=3),
+    'helo': dict(name='Attack helicopters', symbol='helo', move='air',
+                 zoc=False, support=True, sound='rotor'),
+    'mrr': dict(name='Motor rifles', symbol='mech', move='track',
+                armor=False),
+}
+
+US = '#8ab0cc'
+US2 = '#9cbcd2'
+BW = '#a4b4a0'          # the Bundeswehr
+SU = '#d0806c'
+SU2 = '#c47664'
+SU3 = '#b86e5e'
+
+
+def u(uid, side, kind, a, d, m, hx, formation, colour, long, **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, size=kw.pop('size', 'III'), a=a, d=d, m=m,
+                steps=kw.pop('steps', 2), hex=hx, formation=formation,
+                colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+def division(prefix, number, formation, colour, kinds, arrive, at):
+    """A Soviet division's four regiments, all arriving together."""
+    out = []
+    for k, kind in enumerate(kinds, 1):
+        tank = kind == 'armor'
+        out.append(u('%s%d' % (prefix, k), 'wp', kind, 6 if tank else 5,
+                     4, 6, None, formation, colour,
+                     '%s regiment, %s' % ('A tank' if tank else
+                                          'A motor rifle', formation),
+                     name='%d/%d' % (number, k), arrive=arrive,
+                     at=at[(k - 1) % len(at):] + at[:(k - 1) % len(at)]))
+    return out
+
+
+MR, TK = 'mrr', 'armor'
+NORTH = ['2604', '2605', '2606', '2607']
+SOUTH = ['2611', '2612', '2610', '2613']
+
+UNITS = [
+    # ---- the 11th Armored Cavalry Regiment, on the border
+    u('1acr', 'nato', 'armcav', 5, 5, 7, '2406', '11th Armored Cavalry',
+      US, '1st Squadron, 11th Armored Cavalry (Fulda)', size='II',
+      name='1/11'),
+    u('2acr', 'nato', 'armcav', 5, 5, 7, '2303', '11th Armored Cavalry',
+      US, '2nd Squadron, 11th Armored Cavalry (Bad Hersfeld)',
+      size='II', name='2/11'),
+    u('3acr', 'nato', 'armcav', 5, 5, 7, '2411', '11th Armored Cavalry',
+      US, '3rd Squadron, 11th Armored Cavalry (Bad Kissingen)',
+      size='II', name='3/11'),
+    u('4acr', 'nato', 'helo', 3, 2, 8, '2108', '11th Armored Cavalry',
+      US, '4th (Air Cavalry) Squadron, 11th Armored Cavalry',
+      size='II', name='4/11', range=2, steps=1),
+    u('jg', 'nato', 'infantry', 2, 4, 3, '2009', 'Territorialheer', BW,
+      'Heimatschutz battalion, Fulda', size='II', name='HSCHZ'),
+    # ---- the 3rd Armored Division
+    u('3ad2', 'nato', 'armor', 7, 7, 6, GELNHAUSEN, '3rd Armored Division',
+      US2, '2nd Brigade, 3rd Armored Division (Gelnhausen)', size='X',
+      name='2/3AD', steps=3),
+    u('3ad1', 'nato', 'armor', 7, 7, 6, None, '3rd Armored Division', US2,
+      '1st Brigade, 3rd Armored Division (Kirch-Göns)', size='X',
+      name='1/3AD', steps=3, arrive=2, at=['0107', '0108', '0106']),
+    u('3ad3', 'nato', 'mech', 6, 7, 6, None, '3rd Armored Division', US2,
+      '3rd Brigade, 3rd Armored Division (Friedberg)', size='X',
+      name='3/3AD', steps=3, arrive=2, at=['0110', '0111', '0109']),
+    u('3adart', 'nato', 'sp_art', 6, 2, 4, '0915', '3rd Armored Division',
+      US2, '3rd Armored Division Artillery', size='III',
+      name='3AD', range=3),
+    u('3adav', 'nato', 'helo', 4, 2, 8, '0714', '3rd Armored Division',
+      US2, '3rd Armored Division aviation: AH-1 Cobras', size='II',
+      name='COBRA', range=2, steps=1),
+    u('vart', 'nato', 'sp_art', 7, 2, 4, None, 'V Corps', US2,
+      'V Corps Artillery', size='X', name='V CORPS', range=4,
+      arrive=2, at=['0113', '0112']),
+    # ---- the Bundeswehr from the north
+    u('pzb14', 'nato', 'armor', 7, 6, 6, None, '5th Panzer Division', BW,
+      'Panzerbrigade 14 (Neustadt in Hessen)', size='X', name='PZB14',
+      steps=3, arrive=2, at=['0601', '0701', '0501']),
+    # ---- the 8th Infantry Division (Mechanized), from Bad Kreuznach
+    u('8id1', 'nato', 'mech', 6, 7, 6, None, '8th Infantry Division', US,
+      '1st Brigade, 8th Infantry Division (Mechanized)', size='X',
+      name='1/8ID', steps=3, arrive=4, at=['0117', '0118', '0116']),
+    u('8id2', 'nato', 'mech', 6, 7, 6, None, '8th Infantry Division', US,
+      '2nd Brigade, 8th Infantry Division (Mechanized)', size='X',
+      name='2/8ID', steps=3, arrive=5, at=['0117', '0116', '0118']),
+    u('8id3', 'nato', 'armor', 7, 7, 6, None, '8th Infantry Division', US,
+      '3rd Brigade, 8th Infantry Division (Mechanized)', size='X',
+      name='3/8ID', steps=3, arrive=6, at=['0117', '0118', '0116']),
+
+    # ---- the 8th Guards Army: the air assault landing
+    u('desant', 'wp', 'para', 3, 3, 3, '2007', '35th Air Assault Brigade',
+      SU, 'An air assault battalion, landed on the Fulda bridges',
+      size='II', name='DESNT'),
+    # ---- the army's guns and helicopters
+    u('art1', 'wp', 'sp_art', 7, 2, 4, None, '8th Guards Army', SU,
+      'An army artillery brigade', size='X', name='8GA', range=3,
+      arrive=1, at=NORTH),
+    u('art2', 'wp', 'rocket', 6, 2, 4, None, '8th Guards Army', SU,
+      'An army rocket launcher regiment', size='III', name='8GA',
+      range=3, arrive=1, at=SOUTH),
+    u('hind', 'wp', 'helo', 5, 2, 8, None, '8th Guards Army', SU,
+      'An attack helicopter regiment: Mi-24 Hinds', size='III',
+      name='HIND', range=2, steps=1, arrive=1, at=NORTH),
+] + division('39g', 39, '39th Guards Motor Rifle Division', SU,
+             [MR, MR, MR, TK], 1, NORTH) \
+  + division('57g', 57, '57th Guards Motor Rifle Division', SU,
+             [MR, MR, MR, TK], 1, SOUTH) \
+  + division('79g', 79, '79th Guards Tank Division', SU2,
+             [TK, TK, TK, MR], 3, NORTH) \
+  + division('27g', 27, '27th Guards Motor Rifle Division', SU2,
+             [MR, MR, MR, TK], 5, SOUTH) \
+  + division('1gta', 1, '1st Guards Tank Army', SU3,
+             [TK, TK, TK, MR], 7, NORTH)
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#14181a', panel='#22282a', light='#647276',
+              dark='#06080a', accent='#e0b050', button='#3a4448',
+              button_hi='#7c8c90', button_lo='#14181a', red='#c02a22')
+
+HELP = [
+    "THE ATTACK. The Soviets move first. The 39th and 57th Guards Motor "
+    "Rifle Divisions cross the border at Rasdorf and Tann on the first "
+    "day, with an air assault battalion already down on the bridges "
+    "north of Fulda. The 79th Guards Tank Division follows on the "
+    "second day, the 27th Guards on the third, and a division of the "
+    "1st Guards Tank Army on the fourth. NATO has the 11th Armored "
+    "Cavalry on the border, the 2nd Brigade of the 3rd Armored at "
+    "Gelnhausen, the rest of the 3rd Armored and Panzerbrigade 14 on "
+    "the second turn, and the 8th Infantry Division from the fourth.",
+
+    "DAY AND NIGHT. Each day is two turns. On the first day the "
+    "Soviets have surprise and the air, and every Soviet attack gains "
+    "a column. At night units see only the next hex, helicopters "
+    "don't fly, and Soviet attacks lose a column to NATO's thermal "
+    "sights. On clear days after the first, NATO's A-10s give every "
+    "NATO attack a column. The Fulda river costs 2 or 3 to cross and "
+    "halves an attack across it, except on the roads' bridges.",
+
+    "HELICOPTERS. The Cobras, the Blackhorse's air cavalry and the "
+    "Hinds are support units, like guns: they fly a point a hex over "
+    "anything, have no zone of control, and add their strength to "
+    "attacks (and to the defence) within two hexes, or attack alone.",
+
+    "WINNING. If the Soviets hold Gelnhausen at the end of a turn, or "
+    "get %d steps off the west edge toward Frankfurt, they win at once: "
+    "the road to the Rhine is open and NATO must decide whether to go "
+    "nuclear. Otherwise each side scores the enemy steps it destroys "
+    "and the towns it holds at the end (Fulda 6, Gelnhausen 4, Bad "
+    "Hersfeld and Schlüchtern 3, the rest 2), and the Soviets %d a step "
+    "off the west edge. The Soviets must finish %d VP ahead to win."
+    % (BREAKTHROUGH, EXIT_VP, MARGIN),
+]
+
+ICON = 'fulda'
+
+
+# ------------------------------------------------- symbols and sounds
+
+@grognard.symbol('armcav')
+def s_armcav(p, x, y, w, h, c):
+    """Armoured cavalry: the armour oval with the cavalry stroke."""
+    counters.SYMBOLS['cavalry'](p, x, y, w, h, c)
+
+
+@grognard.symbol('helo')
+def s_helo(p, x, y, w, h, c):
+    """Rotary wing: the NATO bow tie."""
+    cx, cy = x + (w - 1) / 2, y + (h - 1) / 2
+    l, r = x + w // 5, x + w - 1 - w // 5
+    t, b = y + h // 4, y + h - 1 - h // 4
+    p.line(l, t, r, b, c)
+    p.line(l, b, r, t, c)
+    p.line(l, t, l, b, c)
+    p.line(r, t, r, b, c)
+    p.set(cx, cy, c)
+
+
+counters.PICTURES['helo'] = [
+    '###########', '.....#.....', '..######...', '#########..',
+    '#.#######..', '...#####...', '...#...#...', '..#######..']
+counters.PICTURES['armcav'] = counters.PICTURES['armor']
+
+# The beat of rotor blades.
+sound.EFFECTS['rotor'] = lambda: sound.mixdown(
+    sound.seq(*[sound.noise(0.05, 0.35, 10, k, 0.15) + [0.0] * 1500
+                for k in range(6)]),
+    sound.tone(90, 0.6, 'saw', 0.06))
+
+
+@grognard.icon('fulda')
+def draw_icon(p, n):
+    """A red star and a white one, across a border, under a grey sky."""
+    p.fill('#8c969a')
+    p.rect(0, n * 0.6, n, n * 0.4, '#5a6e3c')
+    p.rect(n * 0.48, 0, n * 0.04, n, '#e8e4d8')
+    p.disc(n * 0.26, n * 0.34, n * 0.16, '#3a5a8a')
+    p.disc(n * 0.26, n * 0.34, n * 0.07, '#ffffff')
+    p.disc(n * 0.74, n * 0.34, n * 0.16, '#c02a22')
+    p.disc(n * 0.74, n * 0.34, n * 0.07, '#e0b050')
+    p.disc(n * 0.74, n * 0.8, n * 0.1, '#26302a')
+    p.rect(n * 0.6, n * 0.78, n * 0.28, n * 0.08, '#26302a')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

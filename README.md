@@ -17,7 +17,7 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are seventeen games so far: a Second World War battle, a raid in a
+There are eighteen games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
@@ -39,7 +39,8 @@ Rorke's Drift, a company of the 24th Foot behind a wall of mealie bags
 against the Zulu reserve on the night of Isandlwana, and Pegasus Bridge,
 the glider-borne company holding the bridges over the Caen Canal and the
 Orne in the first hours of D-Day, and Drvar, the SS parachute raid on
-Tito's headquarters in the mountains of Bosnia in May 1944.
+Tito's headquarters in the mountains of Bosnia in May 1944, and
+the Fulda Gap, a Soviet attack in November 1983 that never happened.
 
 ```bash
 ./crossroads
@@ -107,6 +108,10 @@ Tito's headquarters in the mountains of Bosnia in May 1944.
 
 ```bash
 ./drvar
+```
+
+```bash
+./fulda
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -788,6 +793,61 @@ which Partisan battalions came when is a guess. The map is the valley
 as the accounts describe it (the town, the cemetery on its knoll, the
 cave over the river, the road to Šipovljani), not a survey.
 
+## Fulda Gap: Hesse, November 1983
+
+The eighteenth game, and the only one about a battle that wasn't
+fought. In November 1983 NATO rehearsed the release of its nuclear
+weapons in a command post exercise, Able Archer 83, and in Moscow some
+took it for cover for a real first strike. Here they act on the fear:
+on the night of 10 November the Group of Soviet Forces in Germany
+attacks first, without nuclear weapons, through the Fulda Gap toward
+Frankfurt, hoping to reach the Rhine before NATO decides to use its
+own.
+
+- **Twelve turns**, day and night from 11 to 16 November. The Soviets
+  move first.
+- **The map**: 26 by 18 hexes from the inner-German border on the east
+  edge to the Wetterau on the west: the Seulingswald north of the gap,
+  the Rhön south of it, the Vogelsberg, the Spessart, the city of Fulda
+  behind the Fulda river, and the Kinzig valley down to Gelnhausen and
+  Hanau.
+- **The Soviets**: the 8th Guards Army. The 39th and 57th Guards Motor
+  Rifle Divisions cross at Rasdorf and Tann on the first day, with the
+  army's guns and Hinds and an air assault battalion already landed on
+  the Fulda bridges; the 79th Guards Tank Division follows on the
+  second day, the 27th Guards on the third, and a division of the 1st
+  Guards Tank Army on the fourth. Counters are regiments.
+- **NATO**: the three ground squadrons and the air cavalry of the 11th
+  Armored Cavalry Regiment on the border, a Heimatschutz battalion in
+  Fulda, and the 2nd Brigade of the 3rd Armored Division at Gelnhausen.
+  The rest of the 3rd Armored, the V Corps artillery and the
+  Bundeswehr's Panzerbrigade 14 come on the second turn, and the
+  brigades of the 8th Infantry Division up the Kinzig from the fourth.
+- **Helicopters**: the Cobras, the Blackhorse's air cavalry and the
+  Hinds are support units that fly a point a hex over anything, add
+  their strength to fights within two hexes, and don't fly at night or
+  in fog.
+- **Day and night**: on the first day the Soviets have surprise and the
+  air, and every Soviet attack gains a column. At night units see only
+  the next hex and Soviet attacks lose a column to NATO's thermal
+  sights. On clear days after the first, the A-10s give NATO's attacks
+  a column.
+- **Winning**: if the Soviets hold Gelnhausen at the end of a turn, or
+  get 4 steps off the west edge by the Kinzig valley, they win at once:
+  the road to Frankfurt is open, and SACEUR asks for nuclear release.
+  Otherwise each side scores the enemy steps it destroys and the towns
+  it holds (Fulda 6, Gelnhausen 4, Bad Hersfeld and Schlüchtern 3, the
+  rest 2), and the Soviets 3 VP a step they get off the west edge. The
+  Soviets must finish 6 VP ahead. Computer against computer they win
+  28 games in 60.
+
+Everything here is a guess, since it never happened. The formations
+are those of 1983 and in the places they were based, but the Soviet
+regiments are numbered by division rather than by their real numbers,
+the timing of each echelon is a planner's, not a historian's, and the
+strengths are set for play. The map follows the country, not a survey.
+The game stops at the nuclear threshold and doesn't go past it.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -1111,7 +1171,11 @@ their bridges (hexsides of their own with no cost but along a road),
 night, and a bonus for crossing a bridge (`ON_MOVE`); and `drvar` for
 a leader who must escape off the map (`EXITS` with `types`) and whose
 death ends the game (`ON_ELIMINATE` and `ON_TURN`), turns of different
-lengths (`TURN_NAME`), and weather that supplies one side from the air.
+lengths (`TURN_NAME`), and weather that supplies one side from the air;
+and `fulda` for helicopters (a support type with a movement class of
+its own that flies over everything, grounded at night by
+`CAN_SUPPORT`), a sound of its own added to `sound.EFFECTS`, exits
+from only part of an edge, and a game ended by `ON_END_TURN`.
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)
