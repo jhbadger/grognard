@@ -1,0 +1,574 @@
+#!/usr/bin/env python3
+"""San Juan Hill: Santiago de Cuba, 1 July 1898.  A sample game for the
+Grognard engine.
+
+Shafter's V Corps comes out of the jungle on the road to Santiago and
+must cross the San Juan River under the fire of Spanish Mausers before
+it can climb Kettle Hill and the San Juan Heights.  On the right are
+the dismounted troopers of the Cavalry Division, among them the 1st US
+Volunteer Cavalry, the Rough Riders, and Lieutenant Colonel Theodore
+Roosevelt on his horse Little Texas.  Play either side against the
+computer, or against a friend at the same screen.
+
+Run it with ./sanjuan (Python 3 with Tk, nothing else).  The game is
+saved to ~/.sanjuan.json.  ./sanjuan --selftest checks the map and
+plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import hexgrid                           # noqa: E402
+
+ID = 'sanjuan'
+TITLE = 'San Juan Hill'
+SUBTITLE = 'Santiago de Cuba, 1 July 1898'
+
+INTRO = [
+    "Cuba, the first of July. Three weeks after the Americans landed at "
+    "Daiquirí, General Shafter's V Corps is a few miles from Santiago, "
+    "where Admiral Cervera's squadron lies in the harbour. Between them "
+    "and the city stand the San Juan Heights: a long ridge of trenches "
+    "with a brick blockhouse on its highest point, San Juan Hill, and "
+    "in front of it a lower rise crowned by an iron sugar kettle.",
+
+    "There is one road, the Camino Real, a narrow track through the "
+    "jungle from El Pozo, where Grimes's battery has been firing since "
+    "eight, its black powder smoke drawing the Spanish shells. At the "
+    "end of the track is the San Juan River, waist deep, and the only "
+    "ford is in plain view of the heights. The Spanish, with smokeless "
+    "Mausers, can't be seen at all.",
+
+    "The Cavalry Division, dismounted, has crossed and is lying in the "
+    "tall grass along the far bank, taking losses and waiting for "
+    "orders. Kent's infantry is jammed in the jungle behind it. Above "
+    "the ford a Signal Corps balloon hangs over the road, showing the "
+    "Spanish exactly where the Americans are. In the 1st Volunteer "
+    "Cavalry, Lieutenant Colonel Roosevelt, the only man still on a "
+    "horse, is asking anyone who will listen for permission to attack.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='us', name='Americans', adj='American', colour='#5a74a8',
+         ink='#f4f4f4', posture='attack',
+         about='The V Corps: get across the ford, then take Kettle Hill '
+               'and the San Juan Heights before the Spanish reserves come '
+               'up from Santiago.'),
+    dict(id='sp', name='Spanish', adj='Spanish', colour='#d0d6dc',
+         ink='#1a1a1a', posture='defend',
+         about="General Linares's few battalions: hold the heights, and "
+               'make the Americans pay for every yard of the grass.'),
+]
+ORDER = ['us', 'sp']
+
+TURNS = 10
+
+
+def TURN_NAME(t):
+    """Half an hour a turn, from noon."""
+    m = 12 * 60 + (t - 1) * 30
+    return ('1 Jul 1898', '%d:%02d %s' % ((m // 60 - 1) % 12 + 1, m % 60,
+                                          'AM' if m < 12 * 60 else 'PM'))
+
+
+STACK = 2               # regiments: two to a hex
+FOG = True              # smokeless powder and jungle
+DEFENSIVE_FIRE = 1
+
+# Magazine rifles against men in the open: an attacker pays dearly.
+CRT = {
+    'columns': ['1:2', '1:1', '1.5:1', '2:1', '3:1', '4:1', '5:1'],
+    'rows': [
+        ['A2', 'A2', 'A1', 'A1', 'A1', 'EX', 'EX'],
+        ['A2', 'A1', 'A1', 'A1', 'EX', 'EX', 'DR'],
+        ['A1', 'A1', 'EX', 'EX', 'EX', 'DR', 'D1R'],
+        ['A1', 'EX', 'EX', 'DR', 'D1R', 'D1R', 'D1R'],
+        ['EX', 'DR', 'DR', 'D1R', 'D1R', 'D2R', 'D2R'],
+        ['DR', 'D1R', 'D1R', 'D2R', 'D2R', 'D2R', 'DE'],
+    ],
+}
+
+TR = 'tr'
+RR = '1usv'
+GATLING = 'gatlng'
+ORDERS = 3              # 1:00 PM: the order to advance reaches the cavalry
+BALLOON = 2             # 12:30: the balloon finds a second ford, and falls
+DOWN = hexgrid.parse('1007'), hexgrid.parse('1107')        # Bloody Ford
+LOWER = hexgrid.parse('1010'), hexgrid.parse('1110')       # the left trail
+SAN_JUAN = hexgrid.parse('0608')
+KETTLE = hexgrid.parse('0804')
+
+
+def ENTER_COST(e, unit, a, b, cost):
+    """The San Juan River can be crossed only at the fords, and the
+    lower ford only once the balloon has found the trail to it.  While
+    the Spanish hold San Juan Hill, Americans entering either bank of
+    the Bloody Ford pay a point more."""
+    if {a, b} == set(LOWER) and e.turn < BALLOON:
+        return None
+    if cost is not None and getattr(unit, 'side', 'us') == 'us' and b in DOWN and \
+            e.control.get(SAN_JUAN) != 'us':
+        return cost + 1
+    return cost
+
+
+def ON_TURN(e, side):
+    f = e.flags
+    if side == 'us':
+        hells_pocket(e)
+        if e.turn == 1:
+            e.say('Bullets come out of the heights from rifles no one can '
+                  'see. The men call the riverbank Hell\'s Pocket.')
+        if e.turn == BALLOON:
+            e.say('From the balloon Lieutenant Colonel Derby sees a second '
+                  'trail forking left to a lower ford, and the balloon '
+                  'comes down shot through: Kent can send men across the '
+                  'river away from the Bloody Ford.')
+            e.say('Colonel Wikoff is killed at the ford; two colonels '
+                  'after him fall within ten minutes.')
+        if e.turn == ORDERS:
+            e.say('The order to advance reaches the cavalry. Roosevelt '
+                  'rides up and down the line on Little Texas: the Rough '
+                  'Riders are going up Kettle Hill.')
+    else:
+        if e.turn == 6:
+            e.say('In Santiago, Captain Bustamante lands a column of '
+                  "sailors from Cervera's squadron to reinforce the line.")
+    tr = e.units.get(TR)
+    if side == 'us' and tr and tr.alive and not f.get('trlate') and \
+            e.turn >= 8:
+        f['trlate'] = True
+        e.say('Roosevelt is still on his feet, his spectacles in his '
+              'pocket and a spare pair in his hat.')
+
+
+HILLS = ('heights', 'sanjuan', 'kettle')
+POCKET = 3              # how far the Mausers on the hills reach
+
+
+def hells_pocket(e):
+    """At the start of each American turn, every American unit in the
+    open within 3 hexes of a Spanish rifle on the hills has a 1 in 6
+    chance of losing a step to fire it can't see or answer."""
+    rifles = [u.hex for u in e.alive('sp') if not u.supports and
+              u.attack > 0 and e.board.hexes.get(u.hex) in HILLS]
+    hit = []
+    for u in e.alive('us'):
+        if not e.board.terrain(u.hex).get('open') or u.id == TR:
+            continue
+        if any(hexgrid.distance(u.hex, r) <= POCKET for r in rifles) and \
+                e.rng.randint(1, 6) == 1:
+            hit.append(u)
+    for u in hit:
+        e.say('Mauser fire from the heights: %s loses a step.' % u.long)
+        e.take_losses([u], 1)
+
+
+def ON_ELIMINATE(e, u, where):
+    if u.id == TR:
+        e.flags['trdead'] = True
+        e.say('Roosevelt is down! The Rough Riders falter, and the '
+              'newspapers in New York will have a different story.')
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Roosevelt leading an attack with other units gains a column.  Parker's
+    Gatlings supporting an attack gain one.  Once Roosevelt has fallen,
+    the Rough Riders attack a column worse.  The Spanish, with smokeless
+    magazine rifles, gain a column attacking Americans in the open."""
+    out = []
+    if e.side == 'us':
+        ids = {u.id for u in attackers}
+        if TR in ids and len(attackers) > 1:
+            out.append((1, 'Roosevelt'))
+        if any(u.id == GATLING for u in support):
+            out.append((1, 'Gatlings'))
+        if RR in ids and e.flags.get('trdead'):
+            out.append((-1, 'Roosevelt lost'))
+    elif e.board.terrain(target).get('open') and attackers:
+        out.append((1, 'Mausers'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'g': 'grass', 'K': 'heights', 'k': 'kettle', 'S': 'sanjuan',
+          'F': 'jungle', 'p': 'pond'}
+
+TERRAIN = {
+    'clear':  dict(name='Pasture', colour='#a8b86a', ink='#8a9a50',
+                   edge='#7a8a40'),
+    'fields': dict(name='Cane fields', colour='#b8c46a', ink='#8aa04a',
+                   edge='#7a8a40'),
+    'grass':  dict(name='Tall grass', colour='#c4bc6a', ink='#9a9448',
+                   pattern='fields', edge='#8a8440', z=1, shift=0,
+                   open=True, los=True,
+                   move={'foot': 1, 'track': 1, 'wheel': 2}),
+    'jungle': dict(name='Jungle', colour='#2e5a2a', ink='#173a14',
+                   pattern='trees', edge='#0e2a0c', z=6, shift=-1,
+                   open=False, los=False,
+                   move={'foot': 2, 'track': 3, 'wheel': None}),
+    'woods':  dict(name='Palms', colour='#4f7a3a', ink='#2f5222',
+                   edge='#22401a'),
+    'hills':  dict(name='Slopes', colour='#b4ac74', ink='#7a7446',
+                   edge='#6e6840'),
+    'heights': dict(name='San Juan Heights', colour='#b8a870',
+                    ink='#7a6a40', pattern='hills', edge='#5e5030', z=4,
+                    shift=-1, open=False, los=True,
+                    move={'foot': 2, 'track': 3, 'wheel': 3}),
+    'sanjuan': dict(name='San Juan Hill', colour='#c0a86c',
+                    ink='#8a3a2a', pattern='hills', edge='#5a4428', z=5,
+                    shift=-2, open=False, los=True,
+                    move={'foot': 2, 'track': 3, 'wheel': 3}),
+    'kettle': dict(name='Kettle Hill', colour='#b8b070', ink='#7a7448',
+                   pattern='hills', edge='#5e5a30', z=4, shift=-1,
+                   open=False, los=True,
+                   move={'foot': 2, 'track': 2, 'wheel': 3}),
+    'pond':   dict(name='Pond', colour='#4a7aa8', ink='#7aa0c8',
+                   pattern='water', edge='#2a4a6a', z=9, move={},
+                   impassable=True),
+    'town':   dict(name='Houses', colour='#c4b294', ink='#8a3a2a'),
+    'city':   dict(name='Santiago', colour='#b0a494', ink='#7a5a4a'),
+}
+
+MAP = [
+    'C.:.ffgggFFFFFFf:.',
+    'Ct:..fgggFFFFFFf:.',
+    'C:...Kgkgg.FFFFF..',
+    'Ct:..Kgkgf.FFFFF..',
+    'CC.:.Kgggg.FFFFhh.',
+    'CCt..Kgpgg.FFFFhh.',
+    'CCt..KggggFFFFFFh.',
+    'CC:..SKggfFFFFFF..',
+    'Ct.:.KgggfFFFFFF.:',
+    'C:...Kgggg.FFFFf:.',
+    'C:..fKggggFFFFFf..',
+    'C.:.fhggfgFFFFff:.',
+    'C...fhgggfFFFFf...',
+    'C..:ffggffFFFff...',
+]
+
+ROADS = [
+    ('road', ['1807', '1107', '1007', '0107']),        # the Camino Real
+    ('trail', ['1407', '1210', '1110', '1010', '0811']),   # Derby's trail
+    ('trail', ['0107', '0304', '0302']),               # to the north
+    ('trail', ['0107', '0311', '0412']),               # to the south
+]
+
+
+def _river():
+    """The San Juan River, between the 10th and 11th columns of hexes:
+    every pair of neighbours across it."""
+    out = []
+    for r in range(len(MAP)):
+        a = (9, r)
+        for n in hexgrid.neighbours(a):
+            if n[0] == 10 and 0 <= n[1] < len(MAP):
+                out.append('%s/%s' % (hexgrid.hid(a), hexgrid.hid(n)))
+    return out
+
+
+HEXSIDES = {
+    'sanjuan': dict(name='San Juan River', colour='#4a86c8', width=2,
+                    cost={'foot': None, 'track': None, 'wheel': None},
+                    halve=True),
+}
+RIVERS = [('sanjuan', _river())]
+
+LABELS = {
+    '0608': 'San Juan Hill', '0804': 'Kettle Hill', '0806': 'the pond',
+    '0603': 'San Juan Heights', '0107': 'Santiago',
+    '1007': 'Bloody Ford', '1010': 'lower ford', '1706': 'El Pozo',
+    '1207': 'Camino Real', '0909': "Hell's Pocket", '0302': 'to El Caney',
+}
+
+OBJECTIVES = {
+    '0608': dict(name='San Juan Hill', vp=8, owner='sp', shift=-1,
+                 works='blockhouse', **{'for': 'us'}),
+    '0804': dict(name='Kettle Hill', vp=4, owner='sp', **{'for': 'us'}),
+    '0604': dict(name='North heights', vp=3, owner='sp', **{'for': 'us'}),
+    '0611': dict(name='South heights', vp=3, owner='sp', **{'for': 'us'}),
+}
+STEP_VP = 1
+
+SUPPLY = {
+    'us': dict(**{'from': ['E'], 'range': 20}),
+    'sp': dict(**{'from': ['W'], 'range': 20}),
+}
+
+
+def VICTORY(e):
+    """The Americans score the hills and Spanish losses, the Spanish
+    American losses (and Roosevelt, 5); the margin decides (set from
+    games between computer players: ./sanjuan --simulate 60)."""
+    us, sp = e.vp('us'), e.vp('sp')
+    m = us - sp
+    score = 'Americans %d VP, Spanish %d.' % (us, sp)
+    if m >= WIN_BIG:
+        if e.units[TR].alive:
+            return 'us', ('American victory. %s The heights are taken, '
+                          'and Colonel Roosevelt will be famous.' % score)
+        return 'us', ('American victory. %s The heights are taken, but '
+                      'Roosevelt lies in the grass below Kettle Hill.'
+                      % score)
+    if m >= WIN:
+        return 'us', ('American marginal victory. %s The Americans are '
+                      'on the ridge, and Santiago is under their guns.'
+                      % score)
+    if m >= 0:
+        return 'sp', ('Spanish marginal victory. %s The Americans hold '
+                      'what they took, but at such a price that Shafter '
+                      'thinks of falling back.' % score)
+    return 'sp', ('Spanish victory. %s The V Corps is stopped in the '
+                  'grass, and the fever will finish it.' % score)
+
+
+WIN = 4
+WIN_BIG = 12
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'troopers': dict(name='Dismounted cavalry', symbol='horse',
+                     move='foot'),
+    'leader':   dict(name='Leader', symbol='leader', move='foot',
+                     zoc=False, stack=0, sound='hooves',
+                     fate='is shot from the saddle'),
+    'gatling':  dict(name='Gatling guns', symbol='gatling', move='foot',
+                     zoc=False, support=True, fight='gun'),
+    'skirmish': dict(name='Sharpshooters', symbol='infantry', move='foot',
+                     spot=3),
+}
+
+
+@grognard.symbol('leader')
+def s_leader(p, x, y, w, h, c):
+    """A leader: a five-pointed star."""
+    import math
+    cx, cy = x + (w - 1) / 2, y + (h - 1) / 2
+    r = max(2, min(w, h) / 2 - 1)
+    pts = []
+    for i in range(10):
+        a = -math.pi / 2 + i * math.pi / 5
+        rr = r if i % 2 == 0 else r * 0.42
+        pts.append((cx + rr * math.cos(a), cy + rr * math.sin(a)))
+    for i in range(10):
+        (x0, y0), (x1, y1) = pts[i], pts[(i + 1) % 10]
+        p.line(x0, y0, x1, y1, c)
+
+
+@grognard.symbol('gatling')
+def s_gatling(p, x, y, w, h, c):
+    """Gatling guns: a bundle of barrels on a wheel."""
+    cy = y + (h - 1) / 2
+    r = max(1, min(w, h) // 5)
+    cx = x + w // 3
+    p.oval(cx, cy + r, r, r, c)
+    for k in (-1, 0, 1):
+        p.line(cx, cy + k, x + w - 2, cy + k - 1, c)
+
+
+CAV1 = '#4a6496'        # Sumner's (Carroll's) brigade
+CAV2 = '#56709e'        # Wood's brigade
+ROUGH = '#7a6a48'       # the Rough Riders in their brown canvas
+HAWK = '#6a84b8'        # Kent's division
+WIKOFF = '#7088ba'
+PEARSON = '#7890c0'
+BATES = '#8098c4'
+US_GUNS = '#6a82b4'
+TAL = '#d8dce0'         # rayadillo: the Spanish striped cotton
+SP_RES = '#c4ccd4'
+SP_GUNS = '#e0dcd0'
+NAVY = '#a8b4c8'
+
+
+def regt(uid, side, a, d, hx, formation, colour, long, steps=2, **kw):
+    """A regiment (or a few companies): attack, defence, and the hex it
+    starts in (None if it arrives later, with arrive and at)."""
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kw.pop('type', 'infantry'), size=kw.pop('size', 'III'),
+                a=a, d=d, m=kw.pop('m', 4), steps=steps, hex=hx,
+                formation=formation, colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+def guns(uid, side, a, rng, hx, formation, colour, long, **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kw.pop('type', 'artillery'), size='I', a=a, d=2,
+                m=kw.pop('m', 3), range=rng, steps=1, hex=hx,
+                formation=formation, colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+ROAD_IN = ['1307', '1407', '1507']
+EAST = ['1807', '1806', '1808']
+
+UNITS = [
+    # ---- the Cavalry Division (dismounted), General Sumner
+    regt('3cav', 'us', 3, 3, '0909', "Carroll's Brigade", CAV1,
+         '3rd US Cavalry', type='troopers', release=ORDERS),
+    regt('6cav', 'us', 3, 3, '0908', "Carroll's Brigade", CAV1,
+         '6th US Cavalry', type='troopers', release=ORDERS),
+    regt('9cav', 'us', 4, 3, '1006', "Carroll's Brigade", CAV1,
+         '9th US Cavalry (Buffalo Soldiers)', type='troopers',
+         release=ORDERS),
+    regt('1cav', 'us', 4, 3, '1005', "Wood's Brigade", CAV2,
+         '1st US Cavalry', type='troopers', release=ORDERS),
+    regt('10cav', 'us', 4, 3, '1004', "Wood's Brigade", CAV2,
+         '10th US Cavalry (Buffalo Soldiers)', type='troopers',
+         release=ORDERS),
+    regt(RR, 'us', 5, 3, '1003', "Wood's Brigade", ROUGH,
+         '1st US Volunteer Cavalry, the Rough Riders', steps=3,
+         type='troopers', name='1USV', release=ORDERS),
+    regt(TR, 'us', 1, 1, '1003', "Wood's Brigade", ROUGH,
+         'Lieutenant Colonel Theodore Roosevelt on Little Texas',
+         steps=1, type='leader', size='', name='TR', m=5, vp=5,
+         release=ORDERS),
+
+    # ---- Kent's 1st Division
+    regt('6inf', 'us', 4, 3, '1007', "Hawkins's Brigade", HAWK,
+         '6th US Infantry'),
+    regt('16inf', 'us', 4, 3, '1107', "Hawkins's Brigade", HAWK,
+         '16th US Infantry'),
+    regt('71ny', 'us', 3, 3, '1206', "Hawkins's Brigade", HAWK,
+         '71st New York Volunteers'),
+    regt('9inf', 'us', 3, 3, None, "Wikoff's Brigade", WIKOFF,
+         '9th US Infantry', arrive=2, at=ROAD_IN),
+    regt('13inf', 'us', 4, 3, None, "Wikoff's Brigade", WIKOFF,
+         '13th US Infantry', arrive=2, at=ROAD_IN),
+    regt('24inf', 'us', 4, 3, None, "Wikoff's Brigade", WIKOFF,
+         '24th US Infantry (Buffalo Soldiers)', arrive=2, at=ROAD_IN),
+    regt('2inf', 'us', 3, 3, None, "Pearson's Brigade", PEARSON,
+         '2nd US Infantry', arrive=3, at=ROAD_IN),
+    regt('10inf', 'us', 3, 3, None, "Pearson's Brigade", PEARSON,
+         '10th US Infantry', arrive=3, at=ROAD_IN),
+    regt('21inf', 'us', 3, 3, None, "Pearson's Brigade", PEARSON,
+         '21st US Infantry', arrive=3, at=ROAD_IN),
+    regt('bates', 'us', 4, 4, None, "Bates's Independent Brigade", BATES,
+         "Bates's brigade: the 3rd and 20th Infantry, up from El Caney",
+         steps=3, size='X', name='BATES', arrive=7, at=EAST),
+    guns('grimes', 'us', 2, 12, '1706', 'Artillery', US_GUNS,
+         "Grimes's battery on El Pozo, firing black powder", m=0),
+    guns(GATLING, 'us', 4, 3, None, 'Gatling Gun Detachment', US_GUNS,
+         "Lieutenant Parker's Gatling Gun Detachment", type='gatling',
+         name='GATLNG', m=4, arrive=3, at=ROAD_IN),
+
+    # ---- General Linares's command
+    regt('tal1', 'sp', 3, 4, '0608', 'Talavera Battalion', TAL,
+         'Talavera Battalion, in the blockhouse trenches', size='II'),
+    regt('tal2', 'sp', 2, 3, '0608', 'Talavera Battalion', TAL,
+         'Talavera Battalion, second companies', size='II'),
+    regt('prico', 'sp', 2, 3, '0804', 'Provisional Battalion', TAL,
+         'Provisional Battalion of Puerto Rico, on Kettle Hill',
+         size='II', name='PRICO'),
+    regt('heiN', 'sp', 3, 4, '0604', 'San Juan Heights', TAL,
+         'Companies of the Talavera and Puerto Rico battalions',
+         size='II', name='HEIGHT'),
+    regt('heiS', 'sp', 3, 4, '0611', 'San Juan Heights', TAL,
+         'Companies of the Talavera and Puerto Rico battalions',
+         size='II', name='HEIGHT'),
+    regt('guer1', 'sp', 1, 2, '0907', 'Guerrillas', TAL,
+         'Sharpshooters of the guerrillas, in the trees', steps=1,
+         type='skirmish', size='I', name='GUERR'),
+    regt('guer2', 'sp', 1, 2, '0910', 'Guerrillas', TAL,
+         'Sharpshooters of the guerrillas, in the trees', steps=1,
+         type='skirmish', size='I', name='GUERR'),
+    guns('krupp', 'sp', 3, 5, '0507', 'Artillery', SP_GUNS,
+         'Two Krupp guns on the heights', name='KRUPP'),
+    regt('cons', 'sp', 3, 3, '0306', 'Second line', SP_RES,
+         'Constitución Battalion, on the second line', size='II',
+         name='CONST'),
+    regt('vols', 'sp', 2, 3, None, 'Santiago', SP_RES,
+         'Volunteers of Santiago', size='II', name='VOLS', arrive=4,
+         at=['0107', '0106', '0108']),
+    regt('sailor', 'sp', 3, 3, None, "Cervera's Squadron", NAVY,
+         "Captain Bustamante's sailors from Cervera's ships", size='II',
+         name='SAILOR', arrive=6, at=['0107', '0106', '0108']),
+    regt('asia', 'sp', 3, 3, None, 'Asia Battalion', SP_RES,
+         'Asia Battalion, from the city', size='II', name='ASIA',
+         arrive=7, at=['0107', '0106', '0108']),
+]
+
+PANELS = dict(
+    right=['date', 'victory', 'objectives', 'phase', 'minimap', 'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1c1c14', panel='#2c2a1e', light='#7a765a',
+              dark='#080804', accent='#e4c87a', button='#4c4834',
+              button_hi='#9c9670', button_lo='#1c1a12', red='#b03020')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE FORD. The Americans move first. The San Juan River can be "
+    "crossed only at the Bloody Ford on the Camino Real, and from 12:30, "
+    "when the balloon has found the trail to it, at the lower ford to "
+    "the south. While the Spanish hold San Juan Hill, entering either "
+    "bank of the Bloody Ford costs a point more.",
+
+    "HELL'S POCKET. The Spanish have smokeless Mausers. At the start of "
+    "each American turn, every American unit in the open (grass or "
+    "pasture) within 3 hexes of a Spanish rifle on the hills has a 1 in "
+    "6 chance of losing a step. Roosevelt is spared. Spanish attacks on "
+    "Americans in the open gain a column. The jungle gives a column, "
+    "the heights and Kettle Hill one, San Juan Hill two.",
+
+    "THE CAVALRY. The Cavalry Division starts across the river in the "
+    "grass, HELD until the order to advance comes at 1:00. Kent's "
+    "division comes up the road: Hawkins's brigade is at the ford, "
+    "Wikoff's arrives at 12:30, Pearson's and Parker's Gatlings at 1:00, "
+    "and Bates's brigade from El Caney at 3:00. The Spanish get the "
+    "Santiago volunteers at 1:30, Bustamante's sailors at 2:30 and the "
+    "Asia battalion at 3:00, from the city on the west edge.",
+
+    "ROOSEVELT. TR is a counter of his own. When he attacks with other "
+    "units, the attack gains a column. He takes losses last, but if "
+    "he's killed the Spanish score 5 VP and the Rough Riders attack a "
+    "column worse for the rest of the day. Parker's Gatlings support an "
+    "attack from 3 hexes and give it a column more.",
+
+    "WINNING. The Americans score San Juan Hill (8), Kettle Hill (4) "
+    "and the north and south heights (3 each) if they hold them at the "
+    "end, and every Spanish step destroyed; the Spanish score every "
+    "American step. The Americans must finish 4 VP ahead to win (12 for "
+    "a clear victory). The blockhouse gives its defenders a column more "
+    "on top of the hill's two.",
+]
+
+ICON = 'sanjuan'
+
+
+@grognard.icon('sanjuan')
+def draw_icon(p, n):
+    """San Juan Hill: a green hill, the blockhouse, and the flag."""
+    p.fill('#e4dcb8')
+    p.disc(n * 0.5, n * 1.25, n * 0.8, '#6a8a3a')
+    p.disc(n * 0.5, n * 1.3, n * 0.75, '#a4a45a')
+    p.rect(n * 0.36, n * 0.46, n * 0.28, n * 0.16, '#8a4a30')
+    p.rect(n * 0.33, n * 0.42, n * 0.34, n * 0.05, '#5a2a1a')
+    for i in range(3):
+        p.rect(n * (0.4 + i * 0.08), n * 0.52, n * 0.03, n * 0.03,
+               '#2a1a10')
+    p.rect(n * 0.7, n * 0.12, n * 0.02, n * 0.5, '#3a2a1a')
+    for i in range(5):
+        p.rect(n * 0.72, n * (0.12 + i * 0.04), n * 0.2, n * 0.02,
+               '#b02a2a' if i % 2 == 0 else '#f4f4f4')
+    p.rect(n * 0.72, n * 0.12, n * 0.08, n * 0.08, '#2a3a8a')
+    p.rect(n * 0.1, n * 0.78, n * 0.8, n * 0.04, '#d8c8a0')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

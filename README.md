@@ -17,7 +17,7 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are thirteen games so far: a Second World War battle, a raid in a
+There are fourteen games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
@@ -33,7 +33,8 @@ Wisconsin River in 1832, Little Round Top, the fight for the left
 of the Union line on the second day at Gettysburg, Maida, British
 line against French column on a plain in Calabria in 1806, and the
 oldest battle: Carrhae, where the Parthian horse archers shot Crassus's
-legions to pieces in 53 BC.
+legions to pieces in 53 BC, and San Juan Hill, where Roosevelt and the
+Rough Riders went up Kettle Hill outside Santiago de Cuba in 1898.
 
 ```bash
 ./crossroads
@@ -85,6 +86,10 @@ legions to pieces in 53 BC.
 
 ```bash
 ./carrhae
+```
+
+```bash
+./sanjuan
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -593,6 +598,49 @@ Carrhae in the night, leaving four thousand wounded behind, but Crassus
 was killed at a parley a few days later and fewer than ten thousand
 of his men got home.
 
+## San Juan Hill: Santiago de Cuba, 1 July 1898
+
+The fourteenth game. Shafter's V Corps comes down the one jungle road
+from El Pozo toward Santiago, where Cervera's squadron lies in the
+harbour. Between them stand the San Juan Heights, with a blockhouse on
+San Juan Hill and Kettle Hill in front, and the San Juan River at the
+end of the road. The Cavalry Division fights on foot, and among it are
+the 1st US Volunteer Cavalry, the Rough Riders, and Lieutenant Colonel
+Theodore Roosevelt, the only man on a horse.
+
+- **Ten turns** of half an hour, from noon. The Americans move first.
+  Regiments are the counters, and the Spanish battalions are in
+  companies.
+- **The ford**: the river can be crossed only at the Bloody Ford on
+  the road, and from 12:30, when the balloon has found the trail to
+  it, at a lower ford to the south. While the Spanish hold San Juan
+  Hill, entering either bank of the Bloody Ford costs a point more.
+- **The cavalry** starts across the river in the tall grass, held
+  until the order to advance at 1:00. Hawkins's brigade is at the ford;
+  Wikoff's arrives at 12:30, Pearson's and Parker's Gatlings at 1:00,
+  and Bates's brigade from El Caney at 3:00. The Spanish get the
+  Santiago volunteers at 1:30, Bustamante's sailors at 2:30 and the
+  Asia battalion at 3:00.
+- **Hell's Pocket**: at the start of each American turn every American
+  unit in the open within 3 hexes of a Spanish rifle on the hills has a
+  1 in 6 chance of losing a step to smokeless Mausers it can't see.
+  Spanish attacks on Americans in the open gain a column.
+- **Roosevelt** is a counter of his own. Attacking with other units he
+  gains a column; he takes losses last, but if he's killed the Spanish
+  score 5 VP and the Rough Riders attack a column worse. Parker's
+  Gatlings support from 3 hexes and give an attack a column more.
+- **Winning**: the Americans score San Juan Hill (8), Kettle Hill (4)
+  and the north and south heights (3 each) if they hold them at the
+  end, and every Spanish step; the Spanish every American step. The
+  Americans must finish 4 VP ahead. Computer against computer they win
+  30 games in 60: they take San Juan Hill most games, but lose about
+  twice as many steps as the Spanish, as they did in 1898.
+
+The order of battle is simplified and the strengths are set for play.
+The map is drawn from the landmarks (El Pozo, the ford, the pond
+between the hills, the blockhouse), not surveyed. Lawton's fight at El
+Caney the same day is off the map.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -902,7 +950,11 @@ bank begins, and both sides able to break (`engine.finish`); and
 `carrhae` for horse archers made as a support type that runs out of
 arrows (`CAN_SUPPORT`, with the quivers in `engine.flags`), a march
 slowed under fire (`ENTER_COST`), its own sounds of battle, and the
-stock computer player taught to ride back to the camels (`AI_CLASS`).
+stock computer player taught to ride back to the camels (`AI_CLASS`);
+and `sanjuan` for a river that can be crossed only at fords (one of
+them closed until a given turn, in `ENTER_COST`), a leader as a
+counter of his own who helps the attacks he joins, and losses dealt
+out at the start of a turn (`engine.take_losses` from `ON_TURN`).
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)
