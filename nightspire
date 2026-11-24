@@ -289,7 +289,7 @@ def ovinate(e, t):
         long=('A sheep that was %s' % called(t)) if hero else
         'A flock that was %s' % called(t),
         vp=HERO_SHEEP_VP if hero else SHEEP_VP, hex=hid(h),
-        colour='#f2eee2', formation='The flock', was=t.id,
+        colour='#bccc98', formation='The flock', was=t.id,
         fate=e.rng.choice(FATES)))
     s.mp = 0
     s.seen = True
@@ -652,7 +652,7 @@ UNIT_TYPES = {
     'blackguard': dict(name='Black Guard', symbol='infantry', move='foot',
                        at=True),
     'wolves':   dict(name='Wolf riders', symbol='wolf', move='track',
-                     spot=3),
+                     spot=3, sound='move'),
     'orcbows':  dict(name='Orc archers', symbol='bow', move='foot',
                      zoc=False, support=True, fight='bow'),
     'troll':    dict(name='Troll', symbol='troll', move='foot', at=True,
@@ -1006,8 +1006,8 @@ def draw_icon(p, n):
 # ------------------------------------------------- symbols and pictures
 
 counters.PICTURES.update({
-    'sheep': ['...........', '..+++++.##.', '.+++++++###', '+++++++++#.',
-              '.+++++++...', '..#.#..#.#.', '..#.#..#.#.', '...........'],
+    'sheep': ['..#####.##.', '.#+++++####', '#+++++++##.', '#++++++++#.',
+              '.#+++++++#.', '..#######..', '..#.#..#.#.', '..#.#..#.#.'],
     'hero':  ['...........', '.#...#...#.', '.##.###.##.', '.#########.',
               '.#+#+#+#+#.', '.#########.', '...........', '...........'],
     'mage':  ['.....#.....', '....###..+.', '...#####.#.', '..#######..',
