@@ -1,0 +1,584 @@
+#!/usr/bin/env python3
+"""Castle Itter: Tyrol, 5 May 1945.  A sample game for the Grognard
+engine.
+
+Five days after Hitler's death, in a castle on a crag above the
+Brixental, a handful of American tankers, a dozen soldiers of the
+Wehrmacht who have gone over to the Austrian resistance, a renegade SS
+captain and the French statesmen the castle was a prison for hold the
+walls against a hundred and more Waffen-SS, the strangest battle of the
+Second World War.  Play either side against the computer, or against a
+friend at the same screen.
+
+Run it with ./itter (Python 3 with Tk, nothing else).  The game is
+saved to ~/.itter.json.  ./itter --selftest checks the map and plays a
+game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import ai, hexgrid                       # noqa: E402
+
+ID = 'itter'
+TITLE = 'Castle Itter'
+SUBTITLE = 'Tyrol, 5 May 1945'
+
+INTRO = [
+    "The Tyrol, the fourth of May 1945. Hitler has been dead five days. "
+    "Schloss Itter, a castle on a crag above the Brixental, has been a "
+    "prison for two years, its inmates the most valuable hostages the "
+    "Reich has: two former prime ministers of France, Paul Reynaud and "
+    "Edouard Daladier, two former commanders-in-chief, Generals Weygand "
+    "and Gamelin, the tennis champion Jean Borotra, the trade unionist "
+    "Léon Jouhaux, and de Gaulle's sister.",
+
+    "That morning the SS guards ran. The prisoners sent the castle's "
+    "Yugoslav handyman for help, and he found Major Josef Gangl, a "
+    "Wehrmacht officer gone over to the Austrian resistance, in Wörgl. "
+    "Gangl found the Americans: Lieutenant Jack Lee of the 23rd Tank "
+    "Battalion, who came up the valley in his Sherman, Besotten Jenny, "
+    "with a handful of his men. Gangl's own soldiers came with them, and "
+    "SS-Hauptsturmführer Schrader, on leave in the village, joined them.",
+
+    "Lee posts Jenny at the gate and tells the French to keep their "
+    "heads down. They don't. Before dawn on the fifth the woods round "
+    "the castle are full of Waffen-SS, men of the 17th SS Panzergrenadier "
+    "Division, come to shoot the prisoners and the traitors with them. "
+    "The relief, the 142nd Infantry, is somewhere down the valley.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='ss', name='SS', adj='SS', colour='#6a6e5a', ink='#f0ecd8',
+         flag='cross', posture='attack', singular=True,
+         about='Break into the castle, take the keep and the prisoners '
+               'before the Americans come up the valley.'),
+    dict(id='al', name='Defenders', adj='Allied', colour='#7a8a5a',
+         ink='#101010', flag='star', posture='defend',
+         about="Lee's tankers, Gangl's Wehrmacht men and the French: "
+               'hold the walls until the relief arrives, and keep the '
+               'prisoners alive.'),
+]
+ORDER = ['ss', 'al']
+
+TURNS = 12              # an hour a turn, 5 AM to 4 PM
+
+
+def TURN_NAME(t):
+    h = 4 + t
+    return ('5 May 1945', '%d:00 %s' % ((h - 1) % 12 + 1,
+                                        'AM' if h < 12 else 'PM'))
+
+
+WEATHER = {1: 'dawn', 2: 'day'}
+WEATHER_TYPES = {
+    'dawn': dict(name='Dawn', icon='fog', air=False),
+    'day': dict(name='Clear', icon='sun', air=False),
+}
+
+STACK = 2
+FOG = False             # a castle and its woods: everyone sees everyone
+DEFENSIVE_FIRE = 1
+COMBAT_SOUND = 'gun'
+
+# Rifles, machine guns and Panzerfausts at a few yards: costly for
+# whoever attacks.
+CRT = {
+    'columns': ['1:2', '1:1', '1.5:1', '2:1', '3:1', '4:1', '5:1'],
+    'rows': [
+        ['A2', 'A2', 'A1', 'A1', 'A1', 'EX', 'EX'],
+        ['A2', 'A1', 'A1', 'A1', 'EX', 'EX', 'DR'],
+        ['A1', 'A1', 'EX', 'EX', 'EX', 'DR', 'D1R'],
+        ['A1', 'EX', 'EX', 'DR', 'D1R', 'D1R', 'D1R'],
+        ['EX', 'DR', 'DR', 'D1R', 'D1R', 'D2R', 'D2R'],
+        ['DR', 'D1R', 'D1R', 'D2R', 'D2R', 'D2R', 'DE'],
+    ],
+}
+
+LINE = 6                # 10 AM: the telephone line is cut
+RELIEF = 12             # 4 PM: the 142nd Infantry comes up the road
+EIGHTY_EIGHT = 'flak'
+JENNY = 'jenny'
+BOROTRA = 'borotra'
+LEADERS = ('lee', 'gangl')
+PRISONERS = ('statesmen', 'generals')
+RELIEF_UNITS = ('142a', '142b', '142t', 'mayr')
+
+
+def ON_TURN(e, side):
+    f = e.flags
+    if side == 'ss':
+        if e.turn == 1:
+            e.say('Shots from the woods. The SS have come for the '
+                  'prisoners.')
+        if e.turn == LINE:
+            e.say('The telephone goes dead in the middle of a call to '
+                  'the 142nd Infantry. Jean Borotra offers to go over '
+                  'the wall and fetch them.')
+        jenny, gun = e.units[JENNY], e.units[EIGHTY_EIGHT]
+        if jenny.alive and gun.alive and \
+                hexgrid.distance(jenny.hex, gun.hex) <= gun.range + 1:
+            if e.rng.randint(1, 6) <= 2:
+                e.say('The 88 finds Besotten Jenny.')
+                e.take_losses([jenny], 1)
+            else:
+                e.say('An 88 shell bursts by Besotten Jenny.')
+    else:
+        if e.exited.get('al') and not f.get('guided'):
+            f['guided'] = True
+            soon = max(e.turn + 1, RELIEF - 1)
+            for uid in RELIEF_UNITS:
+                e.units[uid].arrive = min(e.units[uid].arrive, soon)
+            e.say('Borotra has got through. He meets the relief column on '
+                  'the road, borrows a uniform and a rifle, and leads '
+                  'them back up the valley.')
+        if e.turn == RELIEF:
+            e.say('Four o\'clock. Shermans and infantry of the 142nd come '
+                  'round the bend below the village.')
+
+
+def ON_ELIMINATE(e, u, where):
+    if u.id == JENNY:
+        e.say('Besotten Jenny burns at the gate. Her crew gets out and '
+              'goes up on the walls.')
+    elif u.id == 'gangl':
+        e.say('Major Gangl is shot by a sniper pulling Paul Reynaud out '
+              'of the line of fire.')
+    elif u.id == 'lee':
+        e.say('Lieutenant Lee is down.')
+    elif u.id in PRISONERS:
+        e.say('The SS have reached %s.' % u.long)
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Lee or Gangl in a hex costs an SS attack on it a column, and one
+    of them leading an attack gains it one.  At dawn every attack is a
+    column worse."""
+    out = []
+    if attackers and e.weather()['id'] == 'dawn':
+        out.append((-1, 'half light'))
+    if e.side == 'ss':
+        if any(u.id in LEADERS for u in e.at(target, 'al')):
+            out.append((-1, 'officers'))
+    elif any(u.id in LEADERS for u in attackers) and len(attackers) > 1:
+        out.append((1, 'officers'))
+    return out
+
+
+def CAN_SUPPORT(e, u):
+    """The 88 is busy with Besotten Jenny while she lives."""
+    return not (u.id == EIGHTY_EIGHT and e.units[JENNY].alive)
+
+
+def ENTER_COST(e, unit, a, b, cost):
+    """The prisoners stay in the keep."""
+    if getattr(unit, 'kind', None) == 'notables':
+        return None
+    return cost
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'K': 'keep', 'c': 'court', 'G': 'gatehouse', 'R': 'crag',
+          'a': 'approach'}
+
+TERRAIN = {
+    'clear':  dict(name='Meadow', colour='#9cba6a', ink='#7c9c50',
+                   edge='#5e7e3c'),
+    'fields': dict(name='Hay fields', colour='#b4c070', ink='#94a456',
+                   edge='#768640'),
+    'woods':  dict(name='Woods', colour='#4a7036', ink='#2c4c20'),
+    'forest': dict(name='Mountain forest', colour='#2e5426',
+                   ink='#183616'),
+    'hills':  dict(name='Alpine slope', colour='#a8a272', ink='#7a744a',
+                   edge='#5a5432'),
+    'town':   dict(name='Itter', colour='#c0b49c', ink='#8a4030'),
+    'crag':   dict(name='The crag', colour='#9a927a', ink='#5e5644',
+                   pattern='rough', edge='#3e382c', z=4, shift=-1,
+                   open=False, los=True,
+                   move={'foot': 2, 'track': None, 'wheel': None}),
+    'approach': dict(name='Gate approach', colour='#b0a888',
+                     ink='#8a8266', pattern='grass', edge='#5e5844', z=2,
+                     shift=0, open=True, los=True,
+                     move={'foot': 1, 'track': 1, 'wheel': 1}),
+    'gatehouse': dict(name='Gatehouse', colour='#b8ac94', ink='#6a5e4c',
+                      pattern='town', edge='#3a3226', z=8, shift=-1,
+                      open=False, los=True, stand=True,
+                      move={'foot': 1, 'track': 1, 'wheel': 1}),
+    'court':  dict(name='Courtyard', colour='#c4b898', ink='#a49876',
+                   pattern='grass', edge='#6a5e48', z=3, shift=0,
+                   open=False, los=True,
+                   move={'foot': 1, 'track': 1, 'wheel': 1}),
+    'keep':   dict(name='The keep', colour='#c8bca0', ink='#7a5a3a',
+                   pattern='city', edge='#3a2e22', z=9, shift=-1,
+                   open=False, los=True, stand=True,
+                   move={'foot': 1, 'track': None, 'wheel': None}),
+}
+
+MAP = [
+    'hh..::.t:..ffFFF',
+    'h..::.tt:..fFFFh',
+    '..::...::.ffFFhh',
+    '.:..:..:..fFFhhF',
+    ':..:.RRRRR.fFhhF',
+    '..:..aGcKR..ffhF',
+    '.:..:RRcKR.f.fFF',
+    '..:...RRRRhhffFF',
+    ':.:..:....hhfFFF',
+    '..:.:..:.:..ffFF',
+    'ff....ff..fffFFF',
+    'FFff..FFffFFFFFF',
+]
+
+COLS, ROWS = len(MAP[0]), len(MAP)
+
+
+def _hexes(chars):
+    return {(c, r) for r, row in enumerate(MAP) for c, ch in enumerate(row)
+            if ch in chars}
+
+
+CASTLE = _hexes('KcG')
+KEEP = sorted(_hexes('K'))
+GATE = sorted(_hexes('G'))[0]
+APPROACH = sorted(_hexes('a'))[0]
+
+
+def _sides(a_set, b_set):
+    """Every hexside between a hex of a_set and one of b_set."""
+    out = []
+    for a in sorted(a_set):
+        for n in hexgrid.neighbours(a):
+            if n in b_set and 0 <= n[0] < COLS and 0 <= n[1] < ROWS:
+                out.append('%s/%s' % (hexgrid.hid(a), hexgrid.hid(n)))
+    return out
+
+
+_OUTSIDE = {(c, r) for r in range(ROWS) for c in range(COLS)} - CASTLE
+
+HEXSIDES = {
+    'castle': dict(name='Castle wall', colour='#d8d0b8', width=3,
+                   cost={'foot': 2, 'track': None, 'wheel': None},
+                   halve=False, shift=-1),
+    'gate':   dict(name='Gate', colour='#6a4a2a', width=2,
+                   cost={'foot': 0, 'track': 0, 'wheel': 0},
+                   halve=False, shift=-1),
+}
+RIVERS = [
+    ('castle', _sides(CASTLE, _OUTSIDE - {APPROACH})),
+    ('gate', _sides({GATE}, {APPROACH})),
+]
+
+ROADS = [
+    ('road', ['0104', '0506', '0606']),                # from Wörgl
+    ('road', ['0506', '0702', '0801']),                # up to the village
+    ('trail', ['0801', '1301', '1601']),
+]
+
+LABELS = {
+    '0906': 'Keep', '0806': 'Courtyard', '0706': 'Gatehouse',
+    '0802': 'Itter', '0104': 'to Wörgl', '1601': 'to Hopfgarten',
+    '1108': 'Schatzberg', '0709': 'Brixental',
+}
+
+OBJECTIVES = {
+    '0906': dict(name='Keep', vp=8, owner='al', **{'for': 'ss'}),
+    '0907': dict(name='Keep, south rooms', vp=4, owner='al',
+                 **{'for': 'ss'}),
+    '0806': dict(name='Courtyard', vp=3, owner='al', **{'for': 'ss'}),
+    '0706': dict(name='Gatehouse', vp=3, owner='al', **{'for': 'ss'}),
+}
+# The SS score every defender's step twice over: there are very few.
+STEP_VP = {'ss': 1, 'al': 1}
+
+# Borotra goes over the wall and down to the road to Wörgl.
+EXITS = {'al': dict(hexes=['W'], vp=1, types=['runner'])}
+
+SUPPLY = {
+    'ss': dict(**{'from': ['E', 'S'], 'range': 20}),
+    'al': dict(**{'from': ['0906', 'W'], 'range': 20}),
+}
+
+
+def _score(e):
+    return 'SS %d VP, defenders %d.' % (e.vp('ss'), e.vp('al'))
+
+
+def VICTORY(e):
+    """The SS win outright holding the keep at the end, or with both
+    prisoner counters lost.  Otherwise the defenders must not finish more
+    than WIN VP behind (set from ./itter --simulate 60): the SS score
+    the ground and the steps they take, the defenders the SS steps."""
+    ss, al = e.vp('ss'), e.vp('al')
+    m = al - ss
+    keep = e.control.get(KEEP[0]) == 'ss'
+    gone = sum(1 for p in PRISONERS if not e.units[p].alive)
+    if keep or gone == len(PRISONERS):
+        return 'ss', ('SS victory. %s The keep is taken and the prisoners '
+                      'shot; the Americans come up the road too late.'
+                      % _score(e))
+    if m < -WIN:
+        return 'ss', ('SS marginal victory. %s The keep holds, but the '
+                      'castle is a ruin, its defenders few, and the SS '
+                      'slip away into the mountains.' % _score(e))
+    if m < WIN_BIG or gone:
+        return 'al', ('Allied marginal victory. %s The keep holds, only '
+                      'just.' % _score(e))
+    return 'al', ('Allied victory. %s The castle holds and the SS are '
+                  'marched away. Reynaud and Daladier are on their way '
+                  'home, and still not speaking to each other.'
+                  % _score(e))
+
+
+WIN = 8                 # how far behind the defenders may finish
+WIN_BIG = 0
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'leader':   dict(name='Officer', symbol='hq', move='foot', zoc=False,
+                     stack=0, fate='is killed'),
+    'notables': dict(name='Prisoners', symbol='notables', move='foot',
+                     zoc=False, under=True, stack=0, fate='are shot'),
+    'runner':   dict(name='Runner', symbol='runner', move='foot',
+                     zoc=False, stack=0, fate='is caught'),
+    'grenadier': dict(name='Panzergrenadiers', symbol='infantry',
+                      move='foot', at=True),
+    'flak':     dict(name='88 mm gun', symbol='artillery', move='wheel',
+                     zoc=False, support=True, at=True),
+}
+
+
+@grognard.symbol('notables')
+def s_notables(p, x, y, w, h, c):
+    """The prisoners: a fleur-de-lis cross of Lorraine."""
+    cx, cy = x + (w - 1) / 2, y + (h - 1) / 2
+    r = max(2, min(w, h) // 2 - 1)
+    p.line(cx, cy - r, cx, cy + r, c)
+    p.line(cx - r * 0.5, cy - r * 0.5, cx + r * 0.5, cy - r * 0.5, c)
+    p.line(cx - r * 0.8, cy, cx + r * 0.8, cy, c)
+
+
+@grognard.symbol('runner')
+def s_runner(p, x, y, w, h, c):
+    """Borotra: a tennis racket."""
+    cx, cy = x + (w - 1) / 2, y + (h - 1) / 2
+    p.oval(cx, cy - h * 0.15, max(1.5, w / 5), max(2, h / 4), c)
+    p.line(cx, cy + h * 0.1, cx, y + h - 1, c)
+
+
+US = '#7a8a5a'          # 23rd Tank Battalion: olive drab
+US2 = '#86965e'
+WH = '#8a9088'          # Gangl's Wehrmacht men: field grey
+FR = '#5a6aa8'          # the French
+SS = '#6a6e5a'
+SS2 = '#5e624e'
+SSG = '#76786a'
+
+
+def unit(uid, side, kind, a, d, hx, formation, colour, long, steps=2,
+         **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, size=kw.pop('size', '***'), a=a, d=d,
+                m=kw.pop('m', 3), steps=steps, hex=hx,
+                formation=formation, colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+def ss(uid, hx, name, long, a=3, d=2, steps=3, arrive=None, at=None,
+       colour=SS, **kw):
+    return unit(uid, 'ss', 'grenadier', a, d, hx,
+                '17th SS Panzergrenadier Division', colour, long,
+                steps=steps, m=4, size='I', name=name, arrive=arrive,
+                at=at, **kw)
+
+
+EAST = ['1605', '1606', '1607', '1604']
+SOUTH = ['0812', '0912', '0712', '1012']
+WEST = ['0104', '0103', '0105', '0203']
+
+UNITS = [
+    # ---- the defenders
+    unit(JENNY, 'al', 'armor', 5, 4, '0606', '23rd Tank Battalion', US,
+         'Sherman "Besotten Jenny", 23rd Tank Battalion, 12th Armored '
+         'Division', name='JENNY', m=4, vp=3),
+    unit('tankers', 'al', 'infantry', 3, 4, '0806',
+         '23rd Tank Battalion', US2,
+         "Lee's tank crews and riflemen, with a .30 cal off the "
+         'Sherman', name='LEE MEN', steps=3),
+    unit('gangls', 'al', 'infantry', 3, 4, '0706', 'Austrian resistance',
+         WH, "Major Gangl's soldiers, Wehrmacht men fighting for the "
+         'Americans', name='GANGL MEN', steps=3),
+    unit('wehr2', 'al', 'infantry', 2, 4, '0807', 'Austrian resistance',
+         WH, "The rest of Gangl's men, with a machine gun on the wall",
+         name='WH MG'),
+    unit('schrader', 'al', 'infantry', 2, 2, '0907', 'Waffen-SS', SSG,
+         'SS-Hauptsturmführer Kurt-Siegfried Schrader, who changed '
+         'sides', steps=1, name='SCHRADER'),
+    unit('french', 'al', 'infantry', 1, 2, '0906', 'The prisoners', FR,
+         'Reynaud, Daladier and Borotra at the windows with rifles',
+         steps=1, name='FRENCH'),
+    unit('lee', 'al', 'leader', 1, 1, '0806', '23rd Tank Battalion', US,
+         'Lieutenant John C. "Jack" Lee Jr., 23rd Tank Battalion',
+         steps=1, name='LEE', size='', vp=3),
+    unit('gangl', 'al', 'leader', 1, 1, '0706', 'Austrian resistance',
+         WH, 'Major Josef "Sepp" Gangl, Wehrmacht and Austrian '
+         'resistance', steps=1, name='GANGL', size='', vp=2),
+    unit('statesmen', 'al', 'notables', 0, 1, '0906', 'The prisoners',
+         FR, 'The statesmen: Reynaud, Daladier, Jouhaux, Clemenceau and '
+         'de Gaulle\'s sister', steps=1, name='STATES', size='', m=0,
+         vp=5),
+    unit('generals', 'al', 'notables', 0, 1, '0907', 'The prisoners',
+         FR, 'The generals: Weygand and Gamelin, and Colonel de La '
+         'Rocque', steps=1, name='GENERALS', size='', m=0, vp=4),
+    unit(BOROTRA, 'al', 'runner', 0, 1, None, 'The prisoners', FR,
+         'Jean Borotra, the Bounding Basque of Wimbledon', steps=1,
+         name='BOROTRA', size='', m=5, arrive=LINE,
+         at=['0806', '0807', '0706']),
+    # ---- the relief: the 142nd Infantry, 36th Division
+    unit('142a', 'al', 'infantry', 5, 4, None, '142nd Infantry', US2,
+         'A company of the 142nd Infantry Regiment, 36th Division',
+         size='I', name='142/A', steps=3, m=4, arrive=RELIEF, at=WEST,
+         posture='attack'),
+    unit('142b', 'al', 'infantry', 5, 4, None, '142nd Infantry', US2,
+         'Another company of the 142nd Infantry Regiment',
+         size='I', name='142/B', steps=3, m=4, arrive=RELIEF, at=WEST,
+         posture='attack'),
+    unit('142t', 'al', 'armor', 6, 4, None, '142nd Infantry', US,
+         'Shermans of the 36th Division, with Lee\'s other tank',
+         size='***', name='SHERMANS', m=6, arrive=RELIEF, at=WEST,
+         posture='attack'),
+    unit('mayr', 'al', 'infantry', 2, 2, None, 'Austrian resistance', WH,
+         "Alois Mayr's Austrian resistance fighters from Wörgl",
+         size='***', name='MAYR', steps=1, m=4, arrive=RELIEF,
+         at=['0203', '0102'], posture='attack'),
+
+    # ---- the Waffen-SS
+    ss('ss1', '1206', 'SS 1', 'Waffen-SS, first group, in the woods '
+       'east of the castle'),
+    ss('ss2', '1204', 'SS 2', 'Waffen-SS, second group, by the '
+       'Hopfgarten trail'),
+    ss('ss3', '1109', 'SS 3', 'Waffen-SS, third group, below the crag'),
+    ss('ss4', None, 'SS 4', 'Waffen-SS, fourth group', arrive=2,
+       at=EAST, colour=SS2),
+    ss('ss5', None, 'SS 5', 'Waffen-SS, fifth group', arrive=3,
+       at=SOUTH, colour=SS2),
+    ss('ss6', None, 'SS 6', 'Waffen-SS, sixth group', a=4, arrive=4,
+       at=EAST, colour=SS2),
+    ss('ss7', None, 'SS 7', 'Waffen-SS, seventh group', arrive=6,
+       at=SOUTH, colour=SS2),
+    unit('mg', 'ss', 'grenadier', 3, 2, '1307', 'SS heavy weapons', SS,
+         'Machine guns and mortars on the slope', m=3, name='MG'),
+    unit(EIGHTY_EIGHT, 'ss', 'flak', 4, 1, None, 'SS heavy weapons', SS,
+         'An 88 mm gun, dragged up onto the Schatzberg', range=4, m=1,
+         name='88', steps=1, arrive=4, at=['1108', '1208']),
+]
+
+
+class Lee(ai.AI):
+    """The stock computer player, taught the siege: the defenders stay
+    behind the walls (Jenny at the gate) until the relief is in sight,
+    Borotra makes his run, and the SS press on the keep."""
+
+    def score(self, u, h):
+        s = super().score(u, h)
+        e = self.e
+        keep = min(hexgrid.distance(h, k) for k in KEEP)
+        if self.side == 'al':
+            if u.id in RELIEF_UNITS:
+                s += 4 * (8 - keep)
+            elif u.id == JENNY:
+                if h in (APPROACH, GATE):
+                    s += 25
+            elif u.kind != 'runner':
+                if h in CASTLE:
+                    s += 25
+        else:
+            if not u.supports:
+                s += 2.5 * (10 - keep)
+                if h in CASTLE:
+                    s += 10
+        return s
+
+
+AI_CLASS = Lee
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1a1c18', panel='#2a2e26', light='#7a8068',
+              dark='#080a06', accent='#d4c48a', button='#40463a',
+              button_hi='#8a927a', button_lo='#1a1c16', red='#a02a22')
+
+HELP = [
+    "THE CASTLE. The SS move first. The defenders hold the gatehouse, "
+    "the courtyard and the keep, inside a wall that costs 2 to climb "
+    "and that tanks can't cross; an SS attack made wholly across it, or "
+    "through the gate, is a column worse. The keep and the gatehouse "
+    "are a column more, and their defenders lose a step rather than "
+    "retreat. The crag round the castle is a column more "
+    "and closed to vehicles. At dawn (5:00) every attack is a column "
+    "worse.",
+
+    "THE DEFENDERS. Besotten Jenny, Lee's Sherman, starts at the gate. "
+    "From the Schatzberg the SS 88 (from 8:00) fires on her at the "
+    "start of every SS turn within 5 hexes, and she loses a step on a "
+    "1 or 2; only once she's gone does it shell the castle. Lee and Gangl in a hex cost an SS attack on it a column, "
+    "and lead an attack for a column more. The prisoners, the "
+    "statesmen and the generals, never leave the keep; they take "
+    "losses last.",
+
+    "THE RELIEF. The 142nd Infantry and its Shermans arrive from the "
+    "Wörgl road at 4:00 PM. At 10:00 the telephone line is cut, and "
+    "Jean Borotra may go: if he gets off the west edge the relief "
+    "arrives an hour sooner.",
+
+    "WINNING. The SS win if they hold the keep's main hex at 4:00 PM, "
+    "or if both prisoner counters are lost. Otherwise the points "
+    "decide: the SS score the keep's south rooms (4), the courtyard "
+    "(3) and the gatehouse (3) if they hold them, every defender's "
+    "step, and the prisoners (5 and 4), Jenny (3), Lee (3) and Gangl "
+    "(2) if they're lost; the defenders score every SS step, and 1 for "
+    "Borotra. The defenders win unless they finish more than %d VP "
+    "behind." % WIN,
+]
+
+ICON = 'itter'
+
+
+@grognard.icon('itter')
+def draw_icon(p, n):
+    """The castle on its crag at dawn, a Sherman at the gate."""
+    p.fill('#e8b48a')
+    p.disc(n * 0.2, n * 1.15, n * 0.6, '#2e5426')
+    p.disc(n * 0.85, n * 1.2, n * 0.6, '#2a4c22')
+    p.disc(n * 0.52, n * 0.95, n * 0.36, '#9a927a')
+    p.rect(n * 0.3, n * 0.36, n * 0.44, n * 0.32, '#c8bca0')
+    p.rect(n * 0.56, n * 0.18, n * 0.14, n * 0.5, '#b8ac90')
+    for i in range(4):
+        p.rect(n * (0.3 + i * 0.12), n * 0.31, n * 0.06, n * 0.06,
+               '#c8bca0')
+    p.rect(n * 0.4, n * 0.52, n * 0.08, n * 0.16, '#3a2e22')
+    p.rect(n * 0.06, n * 0.72, n * 0.3, n * 0.1, '#5e6a44')
+    p.rect(n * 0.12, n * 0.66, n * 0.16, n * 0.07, '#6a784c')
+    p.rect(n * 0.26, n * 0.68, n * 0.16, n * 0.025, '#3e4630')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

@@ -17,9 +17,9 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are twenty-eight games so far, in four kinds.
+There are twenty-nine games so far, in four kinds.
 
-Twenty-one are historical battles, from the oldest to the newest:
+Twenty-two are historical battles, from the oldest to the newest:
 Carrhae, where the Parthian horse archers shot Crassus's legions to
 pieces in 53 BC; Tours, where the Frankish foot stood against the
 horsemen of al-Andalus in 732; Hastings, Harold's shield wall on its
@@ -47,7 +47,10 @@ wheat into the machine guns in June 1918; and three from 1944: Drvar,
 the SS parachute raid on Tito's headquarters in the mountains of Bosnia
 in May; Pegasus Bridge, the glider-borne company holding the bridges
 over the Caen Canal and the Orne in the first hours of D-Day; and
-Crossroads, Bastogne in December.
+Crossroads, Bastogne in December; and the last, Castle Itter, where
+American tankers and Wehrmacht soldiers held a castle in the Tyrol
+together against the Waffen-SS five days after Hitler's death in
+1945.
 
 One is hypothetical: the Fulda Gap, a Soviet attack in November 1983
 that never happened.
@@ -148,6 +151,10 @@ west ahead of a dragon that burns the map as it goes.
 
 ```bash
 ./crossroads
+```
+
+```bash
+./itter
 ```
 
 ```bash
@@ -983,6 +990,49 @@ Armored Division breaks through from the south.
   steps destroyed, Assenois, and holding Bastogne. The Germans must
   finish 11 VP ahead to win.
 
+### Castle Itter: Tyrol, 5 May 1945
+
+The strangest battle of the war, a small one. Schloss Itter, on a crag
+above the Brixental, was an SS prison for French notables: the former
+prime ministers Reynaud and Daladier, Generals Weygand and Gamelin, the
+tennis champion Jean Borotra and others. Its guards ran on 4 May.
+Lieutenant Jack Lee of the 23rd Tank Battalion came up with his
+Sherman, Besotten Jenny, and a handful of men; Major Josef Gangl, a
+Wehrmacht officer gone over to the Austrian resistance, brought his own
+soldiers, and an SS captain on leave in the village joined them. At
+dawn on the fifth the Waffen-SS attacked.
+
+- **Twelve turns** of an hour, from 5:00 AM to 4:00 PM. The SS move
+  first. They have seven groups of panzergrenadiers with Panzerfausts,
+  a machine-gun and mortar group, and from 8:00 an 88 on the
+  Schatzberg. The defenders are Lee's men, Gangl's two groups,
+  Schrader, the French with rifles, Lee and Gangl themselves, and two
+  counters of prisoners who never leave the keep.
+- **The castle**: a wall that costs 2 to climb and that tanks can't
+  cross; an SS attack wholly across it, or through the gate, is a
+  column worse. The keep and the gatehouse are a column more and are
+  held, not given up. Lee and Gangl in a hex cost an SS attack on it a
+  column. At dawn every attack is a column worse.
+- **Besotten Jenny** starts at the gate. The 88 fires on her at the
+  start of every SS turn, a step on a 1 or 2, and shells the castle
+  only once she's gone.
+- **The relief**: the 142nd Infantry, its Shermans and Austrian
+  resistance fighters come up the Wörgl road at 4:00 PM. At 10:00 the
+  telephone line is cut and Borotra may go over the wall: if he gets
+  off the west edge they come an hour sooner.
+- **Winning**: the SS win if they hold the keep at the end or both
+  prisoner counters are lost. Otherwise the SS score the rest of the
+  castle, defenders' steps, and the prisoners, Jenny and the officers
+  if they're lost; the defenders score SS steps and Borotra. The
+  defenders must not finish more than 8 VP behind. Computer against
+  computer they win 32 games in 60; Borotra gets through in about a
+  third of them.
+
+The counters are a guess at the men on each side (perhaps fourteen
+Americans, ten of Gangl's men and a hundred or more SS), and the map is
+the castle and its crag as the photographs show them, with woods and
+fields round about, not a survey.
+
 ## Hypothetical battles
 
 ### Fulda Gap: Hesse, November 1983
@@ -1632,7 +1682,11 @@ dark (`AI_CLASS`); and `hollow` for an enemy made in play every turn
 an order (`ACTIONS`), units that score by being taken off the map on
 a given turn, turrets that sweep the ground round them, and a
 computer player that sends its miners out and its colonists to the
-pad (`AI_CLASS`).
+pad (`AI_CLASS`); and `itter` for a castle wall worked out in code
+round the hexes it encloses, with a gate of its own, a runner whose
+escape brings the relief sooner (`arrive` changed from `ON_TURN`), and
+a gun that shells the walls only once the tank it was hunting is gone
+(`CAN_SUPPORT`).
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)
