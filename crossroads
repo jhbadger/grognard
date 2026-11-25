@@ -66,6 +66,7 @@ START = (1944, 12, 19)
 TURN_PARTS = ['AM', 'PM']
 STACK = 3                       # units in a hex (4 in Bastogne)
 FOG = True                      # you only see enemy units near your own
+DEFENSIVE_FIRE = 2              # guns that add to a defence, per attack
 
 # The weather by turn: fog on the 19th, snow from the 21st, and on the
 # 23rd the skies clear, the transports drop supplies and the fighter-

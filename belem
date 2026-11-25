@@ -78,6 +78,7 @@ def TURN_NAME(t):
 
 
 STACK = 2               # narrow streets
+FOG = True              # you only see enemy units near your own
 DEFENSIVE_FIRE = 1
 STEP_VP = 1
 
@@ -350,8 +351,9 @@ FONT = dict(family='Georgia')
 
 HELP = [
     "THE RISING. The Patriots move first. They start with the artillery "
-    "park and the Largo das Mercês. Before first light (two turns) "
-    "everyone sees only the next hex and every attack loses a column; "
+    "park and the Largo das Mercês. Enemy units show only within two "
+    "hexes of your own. Before first light (two turns) everyone sees "
+    "only the next hex and every attack loses a column; "
     "at first light, Patriots attacking the regiments lose another "
     "(their men are loath to fire on their own officers).",
 
