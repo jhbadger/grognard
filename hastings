@@ -1,0 +1,614 @@
+#!/usr/bin/env python3
+"""Hastings: Senlac Hill, 14 October 1066.  A sample game for the
+Grognard engine.
+
+Harold Godwinson, king of the English for nine months, has beaten the
+king of Norway at Stamford Bridge and marched his army the length of
+England to meet the next invader.  William, duke of Normandy, has
+landed at Pevensey and is burning the country round Hastings.  On a
+ridge across the road to London, Harold forms his army in a wall of
+shields, and William must break it before night.  Play either side
+against the computer, or against a friend at the same screen.
+
+Run it with ./hastings (Python 3 with Tk, nothing else).  The game is
+saved to ~/.hastings.json.  ./hastings --selftest checks the map and
+plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import ai, counters, hexgrid             # noqa: E402
+
+ID = 'hastings'
+TITLE = 'Hastings'
+SUBTITLE = 'Senlac Hill, 14 October 1066'
+
+INTRO = [
+    "October 1066. In January Edward the Confessor died without a son, "
+    "and the great men of England made Harold Godwinson, earl of "
+    "Wessex, their king. Across the Channel William, duke of Normandy, "
+    "says the crown was promised to him, and the Pope agrees.",
+
+    "In September Harald Hardrada, king of Norway, landed in the north. "
+    "Harold marched up from London and destroyed his army at Stamford "
+    "Bridge. Three days later the wind turned, and William's fleet "
+    "crossed to Pevensey. Harold hurried south again, gathering men on "
+    "the road.",
+
+    "On the morning of the 14th the English hold a ridge across the "
+    "London road, seven miles from Hastings: the housecarls and thegns "
+    "in front, shield to shield, and the levies of the shires behind "
+    "them. Below, the duke forms his army in three divisions, archers "
+    "in front, foot behind them and the knights last. Harold has only "
+    "to stand. William must break the wall before night.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='no', name='Normans', adj='Norman', colour='#3e5c8e',
+         ink='#f0e4c0', posture='attack',
+         about='Break the shield wall and take the ridge before dark. '
+               'Let the archers thin it, and when the levies come '
+               'running down after you, turn the knights on them in the '
+               'open.'),
+    dict(id='en', name='English', adj='English', colour='#a8382c',
+         ink='#f4dc90', posture='defend',
+         about="Hold the ridge until nightfall and keep Harold's "
+               'standard. Whatever happens, keep the levies in the line: '
+               'they will run after a beaten enemy if they can.'),
+]
+ORDER = ['no', 'en']
+
+TURNS = 9
+
+
+def TURN_NAME(t):
+    """An hour a turn, from nine in the morning."""
+    h = 9 + t - 1
+    return ('14 Oct 1066', '%d %s' % ((h - 1) % 12 + 1,
+                                     'AM' if h < 12 else 'PM'))
+
+
+STACK = 2
+FOG = False             # the armies in full view across the valley
+DEFENSIVE_FIRE = 1      # Norman archers shoot into an English charge
+COMBAT_SOUND = 'swords'
+STEP_VP = 1
+
+# Hand to hand: an attack that doesn't drive the defenders off still
+# costs them, and only big odds break a line.
+CRT = {
+    'columns': ['1:2', '1:1', '1.5:1', '2:1', '3:1', '4:1', '5:1'],
+    'rows': [
+        ['A2', 'A1', 'A1', 'EX', 'EX', 'DR', 'D1R'],
+        ['A1', 'A1', 'EX', 'EX', 'DR', 'D1R', 'D1R'],
+        ['A1', 'EX', 'EX', 'DR', 'D1R', 'D1R', 'D2R'],
+        ['A1', 'EX', 'DR', 'D1R', 'D1R', 'D2R', 'D2R'],
+        ['EX', 'DR', 'D1R', 'D1R', 'D2R', 'D2R', 'DE'],
+        ['DR', 'D1R', 'D1R', 'D2R', 'D2R', 'DE', 'DE'],
+    ],
+}
+
+WEATHER = {1: 'clear', 9: 'dusk'}
+WEATHER_TYPES = {
+    'dusk': dict(name='Dusk', icon='fog', air=False, spot=1),
+}
+
+STANDARD = hexgrid.parse('0804')
+FEINT = 4               # from noon the knights run away on purpose
+HIGH = 7                # from 3 PM the archers shoot high
+PURSUE = 3              # in 6: the chance a levy runs after a beaten foe
+LEADERS = ('harold', 'gyrth', 'leofwine')
+
+
+# --------------------------------------------------------- the pursuit
+
+def _lures(e):
+    """Norman units that might draw the levies down the hill: any that
+    attacked in their last turn and lost a step doing it (or since), and
+    from FEINT on, any knights that attacked at all (the feigned
+    flight)."""
+    was = e.flags.get('nsteps', {})
+    out = []
+    for u in e.alive('no'):
+        if not u.attacked:
+            continue
+        if was.get(u.id, u.steps) > u.steps or \
+                (e.turn >= FEINT and u.kind == 'knight'):
+            out.append(u)
+    return out
+
+
+def _below(e, h):
+    """Whether h is off the ridge: not the crest or the hill behind it."""
+    return e.board.terrain_name(h) not in ('crest', 'caldbec')
+
+
+def _chase_to(e, u, lure):
+    """Where a levy runs to after lure: an empty hex next to it, off the
+    ridge, as near the levy as can be."""
+    best = None
+    for n in hexgrid.neighbours(lure.hex):
+        if not e.board.on_map(n) or e.at(n) or not _below(e, n):
+            continue
+        t = e.board.terrain(n) or {}
+        if t.get('impassable') or t.get('move', {}).get('foot') is None:
+            continue
+        d = hexgrid.distance(u.hex, n)
+        key = (d, -n[1], n)
+        if best is None or key < best[0]:
+            best = (key, n)
+    return best[1] if best else None
+
+
+def _pursuit(e):
+    """At the start of the English turn each levy next to a Norman unit
+    that was beaten back (or ran away on purpose) may run down after it
+    and is caught out of the line: it can't move or fight this turn."""
+    lures = _lures(e)
+    if not lures:
+        return
+    chance = PURSUE + (1 if e.flags.get('harold') else 0)
+    for u in sorted(e.alive('en'), key=lambda u: u.id):
+        if not u.type.get('rash') or u.disabled:
+            continue
+        near = [x for x in lures if hexgrid.distance(x.hex, u.hex) == 1]
+        if not near:
+            continue
+        lords = [x for x in e.alive('en') if x.id in LEADERS and
+                 hexgrid.distance(x.hex, u.hex) <= 1]
+        n = chance - (1 if lords else 0)
+        if e.rng.randint(1, 6) > n:
+            continue
+        lure = near[0]
+        h = _chase_to(e, u, lure)
+        if h is None:
+            continue
+        old = u.hex
+        u.hex = h
+        u.disabled = True
+        u.recovering = False
+        e.take(h, 'en')
+        e.changed()
+        e.events.append(('move', u.id, [old, h]))
+        e.say('The %s at %s break ranks and run down the hill after the '
+              '%s! They are out of the line this turn.' % (
+                  'thegns' if u.kind == 'thegn' else 'levies',
+                  e.place(old), lure.type.get('name', 'enemy').lower()))
+
+
+def ON_TURN(e, side):
+    """The Normans' steps are counted at the start of their turn, so the
+    English can tell who was beaten back; at the start of the English
+    turn the levies may run after them.  And the hours of the day."""
+    if side == 'no':
+        e.flags['nsteps'] = {u.id: u.steps for u in e.alive('no')}
+        if e.turn == 1:
+            e.say('The trumpets sound, and the duke\'s archers go '
+                  'forward up the slope.')
+        elif e.turn == FEINT:
+            e.say('The duke has seen the levies run after the Bretons. '
+                  'Now his knights will turn and run on purpose.')
+        elif e.turn == HIGH:
+            e.say('William orders the archers to shoot high, so the '
+                  'arrows fall behind the shields.')
+    else:
+        if e.turn == 1:
+            e.say('"Out! Out!" The English beat their shields and wait.')
+        _pursuit(e)
+
+
+def ON_ELIMINATE(e, u, where):
+    """Kings, earls and the duke."""
+    if u.id == 'harold':
+        e.flags['harold'] = True
+        e.say('Harold is down! The king lies dead beneath his standard, '
+              'and the English lose heart.')
+    elif u.id in ('gyrth', 'leofwine'):
+        e.say('Earl %s, the king\'s brother, has fallen.' %
+              u.id.title())
+    elif u.id == 'william':
+        e.flags['william'] = True
+        e.say('The duke is dead! The Normans falter.')
+    elif u.id == 'odo':
+        e.say('Bishop Odo is unhorsed and lost.')
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Shields, arrows and kings:
+    - knights alone against housecarls or thegns lose a column (the
+      shield wall);
+    - archers alone against them lose a column, until the archers shoot
+      high (HIGH);
+    - with Harold dead the English attack a column worse, with William
+      dead the Normans."""
+    out = []
+    wall = any(u.spec.get('wall') for u in e.at(target, 'en'))
+    if e.side == 'no':
+        if wall and attackers and all(u.kind == 'knight' for u in attackers):
+            out.append((-1, 'shield wall'))
+        if wall and not attackers and support and e.turn < HIGH:
+            out.append((-1, 'shields'))
+        if e.flags.get('william'):
+            out.append((-1, 'the duke is dead'))
+    elif e.flags.get('harold'):
+        out.append((-1, 'Harold is dead'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'S': 'crest', 'l': 'slope', 'k': 'hillock', 'c': 'caldbec'}
+
+TERRAIN = {
+    'clear':  dict(name='Rough pasture', colour='#9cb46a', ink='#7c9450',
+                   edge='#5e7438'),
+    'fields': dict(name='Stubble', colour='#c4b872', ink='#a0944e',
+                   edge='#7e7238'),
+    'woods':  dict(name='Woods', colour='#5a7a3a', ink='#34521e',
+                   edge='#1e3a12'),
+    'forest': dict(name='The Weald', colour='#3a5a2a', ink='#20401a',
+                   edge='#10280a'),
+    'crest':  dict(name='Senlac ridge', colour='#b8ac6e', ink='#8a7a46',
+                   pattern='hills', edge='#6a5a30', z=4, shift=-1,
+                   open=False, los=True,
+                   move={'foot': 2, 'track': 3, 'wheel': 3}),
+    'slope':  dict(name='The slope', colour='#a8b06c', ink='#848a4a',
+                   pattern='hills', edge='#646a34', z=3, shift=0,
+                   open=True, los=True,
+                   move={'foot': 2, 'track': 2, 'wheel': 3}),
+    'caldbec': dict(name='Caldbec Hill', colour='#b0a46a', ink='#867646',
+                    pattern='hills', edge='#665830', z=3, shift=0,
+                    open=False, los=True,
+                    move={'foot': 2, 'track': 2, 'wheel': 3}),
+    'hills':  dict(name='Telham Hill', colour='#b4a86e', ink='#887a4a'),
+    'hillock': dict(name='The hillock', colour='#b0a468', ink='#867646',
+                    pattern='hills', edge='#665830', z=3, shift=-1,
+                    open=False, los=True,
+                    move={'foot': 2, 'track': 2, 'wheel': 3}),
+    'rough':  dict(name='Steep ground', colour='#9a906a', ink='#6a6046'),
+    'marsh':  dict(name='Boggy valley', colour='#7e9c76', ink='#4a7a9a',
+                   edge='#3e6a6a'),
+}
+
+MAP = [
+    'FF:.:.....:.:.FFF',
+    'F.:.:...:..:..:FF',
+    'Ff.:ccccccccc.:fF',
+    'Fr.SSSSSSSSSSS.rF',
+    'FrlllllllllllllrF',
+    'fmm...........mmf',
+    'fm.............mf',
+    'mm.:.....:.....mm',
+    'f..:..k....:...ff',
+    'f.:.....:......:f',
+    '.:..:..:...:..:..',
+    '.f.:.hhhhhh..:.f.',
+    'ff..hhhhhhhh.:.ff',
+    'ff.:hhhhhhhhh..ff',
+]
+
+ROADS = [
+    ('road', ['0914', '0901']),                 # Hastings to London
+]
+
+LABELS = {
+    '0804': "Harold's standard", '0901': 'London road',
+    '0914': 'to Hastings', '0709': 'The hillock', '0713': 'Telham Hill',
+    '0503': 'Caldbec Hill', '1205': 'The slope', '0206': 'Marsh',
+    '1607': 'Marsh',
+}
+
+OBJECTIVES = {
+    '0804': dict(name="Harold's standard", vp=8, owner='en', stand=True,
+                 shift=-1, works="the king's household",
+                 **{'for': 'no'}),
+    '0404': dict(name='West of the ridge', vp=2, owner='en',
+                 **{'for': 'no'}),
+    '1404': dict(name='East of the ridge', vp=2, owner='en',
+                 **{'for': 'no'}),
+}
+
+SUPPLY = {
+    'no': dict(**{'from': ['S'], 'range': 12}),
+    'en': dict(**{'from': ['N'], 'range': 12}),
+}
+
+
+def _score(e):
+    return 'Normans %d VP, English %d.' % (e.vp('no'), e.vp('en'))
+
+
+def VICTORY(e):
+    """The day turns on the standard and the king: the standard in
+    Norman hands at the end and Harold dead is a Norman victory, either
+    one a marginal one.  Otherwise the English win, clearly if the
+    Normans aren't ahead on points: the standard (8) and each end of the
+    ridge (2) they hold, every English step destroyed, Harold (6) and
+    his brothers (3 each), against every Norman step, William (6) and
+    Odo (2)."""
+    taken = e.control.get(STANDARD) == 'no'
+    dead = bool(e.flags.get('harold'))
+    if taken and dead:
+        return 'no', ('Norman victory. %s Harold lies dead beneath his '
+                      'standard, and the duke will be crowned in '
+                      'Westminster at Christmas.' % _score(e))
+    if taken:
+        return 'no', ('Norman marginal victory. %s The standard is taken, '
+                      'but Harold has got away to raise another army.'
+                      % _score(e))
+    if dead:
+        return 'no', ('Norman marginal victory. %s Harold is dead, and '
+                      'though his housecarls hold the standard till dark, '
+                      'England has no king.' % _score(e))
+    if e.vp('no') > e.vp('en'):
+        return 'en', ('English marginal victory. %s The wall holds till '
+                      'nightfall, and the duke must think again.'
+                      % _score(e))
+    return 'en', ('English victory. %s The Normans are thrown back down '
+                  'the hill, and the duke rides for his ships.' % _score(e))
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'huscarl': dict(name='Housecarls', symbol='axe', move='foot', at=True,
+                    fight='swords', fate='falls where it stood'),
+    'thegn':   dict(name='Thegns', symbol='infantry', move='foot',
+                    at=True, rash=True),
+    'fyrd':    dict(name='Levies of the fyrd', symbol='infantry',
+                    move='foot', rash=True, fate='is cut down'),
+    'foot':    dict(name='Foot', symbol='infantry', move='foot'),
+    'knight':  dict(name='Knights', symbol='horse', move='track',
+                    armor=True, spot=3, sound='hooves',
+                    fate='is unhorsed'),
+    'archer':  dict(name='Archers', symbol='bow', move='foot', zoc=False,
+                    support=True, fight='bow', fate='is ridden down'),
+}
+
+
+@grognard.symbol('axe')
+def s_axe(p, x, y, w, h, c):
+    """Housecarls: the two-handed Danish axe."""
+    p.line(x + 1, y + h - 1, x + w - 2, y, c)
+    bx, by = x + w * 0.62, y + h * 0.1
+    r = max(2, h // 3)
+    for i in range(r + 1):
+        p.line(bx + i * 0.5, by + i, bx + r, by + i * 0.6, c)
+
+
+@grognard.symbol('bow')
+def s_bow(p, x, y, w, h, c):
+    """Archers: a bow drawn, with an arrow on the string."""
+    cx, cy = x + w * 0.4, y + (h - 1) / 2
+    r = max(2, h // 2 - 1)
+    p.line(cx, cy - r, cx, cy + r, c)                       # string
+    for i in range(r + 1):                                  # stave
+        dx = int(round((r * r - i * i) ** 0.5 * 0.7))
+        p.set(cx + dx, cy - i, c)
+        p.set(cx + dx, cy + i, c)
+    p.line(cx - 1, cy, x + w - 1, cy, c)                    # arrow
+
+
+counters.PICTURES['axe'] = [
+    '.......###.', '......####.', '.....#####.', '....#.###..',
+    '...#.......', '..#........', '.#.........', '#..........']
+counters.PICTURES['bow'] = [
+    '...#.......', '...##......', '...#.#.....', '##########.',
+    '...#.#.....', '...##......', '...#.......', '...........']
+
+ENGLAND = '#a8382c'     # the king's household
+THEGN = '#b44a3a'
+FYRD = '#c06a52'
+NORMAN = '#3e5c8e'
+DUKE = '#2e4a7e'
+BRETON = '#4e7a8a'
+FRENCH = '#5a6aa2'
+
+
+def unit(uid, side, kind, a, d, m, hx, long, colour, formation, steps=2,
+         **kw):
+    """A division of the army: attack, defence, movement and where it
+    starts (None to arrive later, with arrive and at)."""
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, size=kw.pop('size', 'III'), a=a, d=d, m=m,
+                steps=steps, hex=hx, long=long, colour=colour,
+                formation=formation)
+    spec.update(kw)
+    return spec
+
+
+def huscarls(uid, a, d, hx, long, formation, steps=3, **kw):
+    return unit(uid, 'en', 'huscarl', a, d, 2, hx, long, ENGLAND,
+                formation, steps=steps, wall=True, **kw)
+
+
+def thegns(n, hx):
+    return unit('thegn%d' % n, 'en', 'thegn', 4, 4, 2, hx,
+                'Thegns of the shires, in mail', THEGN, 'The select fyrd',
+                wall=True, name='THEGN%d' % n)
+
+
+def fyrd(n, hx, **kw):
+    return unit('fyrd%d' % n, 'en', 'fyrd', 3, 3, 3, hx,
+                kw.pop('long', 'Levies of the fyrd: farmers with spears'),
+                FYRD, 'The fyrd', name='FYRD%d' % n, **kw)
+
+
+def archers(uid, hx, long, colour, formation, name):
+    return unit(uid, 'no', 'archer', 3, 1, 3, hx, long, colour, formation,
+                steps=1, range=2, size='II', name=name)
+
+
+def foot(uid, hx, long, colour, formation, name, a=4, d=3):
+    return unit(uid, 'no', 'foot', a, d, 3, hx, long, colour, formation,
+                name=name)
+
+
+def knights(uid, a, d, hx, long, colour, formation, name, **kw):
+    return unit(uid, 'no', 'knight', a, d, 5, hx, long, colour, formation,
+                name=name, **kw)
+
+
+UNITS = [
+    # ---- Harold's army on the ridge
+    huscarls('harold', 6, 7, '0804', 'Harold Godwinson and his household',
+             "The king's household", vp=6, name='HAROLD', size='X'),
+    huscarls('gyrth', 5, 6, '0604', 'Earl Gyrth and his housecarls',
+             "The king's household", vp=3, name='GYRTH'),
+    huscarls('leofwine', 5, 6, '1004', 'Earl Leofwine and his housecarls',
+             "The king's household", vp=3, name='LEOFWN'),
+    huscarls('hus1', 5, 6, '0804', "The king's housecarls",
+             "The king's household", name='HUSCL1'),
+    huscarls('hus2', 5, 6, '0704', "The king's housecarls",
+             "The king's household", name='HUSCL2'),
+    thegns(1, '0504'), thegns(2, '0904'), thegns(3, '1204'),
+    fyrd(1, '0404'), fyrd(2, '0604'), fyrd(3, '1104'), fyrd(4, '1304'),
+    fyrd(5, '1404'), fyrd(6, '0703'),
+    fyrd(7, None, long='Men of the shires, late on the road',
+         arrive=3, at=['0901', '0801', '1001']),
+
+    # ---- the duke's army: Bretons on the left, Normans in the centre,
+    # French and Flemings on the right
+    archers('bre_a', '0407', 'Breton archers', BRETON, 'Bretons',
+            'BR ARC'),
+    foot('bre_f', '0408', 'Breton foot', BRETON, 'Bretons', 'BR FT'),
+    knights('bre_k', 5, 3, '0409', 'Breton knights under Alan the Red',
+            BRETON, 'Bretons', 'BR KN'),
+    archers('nor_a1', '0707', 'Norman archers', NORMAN, 'Normans',
+            'ARCH1'),
+    archers('nor_a2', '0907', 'Norman crossbowmen', NORMAN, 'Normans',
+            'XBOW'),
+    foot('nor_f1', '0708', 'Norman foot', NORMAN, 'Normans', 'FOOT1',
+         a=5, d=4),
+    foot('nor_f2', '0908', 'Norman foot', NORMAN, 'Normans', 'FOOT2',
+         a=5, d=4),
+    knights('nor_k1', 6, 3, '0709', 'Norman knights', NORMAN, 'Normans',
+            'KNTS1'),
+    knights('nor_k2', 6, 3, '0909', 'Norman knights', NORMAN, 'Normans',
+            'KNTS2'),
+    knights('william', 6, 4, '0809', 'Duke William and his household',
+            DUKE, 'The duke', 'WILLM', vp=6, size='X'),
+    knights('odo', 4, 3, '0810', 'Bishop Odo of Bayeux, with a club',
+            DUKE, 'The duke', 'ODO', vp=2, size='II', steps=1),
+    archers('fr_a', '1207', 'French and Flemish archers', FRENCH,
+            'French', 'FR ARC'),
+    foot('fr_f', '1208', 'French and Flemish foot', FRENCH, 'French',
+         'FR FT'),
+    knights('fr_k', 5, 3, '1209',
+            'French knights under Eustace of Boulogne', FRENCH, 'French',
+            'FR KN'),
+]
+
+def _crest(e, h):
+    return h is not None and e.board.terrain_name(h) == 'crest'
+
+
+class Duke(ai.AI):
+    """The stock computer player, taught the shape of the day: the
+    English keep to the crest (a levy that ran climbs back), and the
+    Normans go up the slope at the wall and make for the standard
+    rather than waiting below for the English to come down."""
+
+    def score(self, u, h):
+        s = super().score(u, h)
+        e = self.e
+        if self.side == 'en':
+            if _crest(e, h):
+                s += 8
+            elif _crest(e, u.hex):
+                s -= 8
+        elif not u.supports:
+            s -= hexgrid.distance(h, STANDARD) * 1.0
+            if any(_crest(e, n) and e.at(n, 'en')
+                   for n in hexgrid.neighbours(h)):
+                s += 7
+        return s
+
+
+AI_CLASS = Duke
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1a1a1e', panel='#2a2a30', light='#74707e',
+              dark='#08080a', accent='#e8c070', button='#4a4658',
+              button_hi='#948ea8', button_lo='#1a1a1e', red='#b03020')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE BATTLE. The Normans move first. The English stand on the crest "
+    "of the ridge, which costs 2 to climb (3 for horses) and gives the "
+    "defenders a column. The slope below it is open ground. The valley "
+    "is boggy at both ends, where horses can't go. Nine turns of an "
+    "hour, until dusk; both armies are in full view. Round Harold's "
+    "standard the king's household gives the defenders another column, "
+    "and never gives ground: driven back, they lose a step instead.",
+
+    "THE SHIELD WALL. Housecarls and thegns stand shield to shield: "
+    "knights get no shock against them even in the open, knights alone "
+    "lose a column attacking them, and so do archers shooting alone, "
+    "until 3 PM, when William orders them to shoot high. Archers shoot "
+    "from 2 hexes and can't be hurt doing it.",
+
+    "THE LEVIES. At the start of the English turn, each unit of thegns "
+    "or levies next to a Norman unit that attacked and lost a "
+    "step runs down after it one time in two (one in three if Harold or "
+    "an earl is next to it, two in three if Harold is dead). From noon "
+    "on, any knights that attacked will do: they run away on purpose. "
+    "Those that run are out of the line, can't move or fight that turn, "
+    "and stand in the open, where knights attacking levies gain a "
+    "column.",
+
+    "WINNING. The Normans score Harold's standard (8) and each end of "
+    "the ridge (2) if they hold them at the end, every English step "
+    "destroyed, Harold 6 more and his brothers 3. The English score "
+    "every Norman step, William 6 more and Odo 2. But the day turns on "
+    "the standard and the king: the standard in Norman hands at the end "
+    "and Harold dead is a Norman victory, either one a marginal one. "
+    "Otherwise the English win, clearly if the Normans aren't ahead on "
+    "points. If Harold dies the English attack a column worse; if "
+    "William does, the Normans.",
+]
+
+ICON = 'hastings'
+
+
+@grognard.icon('hastings')
+def draw_icon(p, n):
+    """A wall of shields along a green ridge, the golden dragon of
+    Wessex above it, and arrows falling."""
+    p.fill('#c8d4e0')
+    p.rect(0, n * 0.55, n, n * 0.45, '#7e9a4e')
+    p.disc(n * 0.5, n * 1.6, n * 1.05, '#94a85e')
+    p.line(n * 0.5, n * 0.1, n * 0.5, n * 0.55, '#4a3420',
+           max(1, n // 40))
+    p.rect(n * 0.5, n * 0.1, n * 0.26, n * 0.16, '#d8b040')
+    p.disc(n * 0.7, n * 0.18, n * 0.05, '#a8382c')
+    for k in range(6):
+        x = n * (0.1 + k * 0.16)
+        p.disc(x, n * 0.6, n * 0.085, '#a8382c')
+        p.disc(x, n * 0.6, n * 0.03, '#f4dc90')
+    for k in range(4):
+        x = n * (0.12 + k * 0.22)
+        for s in range(5):
+            p.rect(x + s * n * 0.012, n * 0.18 + s * n * 0.03,
+                   n * 0.02, n * 0.02, '#2a2018')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

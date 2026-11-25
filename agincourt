@@ -1,0 +1,539 @@
+#!/usr/bin/env python3
+"""Agincourt: between the woods of Azincourt and Tramecourt, 25 October
+1415.  A sample game for the Grognard engine.
+
+Henry V of England has taken Harfleur and is marching his sick and
+hungry army to Calais.  The army of France has got in front of him,
+three or four times his number, and on Saint Crispin's day he must
+fight his way through or starve.  His men-at-arms stand on foot in a
+thin line across a ploughed field soaked by a night of rain, his
+archers on the wings and between the battles behind sharpened stakes,
+and the woods on either side close in so that the French can't go round.
+Play either side against the computer, or against a friend at the same
+screen.
+
+Run it with ./agincourt (Python 3 with Tk, nothing else).  The game is
+saved to ~/.agincourt.json.  ./agincourt --selftest checks the map and
+plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import ai, counters, hexgrid             # noqa: E402
+
+ID = 'agincourt'
+TITLE = 'Agincourt'
+SUBTITLE = "Saint Crispin's day, 25 October 1415"
+
+INTRO = [
+    "October 1415. Henry V has taken Harfleur at the mouth of the "
+    "Seine, but the siege has cost him a third of his army in dead and "
+    "sick. Against advice he marches the rest overland for Calais, "
+    "nine thousand men with eight days' food.",
+
+    "It takes them seventeen days. The French hold the fords of the "
+    "Somme and drive them far upstream, and when they come north at "
+    "last the whole army of France is across the road in front of "
+    "them: the constable, the marshal, the dukes of Orléans, Bourbon "
+    "and Alençon, and more men-at-arms than the English have men.",
+
+    "It rains all night. In the morning the armies face each other "
+    "across a ploughed field between two woods, the French on dry "
+    "ground at the north end, waiting. At last Henry moves first: his "
+    "line goes forward to bowshot, the archers hammer their stakes "
+    "into the mud, and the first arrows fall on the French.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='fr', name='French', adj='French', colour='#2e4c9a',
+         ink='#f0d860', posture='attack',
+         about="Ride down the archers, then crush the English line under "
+               "the weight of the vanguard and the main battle, take the "
+               "king and loot his baggage at Maisoncelle."),
+    dict(id='en', name='English', adj='English', colour='#b8302a',
+         ink='#f4ecd8', posture='defend',
+         about='Stand behind the stakes and let the archers empty their '
+               'sheaves into the French as they flounder through the mud. '
+               'Keep the king alive and the line whole.'),
+]
+ORDER = ['fr', 'en']
+
+TURNS = 8
+
+
+def TURN_NAME(t):
+    """Half an hour a turn, from eleven in the morning (11:00 to 2:30:
+    no AM or PM, which wouldn't fit on the calendar)."""
+    m = 11 * 60 + (t - 1) * 30
+    h = m // 60
+    return ('25 Oct 1415', '%d:%02d' % ((h - 1) % 12 + 1, m % 60))
+
+
+STACK = 2
+FOG = False             # the armies in full view across the field
+DEFENSIVE_FIRE = 3      # the archers shoot into every French attack
+COMBAT_SOUND = 'swords'
+STEP_VP = {'fr': 2, 'en': 1}    # an English step is worth two French
+
+# Hand to hand in armour: an attack that doesn't drive the defenders off
+# costs the attackers, and only big odds break a line.
+CRT = {
+    'columns': ['1:2', '1:1', '1.5:1', '2:1', '3:1', '4:1', '5:1'],
+    'rows': [
+        ['A2', 'A1', 'A1', 'EX', 'EX', 'DR', 'D1R'],
+        ['A1', 'A1', 'EX', 'EX', 'DR', 'D1R', 'D1R'],
+        ['A1', 'EX', 'EX', 'DR', 'D1R', 'D1R', 'D2R'],
+        ['A1', 'EX', 'DR', 'D1R', 'D1R', 'D2R', 'D2R'],
+        ['EX', 'DR', 'D1R', 'D1R', 'D2R', 'D2R', 'DE'],
+        ['DR', 'D1R', 'D1R', 'D2R', 'D2R', 'DE', 'DE'],
+    ],
+}
+
+WEATHER = {1: 'overcast'}
+
+BANNER = hexgrid.parse('0808')
+MAISONCELLE = hexgrid.parse('0813')
+PRESS = 4               # this many attackers or more are packed too close
+
+
+def _in_mud(e, u):
+    return u.hex is not None and e.board.terrain_name(u.hex) == 'mud'
+
+
+def _stakes(e, a, b):
+    side = e.board.river(a, b)
+    return bool(side) and side.get('name') == HEXSIDES['stakes']['name']
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Stakes, mud and the press:
+    - horsemen attacking across the stakes lose another column (the
+      stakes themselves cost one);
+    - an attack by PRESS units or more loses a column (no room to swing
+      a weapon);
+    - French men-at-arms who all moved this turn and stand in the mud
+      lose a column (winded);
+    - arrows shot (with no one attacking) into the mud gain a column;
+    - with the king down, the English attack a column worse; with the
+      constable dead, the French."""
+    out = []
+    if e.side == 'fr':
+        if any(u.type.get('mounted') and _stakes(e, u.hex, target)
+               for u in attackers):
+            out.append((-1, 'horses on the stakes'))
+        if len(attackers) >= PRESS:
+            out.append((-1, 'the press'))
+        if attackers and all(u.kind == 'maa' and u.moved and _in_mud(e, u)
+                             for u in attackers):
+            out.append((-1, 'winded in the mud'))
+        if e.flags.get('albret'):
+            out.append((-1, 'the constable is dead'))
+    else:
+        if not attackers and support and \
+                e.board.terrain_name(target) == 'mud':
+            out.append((1, 'floundering in the mud'))
+        if e.flags.get('henry'):
+            out.append((-1, 'the king is down'))
+    return out
+
+
+def ON_TURN(e, side):
+    """The hours of the battle."""
+    if side == 'fr':
+        if e.turn == 1:
+            e.say('The arrows fall. The French horse on the wings spur '
+                  'forward to ride the archers down.')
+        elif e.turn == 3:
+            e.say('The main battle comes on behind the vanguard, into the '
+                  'same narrow field.')
+        elif e.turn == 6:
+            e.say('The rearguard mounts. The counts of Marle and '
+                  'Fauquembergues rally what they can for one last charge.')
+    elif e.turn == 1:
+        e.say('"Now strike!" Sir Thomas Erpingham throws his baton in '
+              'the air, and the archers loose.')
+
+
+def ON_ELIMINATE(e, u, where):
+    """Kings, dukes and constables, and the baggage."""
+    if u.id == 'henry':
+        e.flags['henry'] = True
+        e.say('The king is down! The crown is struck from his helmet, '
+              'and the English waver.')
+    elif u.id == 'york':
+        e.say('The Duke of York is killed, crushed in the press.')
+    elif u.id == 'albret':
+        e.flags['albret'] = True
+        e.say("Charles d'Albret, Constable of France, is killed. The "
+              'French have no one to give orders.')
+    elif u.id == 'alencon':
+        e.say('The Duke of Alençon falls, after striking at the king '
+              'himself.')
+    elif u.id == 'baggage':
+        e.say('The baggage at Maisoncelle is plundered! Fearing a new '
+              'attack, Henry orders the prisoners killed.')
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'p': 'mud'}
+
+TERRAIN = {
+    'clear':  dict(name='Stubble', colour='#b0ac6a', ink='#8e8a4a',
+                   edge='#6e6a34'),
+    'fields': dict(name='Wet grass', colour='#9cb06a', ink='#7a8e4a',
+                   edge='#5a6e34'),
+    'mud':    dict(name='Ploughed mud', colour='#8a7250', ink='#6a5236',
+                   pattern='fields', edge='#4a3a24', z=1, shift=0,
+                   open=True, los=True,
+                   move={'foot': 2, 'track': 3, 'wheel': 4}),
+    'woods':  dict(name='Edge of the wood', colour='#5a7238', ink='#38501e',
+                   edge='#203a12'),
+    'forest': dict(name='Woods', colour='#3a5228', ink='#203818',
+                   edge='#10240a'),
+    'town':   dict(name='Village', colour='#b8a888', ink='#8a4a2e'),
+}
+
+MAP = [
+    'F.:..:...:..:.F',
+    'Ft.:..:..:..:.F',
+    'Fff..:.....:.tF',
+    'FFf.ppppppp.fFF',
+    'FFf.ppppppp.fFF',
+    'FFFfpppppppfFFF',
+    'FFFfpppppppfFFF',
+    'FFFFfpppppfFFFF',
+    'FFFFf.ppp.fFFFF',
+    'FFFf.:...:.fFFF',
+    'FFf.:..:..:..fF',
+    'Ff.:..:...:..fF',
+    'f..:..:t:..:..f',
+    'f.:..:.:.:..:.f',
+]
+
+HEXSIDES = {
+    'stakes': dict(name='Stakes', colour='#8a6a3e', width=1, posts=True,
+                   cost={'foot': 1, 'track': 4, 'wheel': None},
+                   halve=False, shift=-1),
+}
+
+RIVERS = [
+    ('stakes', ['0509:N,NW', '0709:N', '0909:N', '1109:N,NE']),
+]
+
+ROADS = [
+    ('road', ['0814', '0801']),                 # the Calais road
+    ('trail', ['0202', '0503']),
+    ('trail', ['1403', '1103']),
+]
+
+LABELS = {
+    '0801': 'Calais road', '0202': 'Azincourt', '1403': 'Tramecourt',
+    '0813': 'Maisoncelle', '0806': 'The ploughed field',
+    '0205': 'Wood of Azincourt', '1405': 'Wood of Tramecourt',
+}
+
+OBJECTIVES = {
+    '0808': dict(name="The king's banner", vp=6, owner='en', stand=True,
+                 **{'for': 'fr'}),
+    '0813': dict(name='Maisoncelle', vp=4, owner='en', **{'for': 'fr'}),
+}
+
+SUPPLY = {
+    'fr': dict(**{'from': ['N'], 'range': 14}),
+    'en': dict(**{'from': ['S'], 'range': 12}),
+}
+
+
+def _score(e):
+    return 'French %d VP, English %d.' % (e.vp('fr'), e.vp('en'))
+
+
+def VICTORY(e):
+    """The French score two for every English step destroyed, the
+    king's banner (6) and Maisoncelle (4) if they hold them at the end,
+    Henry (8), York (3), Gloucester (2) and the baggage (4); the English
+    one for every French step and each great lord (3, or 2).  The French
+    must finish THRESHOLD ahead (set from games between computer
+    players: ./agincourt --simulate 60)."""
+    m = e.vp('fr') - e.vp('en')
+    if m >= THRESHOLD + 10:
+        return 'fr', ('French victory. %s The English line is broken, '
+                      'and the king of England is a prisoner.' % _score(e))
+    if m >= THRESHOLD:
+        return 'fr', ('French marginal victory. %s The English are thrown '
+                      'back on Maisoncelle, and will never see Calais.'
+                      % _score(e))
+    if m > THRESHOLD - 12:
+        return 'en', ('English marginal victory. %s The French draw off '
+                      'into the dusk, and the road to Calais is open.'
+                      % _score(e))
+    return 'en', ('English victory. %s The flower of French chivalry '
+                  'lies in heaps in the mud, and the heralds name it the '
+                  'battle of Agincourt.' % _score(e))
+
+
+THRESHOLD = 10          # the French must finish this far ahead
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'maa':     dict(name='Men-at-arms on foot', symbol='infantry',
+                    move='foot', at=True, fate='is cut down'),
+    'longbow': dict(name='Longbowmen', symbol='bow', move='foot',
+                    zoc=True, support=True, fight='bow',
+                    fate='is overrun'),
+    'knight':  dict(name='Mounted men-at-arms', symbol='horse',
+                    move='track', armor=True, mounted=True, spot=3,
+                    sound='hooves', fate='is shot down'),
+    'raiders': dict(name='Raiders', symbol='infantry', move='foot',
+                    fate='is driven off'),
+    'baggage': dict(name='Baggage', symbol='cart', move='wheel',
+                    zoc=False, fate='is plundered'),
+}
+
+
+@grognard.symbol('bow')
+def s_bow(p, x, y, w, h, c):
+    """Archers: a bow drawn, with an arrow on the string."""
+    cx, cy = x + w * 0.4, y + (h - 1) / 2
+    r = max(2, h // 2 - 1)
+    p.line(cx, cy - r, cx, cy + r, c)                       # string
+    for i in range(r + 1):                                  # stave
+        dx = int(round((r * r - i * i) ** 0.5 * 0.7))
+        p.set(cx + dx, cy - i, c)
+        p.set(cx + dx, cy + i, c)
+    p.line(cx - 1, cy, x + w - 1, cy, c)                    # arrow
+
+
+@grognard.symbol('cart')
+def s_cart(p, x, y, w, h, c):
+    """The baggage: a cart on two wheels."""
+    base = y + h - 3
+    p.line(x + 1, base - h // 3, x + w - 2, base - h // 3, c)
+    p.line(x + 1, base - h // 3, x + 1, base, c)
+    p.line(x + w - 2, base - h // 3, x + w - 2, base, c)
+    p.line(x + 1, base, x + w - 2, base, c)
+    r = max(1.5, h / 6)
+    p.oval(x + w * 0.3, base + 1, r, r, c)
+    p.oval(x + w * 0.7, base + 1, r, r, c)
+
+
+counters.PICTURES['bow'] = [
+    '...#.......', '...##......', '...#.#.....', '##########.',
+    '...#.#.....', '...##......', '...#.......', '...........']
+counters.PICTURES['cart'] = [
+    '...........', '...........', '#########..', '#.......#..',
+    '#########..', '.##...##...', '#..#.#..#..', '.##...##...']
+
+ENGLAND = '#b8302a'
+KING = '#c8402e'
+ARCHER = '#c06a4a'
+FRANCE = '#2e4c9a'
+VANGUARD = '#3a5aa8'
+MAIN = '#4a64a0'
+HORSE = '#5a6eb0'
+REAR = '#6a78a8'
+PEASANT = '#8a8070'
+
+
+def unit(uid, side, kind, a, d, m, hx, long, colour, formation, steps=2,
+         **kw):
+    """A battle or a body of archers: attack, defence, movement and
+    where it starts (None to arrive later, with arrive and at)."""
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, size=kw.pop('size', 'III'), a=a, d=d, m=m,
+                steps=steps, hex=hx, long=long, colour=colour,
+                formation=formation)
+    spec.update(kw)
+    return spec
+
+
+def archers(n, hx, formation):
+    return unit('arch%d' % n, 'en', 'longbow', 5, 3, 3, hx,
+                'Longbowmen with stakes, mallets and swords', ARCHER,
+                formation, range=2, name='ARCH %d' % n)
+
+
+def maa(uid, a, d, hx, long, colour, formation, name, **kw):
+    side = 'en' if colour in (ENGLAND, KING) else 'fr'
+    return unit(uid, side, 'maa', a, d, kw.pop('m', 4 if side == 'fr'
+                                                else 3),
+                hx, long, colour, formation, steps=kw.pop('steps', 3),
+                name=name, **kw)
+
+
+def knights(uid, a, hx, long, colour, formation, name, **kw):
+    return unit(uid, 'fr', 'knight', a, 3, 5, hx, long, colour, formation,
+                name=name, **kw)
+
+
+UNITS = [
+    # ---- Henry's army: three battles of men-at-arms on foot, the
+    # archers between and on the wings
+    maa('henry', 5, 6, '0808', 'King Henry V and his household', KING,
+        'The main battle', 'HENRY', vp=8, size='X'),
+    maa('glouc', 4, 5, '0808', 'Humphrey, Duke of Gloucester', ENGLAND,
+        'The main battle', 'GLOUC', vp=2, steps=2),
+    maa('camoys', 4, 5, '0608', 'Lord Camoys and the rearguard', ENGLAND,
+        'The rearguard', 'CAMOYS'),
+    maa('york', 4, 5, '1008', 'Edward, Duke of York, and the vanguard',
+        ENGLAND, 'The vanguard', 'YORK', vp=3),
+    archers(1, '0509', 'Archers of the left wing'),
+    archers(2, '0509', 'Archers of the left wing'),
+    archers(3, '0709', 'Archers of the centre'),
+    archers(4, '0909', 'Archers of the centre'),
+    archers(5, '1109', 'Archers of the right wing'),
+    archers(6, '1109', 'Archers of the right wing'),
+    unit('baggage', 'en', 'baggage', 0, 1, 2, '0813',
+         'The baggage, the pages and the sick', KING, 'The baggage',
+         steps=1, vp=4, size='', name='CARTS'),
+
+    # ---- the army of France: the vanguard on foot with the horse on
+    # its wings, the main battle behind, the rearguard mounted
+    maa('bourbon', 6, 4, '0603', 'John, Duke of Bourbon', VANGUARD,
+        'The vanguard', 'BOURBN', vp=3),
+    maa('albret', 6, 4, '0703', "Charles d'Albret, Constable of France",
+        VANGUARD, 'The vanguard', 'ALBRET', vp=3),
+    maa('bouci', 6, 4, '0803', 'Marshal Boucicaut', VANGUARD,
+        'The vanguard', 'BOUCI', vp=3),
+    maa('orleans', 6, 4, '0903', 'Charles, Duke of Orléans', VANGUARD,
+        'The vanguard', 'ORLNS', vp=3),
+    maa('eu', 6, 4, '1003', 'Charles, Count of Eu', VANGUARD,
+        'The vanguard', 'EU'),
+    knights('clignet', 6, '0404', "Clignet de Brabant's horse", HORSE,
+            'The wings', 'CLIGNT'),
+    knights('vendome', 6, '1204', 'The Count of Vendôme\'s horse', HORSE,
+            'The wings', 'VENDME'),
+    maa('alencon', 5, 4, '0702', 'John, Duke of Alençon', MAIN,
+        'The main battle', 'ALENCN', vp=3, release=3),
+    maa('bar', 5, 4, '0802', 'Edward, Duke of Bar', MAIN,
+        'The main battle', 'BAR', vp=2, release=3),
+    maa('nevers', 5, 4, '0902', 'Philip, Count of Nevers', MAIN,
+        'The main battle', 'NEVERS', release=3),
+    maa('brabant', 5, 4, None,
+        "Antony, Duke of Brabant, late, in a herald's tabard", MAIN,
+        'The main battle', 'BRABNT', vp=2, steps=2, arrive=5,
+        at=['0801', '0701', '0901']),
+    knights('marle', 5, '0601', 'The Count of Marle', REAR,
+            'The rearguard', 'MARLE', release=6),
+    knights('dammartin', 5, '1001', 'The Count of Dammartin', REAR,
+            'The rearguard', 'DAMMTN', release=6),
+    unit('ysembart', 'fr', 'raiders', 3, 2, 5, None,
+         "Ysembart d'Azincourt and the peasants of the village", PEASANT,
+         'Raiders', steps=1, arrive=4, at=['0114', '0113', '0214'],
+         name='YSMBRT', size='II'),
+]
+
+
+def _line(e, h):
+    """Whether h is in the English line, where a unit began the day."""
+    return any(u.spec.get('hex') and hexgrid.parse(u.spec['hex']) == h
+               for u in e.units.values() if u.side == 'en')
+
+
+class Constable(ai.AI):
+    """The stock computer player, taught the shape of the day: the
+    English hold their places in the line, and the French press on
+    toward the king's banner rather than waiting under the arrows."""
+
+    def score(self, u, h):
+        s = super().score(u, h)
+        e = self.e
+        if self.side == 'en':
+            if u.spec.get('hex') and hexgrid.parse(u.spec['hex']) == h:
+                s += 6
+            elif _line(e, h):
+                s += 3
+        elif not u.supports and u.kind != 'raiders':
+            s -= hexgrid.distance(h, BANNER) * 0.8
+            if any(e.at(n, 'en') for n in hexgrid.neighbours(h)):
+                s += 5
+        return s
+
+
+AI_CLASS = Constable
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1a1c22', panel='#2a2e38', light='#7a7e8e',
+              dark='#08080c', accent='#e8c860', button='#464c60',
+              button_hi='#9098b0', button_lo='#1a1c22', red='#b03020')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE FIELD. The French move first. The field is ploughed and soaked "
+    "with rain: mud costs 2 to cross (3 for horses). The woods of "
+    "Azincourt and Tramecourt close in toward the English, so the "
+    "French can't go round. Eight turns of half an hour, from 11 in the "
+    "morning; both armies are in full view. Round the king's banner "
+    "the English never give ground: driven back, they lose a step "
+    "instead.",
+
+    "THE ARCHERS shoot from 2 hexes and can't be hurt doing it, and gain "
+    "a column shooting at men floundering in the mud. Up to 3 of them "
+    "shoot into every French attack, adding their strength to the "
+    "defence. Sharpened stakes guard the front of each body of "
+    "archers: an attack made across them loses a column, and horsemen "
+    "lose another (and pay 4 to cross).",
+
+    "THE FRENCH. The vanguard and the horse on its wings go forward at "
+    "once; the main battle is held until turn 3 and the mounted "
+    "rearguard until turn 6, and the Duke of Brabant arrives late on "
+    "turn 5. An attack by 4 units or more loses a column (the press), "
+    "and so does an attack by men-at-arms who have all moved this turn "
+    "and stand in the mud (winded). On turn 4 Ysembart d'Azincourt and "
+    "his peasants come out of the woods in the south-west to plunder the "
+    "baggage at Maisoncelle.",
+
+    "WINNING. The French score 2 for every English step destroyed, the "
+    "king's banner (6) and Maisoncelle (4) if they hold them at the "
+    "end, King Henry 8 more, York 3, Gloucester 2 and the baggage 4. "
+    "The English score every French step and each great lord (3, or 2). "
+    "The French must finish 10 ahead to win, 20 for a clear victory; "
+    "the English win clearly if they finish 2 or more ahead. If the "
+    "king falls the English attack a column worse; if the constable "
+    "does, the French.",
+]
+
+ICON = 'agincourt'
+
+
+@grognard.icon('agincourt')
+def draw_icon(p, n):
+    """A row of stakes in the mud and a sky full of arrows."""
+    p.fill('#c4c8cc')
+    p.rect(0, n * 0.62, n, n * 0.38, '#7a6448')
+    p.rect(0, n * 0.78, n, n * 0.22, '#5e4a34')
+    for k in range(6):
+        x = n * (0.1 + k * 0.16)
+        p.line(x, n * 0.85, x + n * 0.08, n * 0.6, '#c8a878',
+               max(1, n // 32))
+    for k in range(9):
+        x = n * (0.06 + k * 0.11)
+        y = n * (0.1 + (k * 37 % 5) * 0.06)
+        for s in range(6):
+            p.rect(x + s * n * 0.014, y + s * n * 0.02, n * 0.018,
+                   n * 0.018, '#2a2018')
+    p.rect(n * 0.06, n * 0.48, n * 0.1, n * 0.12, '#2e4c9a')
+    p.rect(n * 0.84, n * 0.48, n * 0.1, n * 0.12, '#b8302a')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

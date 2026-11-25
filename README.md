@@ -17,7 +17,7 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are nineteen games so far: a Second World War battle, a raid in a
+There are twenty-one games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
@@ -43,7 +43,10 @@ Tito's headquarters in the mountains of Bosnia in May 1944, and
 the Fulda Gap, a Soviet attack in November 1983 that never happened,
 and one that never could have: Nightspire, men, elves and dwarves
 storming a witch-king's citadel against orcs, trolls, the walking dead
-and a spell that turns regiments into sheep.
+and a spell that turns regiments into sheep, and Hastings, Harold's
+shield wall on its ridge against William's archers and knights in
+1066, and Agincourt, Henry V's archers behind their stakes and the
+French men-at-arms struggling toward them through the mud in 1415.
 
 ```bash
 ./crossroads
@@ -119,6 +122,14 @@ and a spell that turns regiments into sheep.
 
 ```bash
 ./nightspire
+```
+
+```bash
+./hastings
+```
+
+```bash
+./agincourt
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -902,6 +913,87 @@ Silverwood and the dwarves of Ironhold march the other way to end him.
 The world, its people and its numbers are all made up; the mechanics
 are the engine's, with spells built on a game's own orders.
 
+## Hastings: Senlac Hill, 14 October 1066
+
+The twentieth game. Harold Godwinson has beaten the Norwegians at
+Stamford Bridge and marched the length of England to meet William of
+Normandy, who has landed at Pevensey. On a ridge across the London
+road Harold forms his army in a wall of shields; below it the duke
+forms his in three divisions, archers in front, foot behind and the
+knights last. Harold has only to stand until dark.
+
+- **Nine turns** of an hour, from nine in the morning until dusk. The
+  Normans move first. Both armies are in full view.
+- **The field**: the crest of the ridge costs 2 to climb (3 for
+  horses) and gives the defenders a column; the slope below it is open
+  ground, and the valley is boggy at both ends, where horses can't go.
+  Round Harold's standard the king's household gives another column,
+  and its defenders never give ground: driven back, they lose a step
+  instead.
+- **The shield wall**: housecarls and thegns cancel the knights' shock
+  even in the open; knights alone lose a column attacking them, and so
+  do archers shooting alone until 3 PM, when William orders them to
+  shoot high.
+- **The levies**: at the start of the English turn, thegns or levies
+  next to a Norman unit that attacked and lost a step run down the hill
+  after it one time in two (one in three with Harold or an earl beside
+  them, two in three once Harold is dead). From noon any knights that
+  attacked will do: they run away on purpose. Those that run are out of
+  the line for the turn, and levies caught in the open give the knights
+  a column.
+- **Winning**: the day turns on the standard and the king. The
+  standard in Norman hands at the end with Harold dead is a Norman
+  victory, either one a marginal one; otherwise the English win,
+  clearly if the Normans aren't ahead on points (the standard, the ends
+  of the ridge, steps destroyed, and the king, the earls, the duke and
+  the bishop). Computer against computer the Normans win 44 games in
+  100.
+
+The armies are guesses, as every account of them is, and the counters
+are divisions of the army, not regiments. The map follows the usual
+account (the ridge where Battle Abbey stands, Telham Hill to the
+south), not a survey.
+
+## Agincourt: Saint Crispin's day, 25 October 1415
+
+The twenty-first game. Henry V has taken Harfleur and is marching his
+sick and hungry army to Calais, and the army of France, three or four
+times his number, is across the road. After a night of rain the armies
+face each other across a ploughed field between the woods of Azincourt
+and Tramecourt. Henry moves first: his line goes forward to bowshot,
+and the archers hammer their stakes into the mud.
+
+- **Eight turns** of half an hour, from 11 in the morning. The French
+  move first. Both armies are in full view.
+- **The field**: the ploughed field is deep mud, 2 to cross (3 for
+  horses), and the woods close in toward the English so the French
+  can't go round. Round the king's banner the English never give
+  ground.
+- **The archers** shoot from 2 hexes and can't be hurt doing it, and
+  gain a column shooting into the mud; up to 3 of them shoot into every
+  French attack, adding their strength to the defence. Stakes guard
+  their front: an attack across them loses a column, and horsemen lose
+  another and pay 4 to cross.
+- **The French**: the vanguard on foot and the horse on its wings go
+  forward at once; the main battle is held until turn 3, the mounted
+  rearguard until turn 6, and the Duke of Brabant arrives late on
+  turn 5. An attack by 4 units or more loses a column (the press), and
+  so does one by men-at-arms who have all moved this turn and stand in
+  the mud (winded). On turn 4 Ysembart d'Azincourt and the peasants of
+  the village come out of the woods for the English baggage at
+  Maisoncelle.
+- **Winning**: the French score 2 for each English step destroyed,
+  the king's banner (6) and Maisoncelle (4), and Henry (8), York,
+  Gloucester and the baggage; the English score each French step and
+  the great lords. The French must finish 10 VP ahead. Computer against
+  computer each side wins 30 games in 60.
+
+The French losses at Agincourt were in thousands and the English in
+hundreds; here an English step is worth two French, and the strengths
+are set for play. The map follows the usual reconstruction (the
+French on the higher ground by the Calais road, the English between
+the woods with Maisoncelle behind them), not a survey.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -1231,7 +1323,15 @@ lengths (`TURN_NAME`), and weather that supplies one side from the air;
 and `fulda` for helicopters (a support type with a movement class of
 its own that flies over everything, grounded at night by
 `CAN_SUPPORT`), a sound of its own added to `sound.EFFECTS`, exits
-from only part of an edge, and a game ended by `ON_END_TURN`.
+from only part of an edge, and a game ended by `ON_END_TURN`; and
+`hastings` for units that leave the line by themselves (moved and
+disabled from `ON_TURN`, after the Norman steps were counted in
+`engine.flags`), an objective with its own `shift` and `stand`, and
+victory decided by an objective and a leader rather than points; and
+`agincourt` for a hexside of its own (stakes, which horses pay more to
+cross and attack across worse), a game built on `DEFENSIVE_FIRE`,
+`STEP_VP` that differs by side, and a computer player that keeps its
+line (`AI_CLASS`).
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)
