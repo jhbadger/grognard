@@ -22,8 +22,10 @@ class MapView:
     def art(self, zoom=None):
         z = self.zoom if zoom is None else zoom
         a = self.arts.get(z)
-        if a is None or a.grid != self.grid:
-            a = self.arts[z] = MapArt(self.g.e.board, z, grid=self.grid)
+        b = self.g.e.board
+        if a is None or a.grid != self.grid or a.board is not b or \
+                a.version != b.version:
+            a = self.arts[z] = MapArt(b, z, grid=self.grid)
             a.paint()
         return a
 

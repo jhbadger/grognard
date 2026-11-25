@@ -12,6 +12,7 @@ it the same way:
     advance(units, hex)             take ground after a fight
     build(kind, hex)                spend the treasury on a new unit
     act(unit, key)                  a game's own order ('colonize')
+    alter(hex, terrain)             change the map in play (a wood burnt)
     end_phase()                     movement -> combat -> the other side
 
 The sequence of play is the classic one.  Each game turn every side in
@@ -179,6 +180,7 @@ class Board:
                                          % (kind, hid(a), hid(b)))
                     continue
                 self.rivers[hexgrid.side(a, b)] = kind
+        self.version = 0            # counts changes to the terrain
         labels = getattr(gdef, 'LABELS', {})
         if isinstance(labels, dict):
             labels = list(labels.items())
@@ -284,6 +286,9 @@ class Engine:
     # ------------------------------------------------------------ setup
 
     def new(self):
+        if getattr(self, 'altered', None):     # the map as it began
+            self.board = Board(self.d)
+        self.altered = {}           # hexes whose terrain changed in play
         self.units = {}
         self.spawned = []           # specs of the units made in the game
         self.serial = 0
@@ -324,6 +329,7 @@ class Engine:
             control={hid(h): s for h, s in self.control.items()},
             bonus=self.bonus, lost=self.lost, exited=self.exited,
             flags=self.flags, treasury=self.treasury,
+            altered=self.altered,
             spawned=self.spawned, serial=self.serial,
             hit=[hid(h) for h in self.hit], over=self.over,
             winner=self.winner, result=self.result,
@@ -338,6 +344,11 @@ class Engine:
         self.bonus, self.lost = d['bonus'], d['lost']
         self.exited = d.get('exited', {s: 0 for s in self.side_ids})
         self.flags = d.get('flags', {})
+        if self.altered:
+            self.board = Board(self.d)
+            self.altered = {}
+        for h, name in d.get('altered', {}).items():
+            self.alter(parse(h), name)
         self.treasury = d.get('treasury', self.treasury)
         # the units made in that game, not the ones SETUP made in this one
         for spec in self.spawned:
@@ -403,6 +414,16 @@ class Engine:
         self.spawned.append(spec)
         self.changed()
         return u
+
+    def alter(self, h, name):
+        """Change the terrain of hex h to name (a wood burnt to stumps,
+        a bridge blown): kept in saves, and the map is painted again."""
+        if name not in self.board.T:
+            raise ValueError('no terrain %r' % name)
+        self.board.hexes[h] = name
+        self.board.version += 1
+        self.altered[hid(h)] = name
+        self.changed()
 
     def remove(self, u):
         """Take a unit off the map without a fight (a colony ship that

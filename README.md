@@ -17,7 +17,7 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are twenty-seven games so far: a Second World War battle, a raid in a
+There are twenty-eight games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
@@ -55,7 +55,9 @@ Belleau Wood, the Marines crossing the wheat into the machine guns in
 June 1918, and two more from the far future: Terminator Line, an
 attack on an airless moon that follows the line of dusk across it, and
 Hollow Station, a mining colony on the ice holding out against
-creatures that come up out of burrows until the shuttle lands.
+creatures that come up out of burrows until the shuttle lands, and
+another fantasy, the Ember Road, refugees fleeing west ahead of a
+dragon that burns the map as it goes.
 
 ```bash
 ./crossroads
@@ -163,6 +165,10 @@ creatures that come up out of burrows until the shuttle lands.
 
 ```bash
 ./hollow
+```
+
+```bash
+./emberroad
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -1212,6 +1218,52 @@ the relief shuttle Petrel is nine hours out.
   of colonists it takes. The colony must finish 4 VP ahead. Computer
   against computer it wins 30 games in 60.
 
+## The Ember Road: the flight from the dragon
+
+The twenty-eighth game, and the second fantasy. Ashkarr the Ember Wyrm
+has woken under the Cinder Peaks and the Dale of Corrow is burning. Its
+people load their carts and take the Ember Road west to Wardenford, the
+keep on the one bridge over the Lenn, while Margravine Isolde's knights
+and militia hold off the kobold horde behind them. It is a race, not a
+siege: the Dalesfolk win by getting away.
+
+- **Eight turns**, two days of morning, afternoon, evening and night.
+  The Dalesfolk move first. In the evening units see two hexes, at
+  night only the next.
+- **The map**: 28 by 14 hexes from the far bank of the Lenn in the west
+  to the Cinder Peaks in the east: Hollin, Thornwick, Brackenmoor and
+  Ashby, the Greenwold, and the road and the trail that cross the river,
+  at Wardenford and Miller's Ford. Nothing else crosses it, except what
+  flies.
+- **The Dalesfolk**: six columns of refugee carts and the Lantern of
+  Hollin, which can't fight and take losses last; knights, men-at-arms,
+  militia, crossbows and the rangers of the Greenwold; the Wyrmbane, a
+  great crossbow on the keep; Margravine Isolde and old Hallam the
+  wyrm-hunter, heroes who lead attacks as in Nightspire.
+- **The Ember Horde**: Ashkarr, who flies, and attacks a column up
+  unless Hallam is in the hex; drakes; eight kobold warbands and two of
+  slingers; and the Cinder-sworn, coming over the peaks on turn 2.
+- **Fire**: once a turn, except at night, the dragon breathes fire at
+  a hex up to two away. Each unit there may lose a step (carts on a 3,
+  troops on a 4, inside Wardenford only on a 6), and meadow, farmland,
+  woods and villages catch fire. A hex on fire can't be entered by
+  carts, even along the road, and costs everyone else two more. On the
+  Horde's next turn it burns out and stays burnt: scorched earth,
+  charred woods that hide nobody and give no cover, villages in ruins.
+  A wood on fire may set the next wood alight. The map is painted again
+  as it burns, and the burnt hexes are kept in the save.
+- **Winning**: if the Horde holds Wardenford at the end of a turn it
+  wins at once. Otherwise the Dalesfolk score 2 VP for each step of
+  carts off the west edge and 4 more for the Lantern; the Horde 3 for
+  each cart destroyed, 6 for the Lantern and 1 for every hex it sets
+  alight. Both score enemy steps and the villages they hold; the
+  dragon is worth 12. The Horde wins if it finishes no more than 8 VP
+  behind. Computer against computer it wins 30 games in 60.
+
+The world and its numbers are made up. The fire is built on the
+engine's `alter(hex, terrain)`, which any game can use to change the
+map in play.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -1429,6 +1481,10 @@ The rules are the classic ones, and each part can be changed by a game:
   of a new game to deal out a map afresh (Far Suns' worlds and
   homeworlds, using `engine.rng`), and `engine.remove(unit)` takes one
   off without a fight.
+- **Terrain changed in play**: `engine.alter(hex, terrain)` makes a
+  hex another of the game's terrains (the Ember Road's woods burnt to
+  stumps). Saves keep the change, the map is painted again, and a new
+  game starts from the map as it was.
 - **A game's own orders**: `ACTIONS(engine, unit)` gives the active
   side's unit buttons, `[(label, key, why not)]` (`why not` None when
   it can), and `ACT(engine, unit, key)` carries one out (Colonize,

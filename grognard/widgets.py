@@ -391,7 +391,7 @@ class Minimap(Widget):
     def draw(self, g, s, r):
         x, y, w, h = r
         panel(g, s, r)
-        key = (w - 6, h - 6)
+        key = (w - 6, h - 6, id(g.e.board), g.e.board.version)
         cache = getattr(g, '_minimap', None)
         if not cache or cache[0] != key:
             surf, f, geo = g.view.art(0).minimap(w - 6, h - 6)

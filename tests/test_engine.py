@@ -286,6 +286,24 @@ class Rules(unittest.TestCase):
         self.assertEqual((e2.turn, e2.phase), (e.turn, e.phase))
         self.assertEqual(e2.rng.random(), e.rng.random())
 
+    def test_altered_terrain(self):
+        from grognard.render import MapArt
+        e = self.e
+        h = parse('0302')
+        self.assertEqual(e.board.terrain_name(h), 'woods')
+        art = MapArt(e.board, 0)
+        e.alter(h, 'clear')
+        self.assertEqual(e.board.terrain_name(h), 'clear')
+        self.assertNotEqual(art.version, e.board.version)   # repaint
+        self.assertRaises(ValueError, e.alter, h, 'lava')
+        e2 = Engine(util.tiny())
+        e2.from_json(e.to_json())
+        self.assertEqual(e2.board.terrain_name(h), 'clear')
+        e.new()                                 # a new game, a new map
+        self.assertEqual(e.board.terrain_name(h), 'woods')
+        e2.from_json(e.to_json())
+        self.assertEqual(e2.board.terrain_name(h), 'woods')
+
     def test_fog(self):
         e = Engine(util.tiny(FOG=True), seed=1)
         vis = e.visible('b')

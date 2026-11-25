@@ -1,7 +1,8 @@
 """Drawing the map.
 
-The map's picture (terrain, hex grid, rivers, roads) never
-changes during a game, so it's painted once per zoom into a Surface the
+The map's picture (terrain, hex grid, rivers, roads) seldom
+changes during a game, so it's painted once per zoom (and again when a
+game alters a hex's terrain) into a Surface the
 size of the whole map, and each frame copies the part on screen.  Place
 names, units, highlights and markers go on top every frame (names move
 out from under the counters).
@@ -37,6 +38,7 @@ class MapArt:
 
     def __init__(self, board, zoom, grid=True, numbers=True):
         self.board = board
+        self.version = board.version    # the terrain it was painted with
         dx, dy, self.csize = ZOOMS[zoom]
         self.zoom = zoom
         self.geo = hexgrid.Geometry(dx, dy)

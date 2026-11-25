@@ -1,0 +1,987 @@
+#!/usr/bin/env python3
+"""The Ember Road: the flight from the dragon.  A fantasy game for the
+Grognard engine.
+
+Ashkarr the Ember Wyrm has woken under the Cinder Peaks, and the Dale
+of Corrow is burning.  Its people load their carts and take the road
+west to Wardenford, the one bridge over the Lenn, while the Margravine's
+knights and militia hold off the kobold horde behind them.  The dragon
+breathes fire, and what it burns stays burnt: the woods the refugees
+hid in turn to stumps, and a road on fire is closed to carts.  Play
+either side against the computer, or against a friend at the same
+screen.
+
+Run it with ./emberroad (Python 3 with Tk, nothing else).  The game is
+saved to ~/.emberroad.json.  ./emberroad --selftest checks the map and
+plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import ai, counters, sound               # noqa: E402
+from grognard.gfx import rgb, mix                      # noqa: E402
+from grognard.hexgrid import distance, neighbours, within, hid, parse  # noqa: E402,E501
+from grognard.terrain import Canvas, jitter_points     # noqa: E402
+
+ID = 'emberroad'
+TITLE = 'The Ember Road'
+SUBTITLE = 'The flight from the dragon'
+
+INTRO = [
+    "For four hundred years Ashkarr the Ember Wyrm slept under the "
+    "Cinder Peaks, and the Dale of Corrow forgot to be afraid of it. "
+    "Three nights ago the mountain split open. Ashby burned first, and "
+    "the sky over the dale has been red ever since.",
+
+    "Margravine Isolde has given the only order there is to give: load "
+    "the carts and take the Ember Road west to Wardenford, the old keep "
+    "on the one bridge over the Lenn, and get across. Her knights, her "
+    "men-at-arms and the village militia will hold the road behind them.",
+
+    "The kobolds who worship the wyrm are already coming down out of "
+    "the peaks, and above them flies Ashkarr itself. On the keep at "
+    "Wardenford waits the Wyrmbane, a crossbow the size of a barn, and "
+    "old Hallam, who says he has killed a dragon before. Nobody "
+    "believes him.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='dl', name='Dalesfolk', adj='Dale', colour='#b8c8a0',
+         ink='#101810', flag='cross', posture='defend', singular=False,
+         about='Get the refugees and the Lantern of Hollin over the '
+               'bridge at Wardenford and off the west edge, and hold '
+               'Wardenford until they are across.'),
+    dict(id='dr', name='Ember Horde', adj='Horde', colour='#a04a2a',
+         ink='#f4e4c4', flag='star', posture='attack', singular=True,
+         about='Burn the dale, catch the carts before they reach the '
+               'bridge, and take Wardenford.'),
+]
+ORDER = ['dl', 'dr']
+
+# Two days of four turns.
+TURNS = 8
+PARTS = ['Morning', 'Afternoon', 'Evening', 'Night']
+
+
+def TURN_NAME(t):
+    return ('Day %d' % ((t - 1) // 4 + 1), PARTS[(t - 1) % 4])
+
+
+WEATHER = {1: 'smoke', 3: 'dusk', 4: 'night', 5: 'smoke', 7: 'dusk',
+           8: 'night'}
+WEATHER_TYPES = {
+    'smoke': dict(name='Smoke on the wind', icon='sun', air=False),
+    'dusk': dict(name='Evening', icon='fog', air=False, spot=2),
+    'night': dict(name='Night: the wyrm roosts', icon='cloud', air=False,
+                  spot=1),
+}
+
+STACK = 3
+FOG = True
+DEFENSIVE_FIRE = 1
+COMBAT_SOUND = 'swords'
+STYLE = 'pictures'
+
+FORT = '0408'
+DRAGON = 'ashkarr'
+BALLISTA = 'wyrmbane'
+HUNTER = 'hallam'           # better against dragons than anyone
+LANTERN = 'lantern'
+
+STEP_VP = 1
+EXIT_VP = 2                 # each step of refugees off the west edge
+LANTERN_VP = 4              # more for the Lantern across
+CART_VP = 3                 # a cart destroyed, to the Horde
+BURN_VP = 1                 # each hex the Horde sets alight
+MARGIN = -8                 # set from ./emberroad --simulate 60
+
+FOLK = ('folk', 'relic')
+HEROES = ('hero',)
+
+# ------------------------------------------------------------- the fire
+# Once a turn, except at night, the dragon breathes fire at a hex up to
+# two away.  Every enemy unit there may lose a step, and grass, fields,
+# woods and villages catch fire.  A hex on fire can't be entered by
+# carts, even along the road, and costs everyone else more; it burns
+# until the dragon's next turn and then stays burnt: scorched earth,
+# charred woods that hide nobody, villages in ruins.  Fire in a wood
+# may spread to the wood next to it.
+
+BREATH_RANGE = 2
+BURNS = {'clear': 'scorched', 'fields': 'scorched', 'woods': 'charred',
+         'forest': 'charred', 'town': 'ruins'}
+SPREADS = ('woods', 'forest')
+SPREAD_ON = 6               # a die for each wood next to a fire
+
+
+def fires(e):
+    return e.flags.setdefault('fires', {})
+
+
+def burning(e, h):
+    return e.board.terrain_name(h) == 'burning'
+
+
+def breathed(e):
+    return e.flags.get('breathed') == e.turn
+
+
+def hit_on(e, u, h):
+    """The roll a unit in h needs to save itself from the fire: carts
+    and crowds burn on 3 or more, troops on 4, and behind the walls of
+    Wardenford on 6."""
+    if e.board.terrain_name(h) == 'fort':
+        return 6
+    return 3 if u.kind in FOLK else 4
+
+
+def fire_value(e, side, h, seen):
+    """What setting h alight is worth to side: the steps it may burn,
+    the carts most, and the road or the woods it closes."""
+    v = 0.0
+    for u in e.at(h):
+        if u.side == side:
+            return -1
+        if u.id not in seen:
+            continue
+        p = (7 - hit_on(e, u, h)) / 6.0
+        v += p * (3.0 if u.kind in FOLK else 4.0 if u.kind in HEROES
+                  else 1.0)
+    name = e.board.terrain_name(h)
+    if name in BURNS:
+        v += 0.2
+        folk = [u.hex for u in e.alive() if u.side != side and
+                u.kind in FOLK and u.id in seen]
+        if e.board.has_road(h) and any(
+                f[0] > h[0] and distance(f, h) <= 4 for f in folk):
+            v += 1.2            # the road ahead of the carts
+        if not e.board.terrain(h).get('los', True) and any(
+                distance(f, h) <= 1 for f in folk):
+            v += 0.4            # cover they might hide in
+    return v
+
+
+def fire_targets(e, u):
+    """The hexes the dragon could breathe at, the best first."""
+    seen = e.visible(u.side)
+    out = []
+    for h in within(u.hex, BREATH_RANGE):
+        if h == u.hex or not e.board.on_map(h) or burning(e, h):
+            continue
+        v = fire_value(e, u.side, h, seen)
+        if v < 0:
+            continue
+        if v == 0 and e.board.terrain_name(h) not in BURNS:
+            continue            # nothing there to burn
+        out.append((v, h))
+    out.sort(key=lambda x: (-x[0], x[1]))
+    return [h for v, h in out]
+
+
+def aimed(e, u, ts):
+    want = e.flags.get('aim')
+    for h in ts:
+        if hid(h) == want:
+            return h
+    return ts[0] if ts else None
+
+
+def what_at(e, h, side):
+    seen = e.visible(side)
+    n = len([x for x in e.at(h) if x.side != side and x.id in seen])
+    t = e.board.T[e.board.terrain_name(h)]['name'].lower()
+    return '%s, %s' % (t, '%d unit%s' % (n, '' if n == 1 else 's')
+                       if n else 'empty')
+
+
+def ACTIONS(e, u):
+    if u.id != DRAGON or e.phase != 'move':
+        return []
+    ts = fire_targets(e, u)
+    h = aimed(e, u, ts)
+    why = None
+    if e.weather()['id'] == 'night':
+        why = 'the wyrm roosts at night'
+    elif breathed(e):
+        why = 'has breathed fire this turn'
+    elif h is None:
+        why = 'nothing in reach to burn'
+    return [('At: %s' % e.place(h) if h else 'No target', 'aim',
+             None if len(ts) > 1 else 'nothing else in reach' if ts else
+             'nothing within %d hexes will burn' % BREATH_RANGE),
+            ('Breathe fire', 'fire', why)]
+
+
+def ACT(e, u, key):
+    ts = fire_targets(e, u)
+    h = aimed(e, u, ts)
+    if key == 'aim':
+        h = ts[(ts.index(h) + 1) % len(ts)]
+        e.flags['aim'] = hid(h)
+        e.say('Ashkarr turns its head toward %s (%s).' % (
+            e.place(h), what_at(e, h, u.side)), u.side)
+        return
+    breathe(e, u, h)
+
+
+def breathe(e, u, h):
+    e.flags['breathed'] = e.turn
+    e.flags.pop('aim', None)
+    e.events.append(('sound', 'roar'))
+    e.events.append(('popup', h, 'Fire!', '#ffb040'))
+    hurt = []
+    for t in [x for x in e.at(h) if x.side != u.side]:
+        t.seen = True
+        roll = e.rng.randint(1, 6)
+        if roll >= hit_on(e, t, h):
+            hurt.append(t)
+    name = e.board.terrain_name(h)
+    alight = name in BURNS
+    e.say('Ashkarr breathes fire on %s%s.' % (
+        e.place(h), ': it catches' if alight else ''))
+    for t in hurt:
+        if t.alive:
+            e.say('%s %s.' % (t.long, 'burns' if t.kind in FOLK else
+                              'is caught in the flames'))
+            e.take_losses([t], 1)
+    if alight:
+        ignite(e, h)
+    e.changed()
+
+
+def ignite(e, h):
+    fires(e)[hid(h)] = BURNS[e.board.terrain_name(h)]
+    e.bonus['dr'] += BURN_VP
+    e.alter(h, 'burning')
+
+
+def burn_out(e):
+    """The fires of the last turn die down, and may spread through the
+    woods first."""
+    fs = fires(e)
+    if not fs:
+        return
+    spread = []
+    for k, after in sorted(fs.items()):
+        h = parse(k)
+        if after == 'charred':
+            for n in neighbours(h):
+                if e.board.terrain_name(n) in SPREADS and n not in spread \
+                        and e.rng.randint(1, 6) >= SPREAD_ON:
+                    spread.append(n)
+    for k, after in sorted(fs.items()):
+        e.alter(parse(k), after)
+    e.flags['fires'] = {}
+    for n in spread:
+        ignite(e, n)
+        e.say('The fire spreads through the woods to %s.' % e.place(n))
+        e.events.append(('popup', n, 'spreads', '#ffb040'))
+
+
+def ENTER_COST(e, unit, a, b, c):
+    """Wings ignore the ground; fire stops carts, even on the road, and
+    slows everyone else."""
+    mc = getattr(unit, 'move_class', None)
+    if mc == 'fly':
+        return 1
+    if e.board.terrain_name(b) == 'burning':
+        if mc == 'wheel':
+            return None
+        return c + 2
+    return c
+
+
+# ----------------------------------------------------------- the turns
+
+def ON_TURN(e, side):
+    if side == 'dr':
+        burn_out(e)
+        if lantern_home(e) and not e.flags.get('lantern_scored'):
+            e.flags['lantern_scored'] = True
+            e.bonus['dl'] += LANTERN_VP
+            e.say('The Lantern of Hollin is over the Lenn (%d VP more).'
+                  % LANTERN_VP)
+    if e.turn == 1:
+        if side == 'dl':
+            e.say('The carts are loaded. Margravine Isolde rides along '
+                  'the column: west, to Wardenford, and do not stop.')
+        else:
+            e.say('A roar rolls down from the Cinder Peaks. Ashkarr is '
+                  'awake, and hungry.')
+    if e.turn == 2 and side == 'dr':
+        e.say('The Cinder-sworn, the wyrm\'s fanatics, come over the '
+              'peaks behind the kobolds.')
+    if side == 'dr' and e.weather()['id'] == 'night' and \
+            e.weather(e.turn - 1)['id'] != 'night':
+        e.say('Night: Ashkarr settles on a hill to sleep, and the fires '
+              'light the dale.')
+
+
+def ON_ELIMINATE(e, u, where):
+    if u.id == DRAGON:
+        e.flags['dragon_dead'] = e.turn
+        e.say('Ashkarr the Ember Wyrm is dead! The kobolds wail and '
+              'falter.')
+        for x in [x for x in e.alive('dr') if x.type.get('kobold')]:
+            e.take_losses([x], 1)
+
+
+def lead(e, side, hexes):
+    """The heroes of side in hexes: the column shift they give, at most
+    2, and their names."""
+    hs = [u for u in e.alive(side) if u.kind in HEROES and u.hex in hexes]
+    n = min(2, sum(u.spec.get('lead', 0) for u in hs))
+    return n, ', '.join(u.name.title() for u in hs)
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Heroes lead.  The Wyrmbane and Hallam are good against the
+    dragon, and the dragon is terrible to face, unless Hallam is there."""
+    out = []
+    me, them = e.side, e.enemy(e.side)
+    there = e.at(target, them)
+    dragon_there = any(u.id == DRAGON for u in there)
+    if attackers:
+        n, names = lead(e, me, {u.hex for u in attackers})
+        if n:
+            out.append((n, names))
+        if dragon_there:
+            if any(u.id == BALLISTA for u in support):
+                out.append((2, 'the Wyrmbane'))
+            h = e.units.get(HUNTER)
+            if h and h.alive and h.hex in {u.hex for u in attackers}:
+                out.append((1, "Hallam's spear"))
+        if any(u.id == DRAGON for u in attackers):
+            h = e.units.get(HUNTER)
+            if not (h and h.alive and h.hex == target):
+                out.append((1, 'dragonfear'))
+    n, names = lead(e, them, {target})
+    if n:
+        out.append((-n, names))
+    return out
+
+
+# ---------------------------------------------------------------- winning
+
+def _score(e):
+    return 'Dalesfolk %d VP, Horde %d.' % (e.vp('dl'), e.vp('dr'))
+
+
+def lantern_home(e):
+    return e.units[LANTERN].status == 'exited'
+
+
+def tally(e):
+    """What became of the dale's people."""
+    folk = [u for u in e.units.values() if u.kind == 'folk']
+    safe = sum(u.steps for u in folk if u.status == 'exited')
+    total = sum(u.max_steps for u in folk)
+    lines = ['%d of %d wagonloads of refugees got across the Lenn.' % (
+        safe, total)]
+    lt = e.units[LANTERN]
+    if lt.status == 'exited':
+        lines.append('The Lantern of Hollin burns in a new temple in the '
+                     'west.')
+    elif lt.status == 'dead':
+        lines.append('The Lantern of Hollin is lost, and the kobolds '
+                     'have put it on their altar.')
+    else:
+        lines.append('The Lantern of Hollin is still on the wrong side '
+                     'of the river.')
+    if e.flags.get('dragon_dead'):
+        lines.append('Ashkarr the Ember Wyrm is dead, and Hallam is '
+                     'insufferable about it.')
+    else:
+        lines.append('Ashkarr sleeps on the ashes of the dale.')
+    return ' '.join(lines)
+
+
+def VICTORY(e):
+    """The margin decides: the Dalesfolk score the refugees they get
+    across, the Lantern, the places still theirs and the Horde's steps
+    lost, and 12 for the dragon; the Horde the Dale's steps lost, carts
+    and the Lantern destroyed, the hexes it burnt and the places it
+    took.  The Horde wins if the margin is MARGIN or better: being no
+    more than 8 behind is enough (set from ./emberroad --simulate 60)."""
+    m = e.vp('dr') - e.vp('dl')
+    if m >= MARGIN + 10:
+        w, t = 'dr', 'Horde victory. The dale is ash, and few escaped it.'
+    elif m >= MARGIN:
+        w, t = 'dr', ('Horde marginal victory. Some of the dale got away, '
+                      'but the wyrm has its feast.')
+    elif m > MARGIN - 10:
+        w, t = 'dl', ('Dale marginal victory. The dale is lost, but its '
+                      'people are not.')
+    else:
+        w, t = 'dl', 'Dale victory. The road to the west was held.'
+    return w, '%s %s %s' % (t, _score(e), tally(e))
+
+
+def ON_END_TURN(e):
+    if e.control.get(parse(FORT)) == 'dr':
+        e.finish('dr', 'Horde victory: Wardenford has fallen and the '
+                 'bridge is the wyrm\'s. Nobody else crosses the Lenn. '
+                 '%s %s' % (_score(e), tally(e)))
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'K': 'fort', 'a': 'ash', 'P': 'peaks'}
+
+TERRAIN = {
+    'clear':  dict(name='Meadow'),
+    'fields': dict(name='Farmland', move={'wheel': 1}),   # cart tracks
+    'woods':  dict(name='Copse', move={'ranger': 1}),
+    'forest': dict(name='The Greenwold', move={'ranger': 1}),
+    'hills':  dict(name='Hills'),
+    'rough':  dict(name='Moor'),
+    'marsh':  dict(name='Lenn marshes'),
+    'town':   dict(name='Village'),
+    'fort':   dict(name='Wardenford', colour='#a09a8e', ink='#5a524a',
+                   pattern='city', edge='#2e2a26', z=10,
+                   move={'foot': 1, 'track': 1, 'wheel': 1},
+                   shift=-2, open=False, los=False, stand=True),
+    'ash':    dict(name='Cinder wastes', colour='#7e746a', ink='#5a524a',
+                   pattern='rough', edge='#3e3832', z=2,
+                   move={'foot': 1, 'track': 1, 'wheel': 2},
+                   shift=0, open=True, los=True),
+    'peaks':  dict(name='The Cinder Peaks', colour='#4e4440', ink='#2a2220',
+                   pattern='hills', edge='#1a1412', z=8,
+                   move={'foot': 3, 'track': None, 'wheel': None},
+                   shift=-2, open=False, los=False),
+    # what the fire makes
+    'burning': dict(name='On fire', colour='#b8481e', ink='#f4b438',
+                    pattern='flames', edge='#4a1206', z=11,
+                    move={'foot': 2, 'track': 2, 'wheel': None},
+                    shift=0, open=True, los=True),
+    'scorched': dict(name='Scorched earth', colour='#6e6254', ink='#463c32',
+                     pattern='grass', edge='#3a3028', z=1,
+                     move={'foot': 1, 'track': 1, 'wheel': 1},
+                     shift=0, open=True, los=True),
+    'charred': dict(name='Charred woods', colour='#4c4642', ink='#1e1a18',
+                    pattern='stumps', edge='#16120e', z=4,
+                    move={'foot': 2, 'track': 2, 'wheel': 3, 'ranger': 2},
+                    shift=0, open=True, los=True),
+    'ruins':  dict(name='Burnt village', colour='#6c645c', ink='#2a2420',
+                   pattern='town', edge='#26201c', z=7,
+                   move={'foot': 1, 'track': 1, 'wheel': 1},
+                   shift=-1, open=False, los=True),
+}
+
+HEXSIDES = {
+    'major': dict(name='The Lenn', width=3),
+}
+
+#    west  ford   lower dale   Hollin      upper dale  hills  cinders
+MAP = [
+    ':f..' 'mm:.ff' ':..:..' 'fff.h.' 'rh' 'aPPP',
+    '.:f.' 'm.:.f.' '.:..:.' 'ffF.hh' 'rr' 'aaPP',
+    ':...' '..:..:' ':.:...' 'f...h.' 'rh' 'raaP',
+    '.:..' ':..:..' '..:.:.' '.f..:.' 'hr' 'aaaP',
+    ':.f.' '.:..:.' ':..f.:' '..:..h' 'rr' 'raaa',
+    '.f:.' ':.:..:' '.:.ff.' ':..:..' 'hr' 'aaaa',
+    ':.:.' '.:..:.' ':....:' '.:..:.' 'rh' 'raPa',
+    '.:..' ':..:.:' '.:..:.' ':..:..' 'rr' 'aaaa',
+    ':.:.' '.:.:..' '::.:..' '.:..f.' 'hr' 'aaPa',
+    '.:f.' ':.FF:.' '.:..::' '..:ff.' 'rh' 'raaa',
+    ':...' '.FFFF.' ':.:..:' '.:.f..' 'hr' 'aaPP',
+    '.f:.' 'FFFF.:' '.:.:..' ':..:.h' 'rr' 'aaPP',
+    ':.:.' 'FFF.:.' ':..:..' 'h.:.hh' 'hr' 'aPPP',
+    '.:f.' '.FF..:' '.:..:h' 'hh.hhr' 'rr' 'PPPP',
+]
+
+# villages and the keep, put on the map by hex number
+PLACES = {FORT: 'K', '0208': 't', '1308': 't', '1804': 't', '1812': 't',
+          '2207': 't'}
+MAP = [list(r) for r in MAP]
+for _h, _ch in PLACES.items():
+    _c, _r = parse(_h)
+    MAP[_r][_c] = _ch
+MAP = [''.join(r) for r in MAP]
+ROWS = len(MAP)
+
+# The Lenn runs down the map between the third and fourth columns; only
+# the roads cross it, at Wardenford and Miller's Ford.
+RIVERS = [
+    ('major', ['03%02d:NE,SE' % r for r in range(1, ROWS + 1)]),
+]
+
+ROADS = [
+    ('road', ['0108', '0308', FORT, '1308', '2207', '2807']),  # Ember Road
+    ('trail', ['0103', '0303', '0403', '0904', '1804']),    # Miller's Ford
+    ('trail', ['1804', '1308']),
+    ('trail', ['1812', '1308']),
+    ('trail', ['1812', '0911', '0509', FORT]),
+    ('trail', ['1804', '2207']),
+]
+
+LABELS = {
+    FORT: 'Wardenford', '0208': 'Westmarch', '1308': 'Hollin',
+    '1804': 'Thornwick', '1812': 'Brackenmoor', '2207': 'Ashby',
+    '0403': "Miller's Ford", '0812': 'Greenwold', '2605': "Ashkarr's lair",
+    '2701': 'Cinder Peaks', '0105': 'The West',
+}
+
+OBJECTIVES = {
+    FORT: dict(name='Wardenford', vp=1, owner='dl'),
+    '1308': dict(name='Hollin', vp=3, owner='dl'),
+    '1804': dict(name='Thornwick', vp=2, owner='dl'),
+    '1812': dict(name='Brackenmoor', vp=2, owner='dl'),
+    '2207': dict(name='Ashby', vp=1, owner='dl'),
+}
+
+# The refugees and the Lantern are safe once they are off the west
+# edge, over the river.
+EXITS = {'dl': dict(hexes=['W'], vp=EXIT_VP, types=list(FOLK))}
+
+# ----------------------------------------------------------------- units
+
+
+def hero_values(u):
+    """A hero's counter: +lead-defence-movement."""
+    return '+%d-%d-%d' % (u.spec.get('lead', 0), u.defense, u.max_mp)
+
+
+def folk_values(u):
+    """Refugees: what they're worth across, and how fast they go."""
+    return '%d VP-%d' % (u.steps * EXIT_VP + (LANTERN_VP if u.id == LANTERN
+                                              else 0), u.max_mp)
+
+
+UNIT_TYPES = {
+    # the Dale
+    'warden':   dict(name='Keep garrison', symbol='infantry', move='foot'),
+    'foot':     dict(name='Men-at-arms', symbol='infantry', move='foot'),
+    'militia':  dict(name='Village militia', symbol='infantry',
+                     move='foot'),
+    'knights':  dict(name='Knights', symbol='horse', move='track',
+                     armor=True, sound='hooves'),
+    'rangers':  dict(name='Rangers', symbol='bow', move='ranger', spot=3),
+    'xbows':    dict(name='Crossbows', symbol='bow', move='foot',
+                     zoc=False, support=True, fight='bow'),
+    'ballista': dict(name='Great crossbow', symbol='ballista', move='foot',
+                     zoc=False, support=True, fight='bow',
+                     fate='is smashed on its tower'),
+    'folk':     dict(name='Refugees', symbol='cart', move='wheel',
+                     zoc=False, under=True, values=folk_values,
+                     fate='is overtaken, and the carts burn'),
+    'relic':    dict(name='Holy relic', symbol='lantern', move='wheel',
+                     zoc=False, under=True, stack=0, values=folk_values,
+                     fate='is taken, and its light goes out'),
+    'hero':     dict(name='Hero', symbol='hero', move='foot', zoc=False,
+                     stack=0, under=True, values=hero_values,
+                     fate='is slain'),
+    # the Horde
+    'kobolds':  dict(name='Kobold warband', symbol='kobold', move='foot',
+                     kobold=True, fate='scatters'),
+    'slingers': dict(name='Kobold slingers', symbol='sling', move='foot',
+                     kobold=True, zoc=False, support=True),
+    'drake':    dict(name='Drakes', symbol='drake', move='fly', spot=4,
+                     fate='fall out of the sky'),
+    'cult':     dict(name='Cinder-sworn', symbol='cult', move='foot',
+                     fate='go into the fire singing'),
+    'dragon':   dict(name='Dragon', symbol='dragon', move='fly', spot=4,
+                     sound='roar', fight='roar',
+                     fate='crashes to the earth, and the ground shakes'),
+}
+
+DALE = '#b8c8a0'
+FOLKC = '#d8ccae'
+GOLD = '#e8d48c'
+KOBOLD = '#9a5a36'
+CULT = '#6a2a22'
+WYRM = '#c8401e'
+
+# the Wyrmbane counts the dragon's wounds
+DRAGON_STEPS = 4
+
+
+def u(uid, side, a, d, m, hx, kind, formation, colour, long, **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, a=a, d=d, m=m, steps=kw.pop('steps', 2),
+                hex=hx, formation=formation, colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+def folk(uid, hx, place, name, **kw):
+    return u(uid, 'dl', 0, 1, 2, hx, 'folk', 'Refugees', FOLKC,
+             'The folk of %s' % place, name=name, vp=CART_VP, **kw)
+
+
+def hero(uid, side, d, m, hx, lead, colour, long, **kw):
+    return u(uid, side, 0, d, m, hx, 'hero', 'Heroes', colour, long,
+             steps=1, lead=lead, **kw)
+
+
+UNITS = [
+    # ---- Wardenford
+    u('keep', 'dl', 3, 5, 3, FORT, 'warden', 'Wardenford', DALE,
+      'The Wardens of the bridge', name='WARDENS', posture='defend'),
+    u(BALLISTA, 'dl', 6, 2, 0, FORT, 'ballista', 'Wardenford', DALE,
+      'The Wyrmbane, the great crossbow on the keep', name='WYRMBANE',
+      range=3, steps=1),
+    hero(HUNTER, 'dl', 2, 4, FORT, 1, GOLD, 'Old Hallam the wyrm-hunter',
+         name='HALLAM', fate='is slain, still claiming he had it',
+         vp=3),
+    # ---- Hollin
+    u('foot1', 'dl', 4, 5, 4, '1308', 'foot', 'The Margravate', DALE,
+      "The Margravine's men-at-arms", name='MEN-AT-A'),
+    u('xbow1', 'dl', 3, 2, 4, '1308', 'xbows', 'The Margravate', DALE,
+      'Crossbows of Hollin', name='XBOWS', range=2),
+    folk('f_hol1', '1308', 'Hollin', 'HOLLIN'),
+    folk('f_hol2', '1208', 'Hollin market', 'MARKET'),
+    u(LANTERN, 'dl', 0, 1, 2, '1208', 'relic', 'Refugees', GOLD,
+      'The Lantern of Hollin and its keepers', name='LANTERN', steps=1,
+      vp=6),
+    u('kn1', 'dl', 6, 4, 6, '1407', 'knights', 'The Margravate', DALE,
+      'Knights of the Margravine', name='KNIGHTS'),
+    u('kn2', 'dl', 6, 4, 6, '1409', 'knights', 'The Margravate', DALE,
+      'The Ashby lances', name='LANCES'),
+    hero('isolde', 'dl', 2, 6, '1407', 1, GOLD, 'Margravine Isolde',
+         name='ISOLDE', move='track', sound='hooves', vp=4,
+         fate='falls, and her banner with her'),
+    # ---- Thornwick
+    u('mil1', 'dl', 3, 3, 4, '1804', 'militia', 'The villages', DALE,
+      'Thornwick militia', name='THORNWK'),
+    u('foot2', 'dl', 4, 5, 4, '1904', 'foot', 'The Margravate', DALE,
+      'Men-at-arms of the north march', name='N MARCH'),
+    folk('f_thn1', '1505', 'Thornwick', 'THORNWK'),
+    folk('f_thn2', '1504', 'the north farms', 'FARMS'),
+    # ---- Brackenmoor
+    u('mil2', 'dl', 3, 3, 4, '1812', 'militia', 'The villages', DALE,
+      'Brackenmoor militia', name='BRACKEN'),
+    u('xbow2', 'dl', 3, 2, 4, '1711', 'xbows', 'The villages', DALE,
+      'Brackenmoor crossbows', name='B XBOWS', range=2),
+    folk('f_brk', '1610', 'Brackenmoor', 'BRACKEN'),
+    u('rangers', 'dl', 3, 3, 5, '1611', 'rangers', 'The villages', DALE,
+      'Rangers of the Greenwold', name='RANGERS'),
+    # ---- Ashby, nearest the fire
+    u('mil3', 'dl', 3, 3, 4, '2207', 'militia', 'The villages', DALE,
+      'Ashby militia, what is left of it', name='ASHBY', steps=1),
+    folk('f_ash', '1707', 'Ashby', 'ASHBY'),
+
+    # ---- the wyrm
+    u(DRAGON, 'dr', 10, 8, 10, '2605', 'dragon', 'The wyrm', WYRM,
+      'Ashkarr the Ember Wyrm', name='ASHKARR', steps=DRAGON_STEPS,
+      vp=12),
+    u('drake1', 'dr', 3, 2, 8, '2604', 'drake', 'The wyrm', WYRM,
+      'Drakes of the brood', name='BROOD', steps=1),
+    u('drake2', 'dr', 3, 2, 8, '2609', 'drake', 'The wyrm', WYRM,
+      'Young drakes', name='YOUNG', steps=1),
+    # ---- the kobolds
+    u('kob1', 'dr', 3, 3, 6, '2406', 'kobolds', 'Kobolds', KOBOLD,
+      'Scorchtail warband', name='SCORCH'),
+    u('kob2', 'dr', 3, 3, 6, '2407', 'kobolds', 'Kobolds', KOBOLD,
+      'Ashfang warband', name='ASHFANG'),
+    u('kob3', 'dr', 3, 3, 6, '2408', 'kobolds', 'Kobolds', KOBOLD,
+      'Cinderclaw warband', name='CINDER'),
+    u('kob4', 'dr', 3, 3, 6, '2503', 'kobolds', 'Kobolds', KOBOLD,
+      'Soot-eaters', name='SOOT'),
+    u('kob5', 'dr', 3, 3, 6, '2510', 'kobolds', 'Kobolds', KOBOLD,
+      'Emberkin', name='EMBERKIN'),
+    u('kob6', 'dr', 3, 3, 6, '2309', 'kobolds', 'Kobolds', KOBOLD,
+      'Tunnel-biters', name='BITERS'),
+    u('sling1', 'dr', 2, 2, 5, '2507', 'slingers', 'Kobolds', KOBOLD,
+      'Kobold slingers', name='SLINGS', range=2),
+    u('sling2', 'dr', 2, 2, 5, '2508', 'slingers', 'Kobolds', KOBOLD,
+      'Stone-throwers', name='STONES', range=2),
+    # ---- coming over the peaks
+    u('cult1', 'dr', 5, 4, 4, None, 'cult', 'The Cinder-sworn', CULT,
+      'The Cinder-sworn', name='SWORN', arrive=2, at=['2807', '2806']),
+    u('cult2', 'dr', 5, 4, 4, None, 'cult', 'The Cinder-sworn', CULT,
+      'The Ash Choir', name='CHOIR', arrive=2, at=['2808', '2807']),
+    u('kob7', 'dr', 3, 3, 6, None, 'kobolds', 'Kobolds', KOBOLD,
+      'Deepscale warband', name='DEEPSCL', arrive=3, at=['2804', '2805']),
+    u('kob8', 'dr', 3, 3, 6, None, 'kobolds', 'Kobolds', KOBOLD,
+      'Smokeling warband', name='SMOKE', arrive=3, at=['2810', '2809']),
+]
+
+
+# ------------------------------------------------------ the computer
+
+class Wyrm(ai.AI):
+    """The stock computer player, which also burns things: the Horde's
+    dragon breathes once everyone has moved; the Dale's escorts keep
+    with the carts, the carts keep with the escorts, and the heroes
+    keep with the strongest stack."""
+
+    def begin(self):
+        super().begin()
+        self.breath_done = False
+
+    def next_move(self):
+        act = super().next_move()
+        e = self.e
+        if act == ('end',) and e.phase == 'move' and not self.breath_done:
+            self.breath_done = True
+            d = e.units[DRAGON]
+            if d.side == self.side and d.alive:
+                ts = fire_targets(e, d)
+                if ts and fire_value(e, self.side, ts[0],
+                                     e.visible(self.side)) >= 0.5:
+                    e.flags['aim'] = hid(ts[0])
+                    for label, k, why in e.actions(d):
+                        if k == 'fire' and not why:
+                            return ('act', DRAGON, 'fire')
+        return act
+
+    def folk_known(self):
+        return [h for x, h in self.enemies() if x.kind in FOLK]
+
+    def score(self, u, h):
+        e = self.e
+        if u.kind in HEROES:
+            return self.hero_score(u, h)
+        if self.side == 'dl' and u.kind in FOLK:
+            return self.folk_score(u, h)
+        s = super().score(u, h)
+        if self.side == 'dl':
+            if u.attack > 0 and not u.supports and u.max_mp > 0:
+                folk = [x.hex for x in e.alive('dl') if x.kind in FOLK
+                        and x is not u]
+                if folk:
+                    d = min(distance(h, f) for f in folk)
+                    # a screen a hex or two east of the carts
+                    east = any(h[0] >= f[0] and distance(h, f) <= 2
+                               for f in folk)
+                    s += (3 if east else 0) - max(0, d - 2) * 0.6
+            return s
+        # the Horde: after the carts
+        folk = self.folk_known()
+        if folk:
+            d = min(distance(h, f) for f in folk)
+            if u.id == DRAGON:
+                # within breath of them, not in the middle of them
+                s += 14 if 1 <= d <= BREATH_RANGE else 10.0 / (1 + d)
+            elif u.attack > 0:
+                s += 10.0 / (1 + d)
+        if u.id == DRAGON:
+            b = e.units[BALLISTA]
+            if b.alive and distance(h, b.hex) <= b.range:
+                s -= 6              # out of the Wyrmbane's reach
+        return s
+
+    def folk_score(self, u, h):
+        """Refugees: west, all the way, with an escort if there is one,
+        and not next to the kobolds."""
+        e = self.e
+        f = self.field(e.board.hex_list('W'), u.move_class)
+        d = f.get(h)
+        s = -3.0 * (d if d is not None else 99)
+        if any(x.attack > 0 and not x.supports
+               for x in e.at(h, u.side) if x is not u):
+            s += 1
+        if any(n in self.enemy_at for n in neighbours(h)):
+            s -= 4
+        s -= self.threat.get(h, 0) * 0.05
+        if h == u.hex:
+            s += 0.3
+        return s
+
+    def hero_score(self, u, h):
+        e = self.e
+        friends = [x for x in e.at(h, u.side) if x is not u and
+                   x.attack > 0 and not x.supports and
+                   x.kind not in HEROES]
+        strength = sum(x.attack for x in friends)
+        s = min(strength, 12) * 0.5 if friends else -25 - \
+            self.threat.get(h, 0) * 0.1
+        if u.id == HUNTER:
+            d = e.units[DRAGON]
+            if d.alive and d.id in self.memory:
+                s -= distance(h, self.memory[d.id]) * 0.5
+        known = [k for _, k in self.enemies()]
+        dd = min([distance(h, k) for k in known] or [12])
+        s += 3 if dd == 1 else -dd * 0.3
+        s -= e.board.terrain(h).get('shift', 0)
+        if h == u.hex:
+            s += 0.3
+        return s
+
+
+AI_CLASS = Wyrm
+
+# ------------------------------------------------------------- the screen
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1c1410', panel='#2c201a', light='#80644e',
+              dark='#0a0604', accent='#f0a040', button='#4a3426',
+              button_hi='#a07a5a', button_lo='#1c1410', red='#c03a1e')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE FLIGHT. The Dalesfolk move first. Their refugees, six columns "
+    "of carts and the Lantern of Hollin, must take the Ember Road west "
+    "to Wardenford, cross the Lenn by its bridge or at Miller's Ford, "
+    "and get off the west edge. Only the roads cross the river. The "
+    "knights, men-at-arms and militia hold off the Horde behind them. "
+    "Each day has four turns; in the evening units see two hexes, at "
+    "night only the next.",
+
+    "THE DRAGON. Ashkarr flies over anything, and its attacks gain a "
+    "column (dragonfear), unless Hallam is in the hex attacked. Once a "
+    "turn in the movement phase, except at night, it breathes fire at a "
+    "hex up to %d away: select the dragon and use the buttons ('At:' "
+    "picks the hex). Each Dale unit there loses a step on a 4 or more, "
+    "carts and the Lantern on 3, behind the walls of Wardenford on 6."
+    % BREATH_RANGE,
+
+    "FIRE. Meadow, farmland, woods and villages catch fire. A hex on "
+    "fire can't be entered by carts, even along the road, and costs "
+    "two more for everyone else. It burns until the Horde's next turn "
+    "and then stays burnt: scorched earth, charred woods that give no "
+    "cover and hide nobody, villages in ruins. A wood on fire may set "
+    "the wood next to it alight. The drakes fly too.",
+
+    "HEROES. Margravine Isolde and Hallam don't count for stacking and "
+    "can't attack alone. With an attacking unit each gives a column; "
+    "in a hex attacked each takes one away. Against the dragon the "
+    "Wyrmbane, the great crossbow on the keep (range 3, it never "
+    "moves), gives two more columns, and Hallam one more. If the dragon "
+    "dies every kobold unit loses a step.",
+
+    "WINNING. If the Horde holds Wardenford at the end of a turn it "
+    "wins at once. Otherwise the Dalesfolk score %d VP for each step of "
+    "refugees off the west edge and %d more for the Lantern, the Horde "
+    "%d for each cart destroyed, 6 for the Lantern and %d for every hex "
+    "it sets alight. Each side also "
+    "scores every enemy step lost and the places it holds x, Thornwick and Brackenmoor 2, Ashby 1); the dragon is "
+    "worth 12, a hero 3 or 4. The Horde wins if it finishes no more "
+    "than %d VP behind."
+    % (EXIT_VP, LANTERN_VP, CART_VP, BURN_VP, -MARGIN),
+]
+
+ICON = 'emberroad'
+
+
+@grognard.icon('emberroad')
+def draw_icon(p, n):
+    """A red dragon over a road running west into the flames."""
+    p.fill('#5a1e10')
+    p.disc(n * 0.5, n * 1.35, n * 0.75, '#2a1a12')          # the dale
+    for i in range(int(n * 0.5)):                           # the road
+        t = i / (n * 0.5)
+        w = n * (0.04 + 0.2 * t)
+        p.rect(n * 0.5 - w / 2, n * 0.6 + i, w, 1, '#c8a878')
+    for x, h in ((0.12, 0.2), (0.22, 0.28), (0.3, 0.18), (0.72, 0.24),
+                 (0.82, 0.3), (0.9, 0.2)):                  # flames
+        p.disc(n * x, n * (0.78 - h / 2), n * 0.06, '#f08020')
+        p.disc(n * x, n * (0.82 - h / 3), n * 0.05, '#ffd040')
+    # the dragon: body, neck, head, wings, tail
+    k = '#e04018'
+    p.line(n * 0.32, n * 0.36, n * 0.62, n * 0.32, k, max(2, n // 12))
+    p.line(n * 0.62, n * 0.32, n * 0.74, n * 0.2, k, max(2, n // 18))
+    p.disc(n * 0.77, n * 0.18, n * 0.05, k)
+    p.line(n * 0.32, n * 0.36, n * 0.14, n * 0.44, k, max(1, n // 24))
+    for x0 in (0.4, 0.5):
+        p.line(n * x0, n * 0.34, n * (x0 - 0.14), n * 0.08, k,
+               max(1, n // 24))
+        p.line(n * (x0 - 0.14), n * 0.08, n * (x0 + 0.1), n * 0.33, k,
+               max(1, n // 24))
+    p.disc(n * 0.79, n * 0.17, max(1, n * 0.012), '#ffe060')
+
+
+# ------------------------------------------------- symbols and pictures
+
+counters.PICTURES.update({
+    'dragon': ['#....##....', '##..####...', '###.#####.#', '.########+#',
+               '..#######..', '...#####...', '..##...##..', '.##.....##.'],
+    'drake':  ['#.........#', '##.......##', '.###.#.###.', '..#######+.',
+               '....###....', '.....#.....', '....#.#....', '...........'],
+    'kobold': ['....##.....', '...####+...', '...###.....', '..#####..#.',
+               '.#.###.##..', '...###.....', '..#...#....', '.##...##...'],
+    'sling':  ['.......+...', '......#.#..', '.....#...#.', '..##.#...#.',
+               '.####.###..', '..##..#....', '..#.#.#....', '.#...#.....'],
+    'cult':   ['....###....', '...#####...', '...#+.+#...', '..#######..',
+               '.#########.', '.#########.', '.#########.', '..#######..'],
+    'cart':   ['..+++++....', '.+++++++...', '#########..', '#########.#',
+               '#########.#', '.#.....#...', '###...###..', '.#.....#...'],
+    'lantern': ['....###....', '...#...#...', '..#######..', '..#+++++#..',
+                '..#+++++#..', '..#+++++#..', '..#######..', '....###....'],
+    'ballista': ['#.........#', '.#.......#.', '..#.....#..', '###########',
+                 '.....#.....', '....###....', '...#.#.#...', '..#..#..#..'],
+    'hero':   ['...........', '.#...#...#.', '.##.###.##.', '.#########.',
+               '.#+#+#+#+#.', '.#########.', '...........', '...........'],
+    'bow':    ['...##......', '..#..#.....', '.#....#....', '.#+++++####',
+               '.#....#....', '..#..#.....', '...##......', '...........'],
+})
+
+
+def _pictured(name):
+    def draw(p, x, y, w, h, c):
+        counters.picture(p, name, x, y, w, h, c, c)
+    grognard.symbol(name)(draw)
+
+
+for _name in ('dragon', 'drake', 'kobold', 'sling', 'cult', 'cart',
+              'lantern', 'ballista', 'hero', 'bow'):
+    _pictured(_name)
+
+
+# ------------------------------------------------------------ patterns
+
+@grognard.pattern('flames')
+def p_flames(t, s):
+    """Tongues of flame over embers."""
+    c = Canvas(t['colour'])
+    ink = rgb(t['ink'])
+    hot = mix(t['ink'], '#ffffff', 0.5)
+    dark = mix(t['colour'], '#000000', 0.35)
+    c.speckle(dark, 0.12, 21)
+    for x, y, k in jitter_points(max(6, int(10 * s)), 23, 0.5):
+        h = int((4 + 4 * k) * s)
+        for j in range(h):
+            half = (h - j) * 0.35
+            for i in range(-int(half), int(half) + 1):
+                c.set(x + i, y - j, hot if abs(i) < half * 0.4 and
+                      j < h * 0.6 else ink)
+    return c
+
+
+@grognard.pattern('stumps')
+def p_stumps(t, s):
+    """Black stumps standing in ash."""
+    c = Canvas(t['colour'])
+    ink = rgb(t['ink'])
+    ash = mix(t['colour'], '#ffffff', 0.18)
+    c.speckle(ash, 0.08, 31)
+    for x, y, k in jitter_points(max(6, int(9 * s)), 33, 0.45):
+        h = int((2 + 3 * k) * s) + 1
+        for j in range(h):
+            c.set(x, y - j, ink)
+            if s > 1.2:
+                c.set(x + 1, y - j, ink)
+        if k > 0.5:
+            c.set(x - 1, y - h + 1, ink)
+    return c
+
+
+# ---------------------------------------------------------------- sounds
+
+# The dragon's roar, and its fire.
+sound.EFFECTS['roar'] = lambda: sound.mixdown(
+    sound.tone(150, 0.9, 'saw', 0.22, slide=-80),
+    sound.tone(96, 0.9, 'square', 0.12, slide=-40, duty=0.3),
+    sound.whoosh(1.0, 0.3))
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])
