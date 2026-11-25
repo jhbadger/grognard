@@ -1344,6 +1344,10 @@ class Engine:
                 return {u.id for u in self.alive()}
             mine = self.alive(viewer)
             wspot = self.weather().get('spot')
+            # a game's own light: SPOT(engine, spotter, unit, spot) gives
+            # how far spotter sees unit (the dark side of a moon, a
+            # burning village)
+            hook = getattr(self.d, 'SPOT', None)
             out = {u.id for u in mine}
             for u in self.alive():
                 if u.side == viewer:
@@ -1355,6 +1359,8 @@ class Engine:
                 for v in mine:
                     d = distance(u.hex, v.hex)
                     spot = v.spot if wspot is None else min(v.spot, wspot)
+                    if hook:
+                        spot = hook(self, v, u, spot)
                     if d <= 1 or (d <= spot and t.get('los', True)):
                         out.add(u.id)
                         break

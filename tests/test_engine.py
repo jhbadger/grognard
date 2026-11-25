@@ -293,6 +293,16 @@ class Rules(unittest.TestCase):
         self.assertNotIn('r2', vis)
         self.assertEqual(e.visible(None), {u.id for u in e.alive()})
 
+    def test_spot_hook(self):
+        """SPOT(engine, spotter, unit, spot) sets how far each unit is
+        seen: here the red units east of column 7 stand in the light."""
+        lit = lambda e, v, u, spot: 9 if u.hex[0] >= 6 else 0  # noqa
+        e = Engine(util.tiny(FOG=True, SPOT=lit), seed=1)
+        vis = e.visible('b')
+        self.assertIn('r1', vis)                # 0703, in the light
+        self.assertIn('r2', vis)
+        self.assertNotIn('b1', e.visible('r'))  # blue is in the dark
+
     def test_ai_plays_by_the_rules(self):
         """Two computer players finish the tiny game without an illegal
         move."""

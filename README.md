@@ -17,7 +17,7 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are twenty-five games so far: a Second World War battle, a raid in a
+There are twenty-seven games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
@@ -52,7 +52,10 @@ where an Indian army landing in German East Africa in 1914 was beaten
 by the askari and by swarms of bees, and Nagashino, the Takeda horse
 charging Nobunaga's matchlocks behind their palisade in 1575, and
 Belleau Wood, the Marines crossing the wheat into the machine guns in
-June 1918.
+June 1918, and two more from the far future: Terminator Line, an
+attack on an airless moon that follows the line of dusk across it, and
+Hollow Station, a mining colony on the ice holding out against
+creatures that come up out of burrows until the shuttle lands.
 
 ```bash
 ./crossroads
@@ -152,6 +155,14 @@ June 1918.
 
 ```bash
 ./belleau
+```
+
+```bash
+./terminator
+```
+
+```bash
+./hollow
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -1141,6 +1152,66 @@ It took the Marines until 26 June to clear the wood; this is only the
 first day. The battalions are the real ones, the strengths are set for
 play, and the map follows the ground, not a survey.
 
+## Terminator Line: the dusk offensive on Tarn, 2311
+
+The twenty-sixth game, and an original one. Tarn is an airless moon
+that turns once in thirty days, so the line between its day and its
+night crawls across the ground at a walking pace. The Inner Concord's
+landing force comes down on the night side and attacks west behind the
+dusk, toward the mass driver at Sable Port that throws the Free Holds'
+ore into orbit.
+
+- **Fourteen turns** of six hours. The Concord moves first, landing at
+  the east edge over the first three turns.
+- **The terminator**: the night side is shaded on the map, and it moves
+  west a column at the start of every turn. A unit in the dark is seen
+  only from next door; one in the sunlight is seen from 5 hexes off,
+  and any attack or barrage on a hex in the sunlight gains a column.
+  The dusk reaches Kell Dome on turn 4, Orrin's Pit on turn 8 and Vesta
+  Dome on turn 12, and never reaches the port.
+- **The ground**: Concord jump troops bound over crater rims and
+  boulder fields at a point a hex; Holders on foot pay 2. The Long
+  Rille can be crossed by tracked units only on the haul road, and
+  attacks across it are at half strength. The domes and the mine give a
+  column, and their defenders lose a step rather than retreat; the
+  mass driver gives two, and its blast walls one more.
+- **The Holders**: militia in the domes, at the mine and at the port,
+  armed ore haulers, and mining lasers that fire 3 hexes. Vane's Free
+  Company of mercenaries lands at the west edge on turn 6.
+- **Winning**: the Concord wins outright if it holds Sable Port at the
+  end. Otherwise it scores Kell Dome (3), Orrin's Pit (4) and Vesta Dome
+  (4) and Holder steps, the Holders Concord steps, and the Concord must
+  finish 10 VP ahead. Computer against computer the Concord wins 27
+  games in 60, 6 of them by taking the port.
+
+## Hollow Station: the siege of a mining colony on Calyx, 2290
+
+The twenty-seventh game, and an original one. The miners of Hollow
+Station cut into a cavern under the ice and woke what lived there. Now
+the Chorus is coming up out of the burrows, more of it every hour, and
+the relief shuttle Petrel is nine hours out.
+
+- **Twelve turns** of an hour. The Chorus moves first.
+- **The Chorus**: each open burrow no colony unit stands on may give
+  up a creature at the start of each Chorus turn (a chance in three):
+  drones, spitters that fire 2 hexes, or brutes. No more than 26 are
+  above the ice at once, and their losses score nothing.
+- **The station**: five domes, the colonists in Operations, four
+  squads of security, two miner gangs, a cargo loader in a work frame,
+  and two sentry turrets that fire into every assault and sweep every
+  creature within 2 hexes at the start of each Chorus turn (40 rounds).
+  The domes give a column (Operations two), and their defenders lose a
+  step rather than fall back.
+- **Sealing**: a miner gang next to an open burrow with none of the
+  Chorus in it can bring it down with charges (Orders): no more comes
+  out of it, it's worth 2 VP, and one time in three the gang loses a
+  step doing it.
+- **Winning**: the Petrel lands at 09:00; from then colonists on the
+  landing pad at the start of a colony turn go aboard, for 6 VP each.
+  The Chorus scores the domes it holds at the end and 6 for each group
+  of colonists it takes. The colony must finish 4 VP ahead. Computer
+  against computer it wins 30 games in 60.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -1309,7 +1380,9 @@ The rules are the classic ones, and each part can be changed by a game:
 - **Fog of war** (`FOG = True`): enemy units show within 2 hexes of your
   own (`spot`, 3 for reconnaissance), or 1 where they're in terrain that
   blocks sight (`los: False`), or in weather with its own `spot`; units
-  that fought are seen for the rest of the turn.
+  that fought are seen for the rest of the turn. `SPOT(engine, spotter,
+  unit, spot)` can set how far each unit is seen from each other one
+  (the night side of a moon).
 - **Walls and fences**: a hexside kind with a `shift` (the stock
   `wall`, -1) shifts an attack when every unit attacking from next door
   comes across one; the stock `fence` (drawn with `posts`) only slows
@@ -1487,7 +1560,16 @@ its own, popups, and a ship supporting from the harbour; and
 `ON_TURN`, checked in `CAN_SUPPORT`), units that never move (`m=0`),
 and hexsides worked out in code along a column; and `belleau` for
 losses taken while moving (`ON_MOVE` and `engine.take_losses`) and
-units held until a given turn for an evening attack.
+units held until a given turn for an evening attack; and `terminator`
+for light that differs from hex to hex and moves every turn (`SPOT`,
+`COMBAT_SHIFTS` and the shading drawn by `DRAW_MAP`), a movement class
+that bounds over rough ground, and a computer player that keeps to the
+dark (`AI_CLASS`); and `hollow` for an enemy made in play every turn
+(`engine.spawn` from `ON_TURN`) out of places that can be closed with
+an order (`ACTIONS`), units that score by being taken off the map on
+a given turn, turrets that sweep the ground round them, and a
+computer player that sends its miners out and its colonists to the
+pad (`AI_CLASS`).
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)

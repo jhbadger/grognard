@@ -1,0 +1,543 @@
+#!/usr/bin/env python3
+"""Terminator Line: the dusk offensive on Tarn, 2311.  A sample game for
+the Grognard engine, and an original one.
+
+Tarn is an airless moon that turns once in thirty days, so the line
+between its day and its night crawls across the ground at a walking
+pace.  The Concord's landing force comes down on the night side and
+attacks west behind the dusk, toward the mass driver at Sable Port that
+throws the Free Holds' ore into orbit.  Whatever stands in the sunlight
+is seen for miles, and easy to hit.  Play either side against the
+computer, or against a friend at the same screen.
+
+Run it with ./terminator (Python 3 with Tk, nothing else).  The game is
+saved to ~/.terminator.json.  ./terminator --selftest checks the map
+and plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import ai, counters, hexgrid             # noqa: E402
+from grognard.gfx import rgb                           # noqa: E402
+from grognard.terrain import Canvas                    # noqa: E402
+
+ID = 'terminator'
+TITLE = 'Terminator Line'
+SUBTITLE = 'The dusk offensive on Tarn, 2311'
+
+INTRO = [
+    "2311. Tarn is a moon with no air, and it turns once in thirty "
+    "days. Its day is fifteen days of sun hot enough to cook a man in "
+    "a torn suit; its night is fifteen days of dark at two hundred "
+    "below. Between them runs the terminator, the line of dusk, and it "
+    "moves across the ground no faster than a man can walk.",
+
+    "The Free Holds of Tarn mine ore and throw it into orbit from the "
+    "mass driver at Sable Port, and two years ago they stopped selling "
+    "it to the Inner Concord. Now the Concord has come for the driver. "
+    "Its landing force has come down on the night side, behind the "
+    "dusk, where nothing can see it.",
+
+    "In the sunlight a crawler kicks up dust that glitters for twenty "
+    "kilometres, and every rock throws a shadow a mile long; a soldier "
+    "in the open is seen, and shot. In the dark a whole battalion can "
+    "walk up to a dome unseen. The Concord's jump troops will keep up "
+    "with the night. The Holders will wait for it in the sun.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='cc', name='Concord', adj='Concord', colour='#a8c0dc',
+         ink='#0a1424', posture='attack', singular=True,
+         about='Follow the dusk west across Tarn, take the domes and the '
+               'mine, and seize the mass driver at Sable Port. Stay in '
+               'the dark, and strike what stands in the sun.'),
+    dict(id='fh', name='Holders', adj='Holder', colour='#d8a048',
+         ink='#1c1004', posture='defend',
+         about='Hold the domes, the mine at Orrin\'s Pit and above all '
+               'the mass driver at Sable Port. The dusk is coming: meet '
+               'the Concord in it, not in the open sun.'),
+]
+ORDER = ['cc', 'fh']
+
+TURNS = 14
+
+
+def TURN_NAME(t):
+    """Six hours a turn, from dusk at Kell Dome."""
+    h = (t - 1) * 6
+    return ('Turn %d' % t, 'Dusk +%d h' % h if h else 'Dusk at Kell')
+
+
+STACK = 2
+FOG = True              # and the light decides how far is seen
+DEFENSIVE_FIRE = 1
+STEP_VP = 1
+
+# ------------------------------------------------------- the terminator
+
+DUSK = 19               # on turn 1 every column from this one is dark
+SUN_SPOT = 5            # how far a unit in the sunlight is seen
+
+
+def dusk(turn):
+    """The westernmost dark column on a turn: it moves a column a turn."""
+    return DUSK - (turn - 1)
+
+
+def dark(e, h, turn=None):
+    """Whether hex h is on the night side."""
+    return h is not None and h[0] >= dusk(turn or e.turn)
+
+
+def SPOT(e, spotter, u, spot):
+    """In the dark a unit is seen only from next door; in the sunlight
+    from SUN_SPOT hexes, unless it stands among boulders or rims."""
+    if dark(e, u.hex):
+        return 1
+    return max(spot, SUN_SPOT)
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """A target standing in the sunlight is a column easier to hit: no
+    shadow to hide in, and every shot aimed."""
+    if not dark(e, target):
+        return [(1, 'in the sun')]
+    return []
+
+
+def ON_TURN(e, side):
+    """The dusk moves west at the start of each turn."""
+    e.changed()                     # what's seen has changed with the light
+    if side != 'cc':
+        return
+    if e.turn == 1:
+        e.say('Dusk on Tarn. The Concord landing force is down on the '
+              'night side, east of Kell Dome, and the dark is moving '
+              'west at walking pace.')
+        return
+    col = dusk(e.turn)
+    for h, o in sorted(e.board.objectives.items()):
+        if h[0] == col:
+            e.say('The dusk reaches %s. Its lights go out one by one.'
+                  % o['name'])
+            return
+    e.say('The terminator moves west, to column %d.' % (col + 1))
+
+
+def ON_ELIMINATE(e, u, where):
+    if u.id == 'driver':
+        e.say('The mass driver\'s guard is gone.')
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'.': 'clear', ':': 'fields', 'h': 'hills', 'r': 'rough',
+          't': 'town', 'M': 'mine', 'C': 'city'}
+
+MOVE = dict
+TERRAIN = {
+    'clear':  dict(name='Regolith plain', colour='#9a968c', ink='#7a766c',
+                   pattern='regolith', edge='#5a5650',
+                   move=MOVE(foot=1, jump=1, track=1, wheel=1)),
+    'fields': dict(name='Dust flats', colour='#b4ae9e', ink='#9a9484',
+                   pattern='regolith', edge='#76705e',
+                   move=MOVE(foot=1, jump=1, track=1, wheel=1)),
+    'hills':  dict(name='Crater rim', colour='#7a7468', ink='#4e4a42',
+                   pattern='hills', edge='#3a3630', shift=-1,
+                   move=MOVE(foot=2, jump=1, track=3, wheel=None)),
+    'rough':  dict(name='Boulder field', colour='#86817a', ink='#55514a',
+                   pattern='rough', edge='#45413a', shift=-1,
+                   move=MOVE(foot=2, jump=1, track=3, wheel=None)),
+    'town':   dict(name='Pressure dome', colour='#b4b8bc', ink='#5a6a7a',
+                   pattern='town', edge='#3a4450', shift=-1, stand=True,
+                   move=MOVE(foot=1, jump=1, track=1, wheel=1)),
+    'mine':   dict(name='Mine head', colour='#9c8c74', ink='#5a4a34',
+                   pattern='rough', edge='#3e3224', z=7, shift=-1,
+                   open=False, los=False, stand=True,
+                   move=MOVE(foot=1, jump=1, track=1, wheel=1)),
+    'city':   dict(name='Mass driver', colour='#a8a8b0', ink='#4a4a5a',
+                   pattern='city', edge='#2a2a34', shift=-2,
+                   move=MOVE(foot=1, jump=1, track=1, wheel=1)),
+}
+
+ROAD_TYPES = {
+    'road': dict(name='Haul road', colour='#c8c2b0', edge='#4a4638',
+                 cost={'foot': 0.5, 'jump': 0.5, 'track': 0.5,
+                       'wheel': 0.5}),
+}
+
+MAP = [
+    '........................',
+    '..........rr.....hh.....',
+    '...h......r.r...h...h...',
+    '..h.h........h..h...h...',
+    '..hhh..t....h.h.hh.h....',
+    '............hhh.........',
+    '.:::.................r..',
+    '.:.:...........t.....r..',
+    '.:C:...rrr............r.',
+    '.::::...................',
+    '..:..h.........rr.......',
+    '...hh.hh...M....rr.hhh..',
+    '.r.h...h........r..h.h..',
+    '.rrh...h.....rrr....h...',
+    '....hhh......r.r........',
+    '........................',
+]
+
+RILLE = 9               # the rille runs between this column and the next
+
+
+def _rille():
+    out = []
+    for r in range(len(MAP)):
+        a = (RILLE, r)
+        for n in hexgrid.neighbours(a):
+            if n[0] == RILLE + 1 and 0 <= n[1] < len(MAP):
+                out.append('%s/%s' % (hexgrid.hid(a), hexgrid.hid(n)))
+    return out
+
+
+HEXSIDES = {
+    'rille': dict(name='Rille', colour='#3a3630', width=4,
+                  cost={'foot': 2, 'jump': 1, 'track': None,
+                        'wheel': None}, halve=True),
+}
+RIVERS = [('rille', _rille())]
+
+ROADS = [
+    ('road', ['2408', '1608']),                 # from the landing zone
+    ('road', ['1608', '1212']),                 # to Orrin's Pit
+    ('road', ['1608', '0805', '0309']),         # to Vesta and the port
+    ('road', ['1212', '0309']),
+]
+
+LABELS = {
+    '1608': 'Kell Dome', '1212': "Orrin's Pit", '0805': 'Vesta Dome',
+    '0309': 'Sable Port', '0613': 'Hollis Crater', '1904': 'Ebon Crater',
+    '1014': 'the Long Rille', '2208': 'Landing zone',
+}
+
+OBJECTIVES = {
+    '1608': dict(name='Kell Dome', vp=3, owner='fh', **{'for': 'cc'}),
+    '1212': dict(name="Orrin's Pit", vp=4, owner='fh', **{'for': 'cc'}),
+    '0805': dict(name='Vesta Dome', vp=4, owner='fh', **{'for': 'cc'}),
+    '0309': dict(name='Sable Port', vp=10, owner='fh', shift=-1,
+                 works='blast walls', **{'for': 'cc'}),
+}
+PORT = '0309'
+
+SUPPLY = {
+    'cc': dict(**{'from': ['E'], 'range': 30}),
+    'fh': dict(**{'from': [PORT, 'W'], 'range': 16}),
+}
+
+
+def VICTORY(e):
+    """The Concord takes the moon if it holds Sable Port at the end.
+    Otherwise it scores the domes and the mine it holds and the Holders'
+    steps destroyed, the Holders the Concord's steps, and the Concord
+    must finish THRESHOLD ahead (set from games between computer
+    players: ./terminator --simulate 60)."""
+    cc, fh = e.vp('cc'), e.vp('fh')
+    score = 'Concord %d VP, Holders %d.' % (cc, fh)
+    if e.control.get(hexgrid.parse(PORT)) == 'cc':
+        return 'cc', ('Concord victory. %s The mass driver is taken, and '
+                      'the ore of Tarn goes where the Concord says.'
+                      % score)
+    m = cc - fh
+    if m >= THRESHOLD:
+        return 'cc', ('Concord marginal victory. %s The driver still '
+                      'fires, but half of Tarn is in Concord hands.'
+                      % score)
+    if m > THRESHOLD - 10:
+        return 'fh', ('Holders marginal victory. %s The Concord is stopped '
+                      'short of the port, and the sun is coming round '
+                      'behind it.' % score)
+    return 'fh', ('Holders victory. %s The landing force is bled white in '
+                  'the dusk, and the Free Holds keep their moon.' % score)
+
+
+THRESHOLD = 10           # how far ahead the Concord must finish
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'jump':    dict(name='Jump troops', symbol='jump', move='jump'),
+    'crawler': dict(name='Crawler tanks', symbol='armor', move='track',
+                    armor=True),
+    'railgun': dict(name='Rail guns', symbol='sp_art', move='track',
+                    zoc=False, support=True),
+    'militia': dict(name='Militia', symbol='infantry', move='foot'),
+    'hauler':  dict(name='Armed ore haulers', symbol='armor',
+                    move='track', armor=True),
+    'laser':   dict(name='Mining lasers', symbol='laser', move='track',
+                    zoc=False, support=True),
+}
+
+
+@grognard.symbol('jump')
+def s_jump(p, x, y, w, h, c):
+    """Jump troops: the infantry cross under an arc of a jump."""
+    counters.SYMBOLS['infantry'](p, x, y, w, h, c)
+    import math
+    cx, r = x + (w - 1) / 2, max(2, w / 3)
+    for i in range(13):
+        a = math.pi * (1 + i / 12)
+        p.set(cx + r * math.cos(a), y + h / 2 + r * 0.6 * math.sin(a) - 1, c)
+
+
+@grognard.symbol('laser')
+def s_laser(p, x, y, w, h, c):
+    """A mining laser: a beam out of a lens."""
+    p.oval(x + w // 4, y + (h - 1) / 2, max(1, w / 8), max(1, h / 4), c)
+    p.line(x + w // 4, y + (h - 1) // 2, x + w - 2, y + 1, c)
+    p.line(x + w // 4, y + (h - 1) // 2 + 1, x + w - 2, y + 2, c)
+
+
+counters.PICTURES['jump'] = [
+    '...#####...', '..#.....#..', '....##.....', '...####.#..',
+    '..#.##.#...', '....##.....', '...#..#....', '..#....#...']
+counters.PICTURES['laser'] = [
+    '..........#', '........##.', '......##...', '.###.##....',
+    '#####......', '.###.......', '.#.#.......', '###########']
+
+CONCORD = '#a8c0dc'
+CONCORD2 = '#8eaacc'
+HOLDS = '#d8a048'
+HOLDS2 = '#c88c3a'
+
+
+def unit(uid, side, kind, a, d, m, hx, long, colour, formation, steps=2,
+         **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, size=kw.pop('size', 'II'), a=a, d=d, m=m,
+                steps=steps, hex=hx, long=long, colour=colour,
+                formation=formation)
+    spec.update(kw)
+    return spec
+
+
+LZ = ['2406', '2407', '2408', '2409', '2410']
+LZ2 = ['2403', '2404', '2405', '2411', '2412']
+
+
+def jumpers(n, arrive, at):
+    return unit('j%d' % n, 'cc', 'jump', 5, 4, 4, None,
+                '%s Jump Battalion, 9th Concord Marines' % (
+                    ('1st', '2nd', '3rd', '4th', '5th', '6th')[n - 1]),
+                CONCORD, '9th Marines', arrive=arrive, at=at,
+                name='%d/9 JMP' % n)
+
+
+UNITS = [
+    # ---- the Concord landing force
+    jumpers(1, 1, LZ), jumpers(2, 1, LZ), jumpers(3, 1, LZ),
+    jumpers(4, 2, LZ2), jumpers(5, 2, LZ2), jumpers(6, 3, LZ),
+    unit('k1', 'cc', 'crawler', 6, 5, 4, None, '1st Crawler Squadron',
+         CONCORD2, 'Armour', arrive=1, at=LZ, name='1 CRWL'),
+    unit('k2', 'cc', 'crawler', 6, 5, 4, None, '2nd Crawler Squadron',
+         CONCORD2, 'Armour', arrive=2, at=LZ, name='2 CRWL'),
+    unit('k3', 'cc', 'crawler', 6, 5, 4, None, '3rd Crawler Squadron',
+         CONCORD2, 'Armour', arrive=3, at=LZ2, name='3 CRWL'),
+    unit('g1', 'cc', 'railgun', 6, 2, 3, None, '1st Rail Gun Battery',
+         CONCORD2, 'Guns', steps=1, range=3, arrive=1, at=LZ,
+         name='1 RAIL', size='I'),
+    unit('g2', 'cc', 'railgun', 6, 2, 3, None, '2nd Rail Gun Battery',
+         CONCORD2, 'Guns', steps=1, range=3, arrive=3, at=LZ,
+         name='2 RAIL', size='I'),
+
+    # ---- the Free Holds
+    unit('kell', 'fh', 'militia', 3, 4, 3, '1608', 'Kell Dome Militia',
+         HOLDS, 'Militia', name='KELL'),
+    unit('orrin', 'fh', 'militia', 3, 4, 3, '1212',
+         "Orrin's Pit Miners' Militia", HOLDS, 'Militia', name='ORRIN'),
+    unit('ebon', 'fh', 'militia', 3, 4, 3, '1805',
+         'Ebon Crater Watch', HOLDS, 'Militia', name='EBON'),
+    unit('vesta', 'fh', 'militia', 3, 4, 3, '0805', 'Vesta Dome Militia',
+         HOLDS, 'Militia', name='VESTA'),
+    unit('hollis', 'fh', 'militia', 3, 4, 3, '0612', 'Hollis Rim Company',
+         HOLDS, 'Militia', name='HOLLIS'),
+    unit('rille', 'fh', 'militia', 3, 4, 3, '1007', 'Rille Guard',
+         HOLDS, 'Militia', name='RILLE'),
+    unit('driver', 'fh', 'militia', 4, 5, 3, PORT, 'Sable Port Guard',
+         HOLDS2, 'Port', steps=3, name='PORT'),
+    unit('h1', 'fh', 'hauler', 5, 4, 4, '1310', '1st Hauler Column',
+         HOLDS2, 'Haulers', name='1 HAUL'),
+    unit('h2', 'fh', 'hauler', 5, 4, 4, '0806', '2nd Hauler Column',
+         HOLDS2, 'Haulers', name='2 HAUL'),
+    unit('l1', 'fh', 'laser', 5, 2, 2, '1111', "Orrin's Pit Lasers",
+         HOLDS2, 'Lasers', steps=1, range=3, name='LASER', size='I'),
+    unit('l2', 'fh', 'laser', 5, 2, 2, '0409', 'Sable Port Lasers',
+         HOLDS2, 'Lasers', steps=1, range=3, name='LASER', size='I'),
+    unit('m1', 'fh', 'hauler', 6, 5, 4, None, 'Vane\'s Free Company',
+         HOLDS2, 'Mercenaries', arrive=6, at=['0107', '0108', '0106'],
+         name='VANE'),
+    unit('m2', 'fh', 'militia', 4, 4, 3, '0310', 'Port Reserve',
+         HOLDS, 'Militia', name='RSRV'),
+]
+
+
+class Dusk(ai.AI):
+    """The stock computer player, who knows where the light is: both
+    sides keep out of the sunlight near the enemy, and the Concord
+    keeps up with the dusk."""
+
+    def score(self, u, h):
+        s = super().score(u, h)
+        e = self.e
+        if not dark(e, h):
+            threat = self.threat.get(h, 0)
+            if threat:
+                s -= min(12, 2 + threat * 0.25) * (
+                    1.5 if u.side == 'cc' else 0.8)
+        if u.side == 'cc' and not u.supports:
+            # stay within a column or two of the dusk
+            behind = h[0] - dusk(e.turn)
+            if behind > 2:
+                s -= (behind - 2) * 0.8
+        return s
+
+
+AI_CLASS = Dusk
+
+
+# ------------------------------------------------- the map, and the dark
+
+NIGHT = '#0c1430'
+_tables = {}
+
+
+def _shade(s, v, hx, amount):
+    """Tint a hex towards the night: the tables are made once."""
+    key = round(amount, 2)
+    tabs = _tables.get(key)
+    if tabs is None:
+        c = rgb(NIGHT)
+        tabs = _tables[key] = [bytes(int(i + (c[k] - i) * amount)
+                                     for i in range(256)) for k in range(3)]
+    geo = v.geo
+    cx, cy = geo.center(hx)
+    cx += v.rect[0] - v.cx
+    cy += v.rect[1] - v.cy
+    x0c, y0c, x1c, y1c = v.clip()
+    W3, buf = s.w * 3, s.buf
+    for (yy, x0, n) in geo.runs:
+        y = cy + yy
+        if y < y0c or y >= y1c:
+            continue
+        a, b = max(cx + x0, x0c), min(cx + x0 + n, x1c)
+        if a >= b:
+            continue
+        o = y * W3 + a * 3
+        seg = buf[o:o + (b - a) * 3]
+        seg[0::3] = bytes(seg[0::3]).translate(tabs[0])
+        seg[1::3] = bytes(seg[1::3]).translate(tabs[1])
+        seg[2::3] = bytes(seg[2::3]).translate(tabs[2])
+        buf[o:o + (b - a) * 3] = seg
+
+
+def DRAW_MAP(g, s):
+    """The night side of the map in shadow, deepest in the east, with a
+    thin band of dusk along the terminator."""
+    e = g.e
+    v = g.view
+    col = dusk(e.turn)
+    for hx in v.visible_hexes():
+        d = hx[0] - col
+        if d >= 0:
+            _shade(s, v, hx, min(0.78, 0.6 + d * 0.04))
+        elif d == -1:
+            _shade(s, v, hx, 0.3)
+
+
+PANELS = dict(
+    right=['date', 'victory', 'objectives', 'phase', 'minimap', 'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#0c0e14', panel='#1a1e28', light='#5a6478',
+              dark='#04060a', accent='#f0d890', button='#343c4e',
+              button_hi='#7a86a0', button_lo='#0c0e14', red='#b84020')
+
+HELP = [
+    "THE TERMINATOR. Tarn turns slowly, and the line between day and "
+    "night moves west one column at the start of every turn. The night "
+    "side is shaded on the map. A unit standing in the dark is seen "
+    "only from the hexes next to it; one standing in the sunlight is "
+    "seen from 5 hexes off. Any attack or barrage on a hex in the "
+    "sunlight gains a column: there is nowhere to hide.",
+
+    "THE GROUND. The Concord moves first, landing on the night side at "
+    "the east edge over the first three turns. Jump troops bound over "
+    "crater rims and boulder fields at a point a hex, and cross the "
+    "Long Rille for 1 more; Holders on foot pay 2 for each, and 2 to "
+    "cross the rille. Crawlers and haulers can't cross the rille except "
+    "by the haul road. Attacks across the rille are at half strength. "
+    "Rims and boulders give their defenders a column; the domes and the "
+    "mine one (and their defenders lose a step rather than retreat), "
+    "the mass driver two, and its blast walls one more.",
+
+    "THE HOLDERS. Militia hold Kell Dome, Orrin's Pit, Vesta Dome and "
+    "Sable Port, with armed ore haulers and mining lasers (they fire up "
+    "to 3 hexes, and one fires into each Concord assault). Vane's Free "
+    "Company of mercenaries lands at the west edge on turn 6.",
+
+    "WINNING. If the Concord holds Sable Port at the end it wins. "
+    "Otherwise it scores Kell Dome (3), Orrin's Pit (4) and Vesta Dome "
+    "(4) if it holds them, and every Holder step destroyed; the "
+    "Holders every Concord step. The Concord must finish 10 VP ahead to "
+    "win. Fourteen turns of six hours: the dusk reaches Kell on turn "
+    "4, the Pit on turn 8 and Vesta on turn 12, and never reaches the "
+    "port.",
+]
+
+ICON = 'terminator'
+
+
+@grognard.pattern('regolith')
+def p_regolith(t, s):
+    """Grey dust pocked with small craters."""
+    c = Canvas(t['colour'])
+    c.speckle(t['ink'], 0.10, 3)
+    c.speckle(t['edge'], 0.03, 5)
+    ink, lit = rgb(t['ink']), rgb('#c8c4b8')
+    for i, (x, y, r) in enumerate([(20, 30, 4), (70, 12, 3), (55, 66, 5),
+                                   (12, 80, 3), (84, 52, 2)]):
+        c.disc(x, y, r, lambda dx, dy: lit if dx * dx + dy * dy > 0.6 and
+               dx + dy > 0 else ink if dx * dx + dy * dy > 0.5 else None)
+    return c
+
+
+@grognard.icon('terminator')
+def draw_icon(p, n):
+    """A crater on the terminator: day on the left, night on the right,
+    and a crawler in the shadow."""
+    p.fill('#0c1430')
+    p.rect(0, 0, n * 0.5, n, '#b8b4a8')
+    p.disc(n * 0.5, n * 0.5, n * 0.32, '#6a665c')
+    p.rect(n * 0.5, 0, n * 0.5, n, '#0c1430')
+    p.disc(n * 0.5, n * 0.5, n * 0.24, '#8a867a')
+    p.rect(n * 0.5, n * 0.18, n * 0.5, n * 0.64, '#0c1430')
+    for k in range(8):
+        p.rect(n * 0.5, n * k / 8, max(1, n // 32), n / 16, '#f0d890')
+    p.rect(n * 0.62, n * 0.62, n * 0.28, n * 0.1, '#a8c0dc')
+    p.rect(n * 0.68, n * 0.55, n * 0.14, n * 0.08, '#a8c0dc')
+    p.line(n * 0.75, n * 0.58, n * 0.56, n * 0.54, '#a8c0dc',
+           max(1, n // 32))
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])
