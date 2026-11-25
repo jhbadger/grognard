@@ -225,7 +225,7 @@ MAP = [
 ]
 
 HEXSIDES = {
-    'stakes': dict(name='Stakes', colour='#8a6a3e', width=1, posts=True,
+    'stakes': dict(name='Stakes', colour='#3a2410', width=2, posts=True,
                    cost={'foot': 1, 'track': 4, 'wheel': None},
                    halve=False, shift=-1),
 }

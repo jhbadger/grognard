@@ -17,7 +17,7 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are twenty-one games so far: a Second World War battle, a raid in a
+There are twenty-five games so far: a Second World War battle, a raid in a
 far-future war of hovercraft and missile tanks that uses the engine's
 optional rules for fast mechanized combat, the most famous charge of the
 American Civil War, the storming of Chapultepec in the
@@ -46,7 +46,13 @@ storming a witch-king's citadel against orcs, trolls, the walking dead
 and a spell that turns regiments into sheep, and Hastings, Harold's
 shield wall on its ridge against William's archers and knights in
 1066, and Agincourt, Henry V's archers behind their stakes and the
-French men-at-arms struggling toward them through the mud in 1415.
+French men-at-arms struggling toward them through the mud in 1415,
+and Cowpens, Daniel Morgan's trap for Tarleton in 1781, and Tanga,
+where an Indian army landing in German East Africa in 1914 was beaten
+by the askari and by swarms of bees, and Nagashino, the Takeda horse
+charging Nobunaga's matchlocks behind their palisade in 1575, and
+Belleau Wood, the Marines crossing the wheat into the machine guns in
+June 1918.
 
 ```bash
 ./crossroads
@@ -130,6 +136,22 @@ French men-at-arms struggling toward them through the mud in 1415.
 
 ```bash
 ./agincourt
+```
+
+```bash
+./cowpens
+```
+
+```bash
+./tanga
+```
+
+```bash
+./nagashino
+```
+
+```bash
+./belleau
 ```
 
 If Python reports `No module named '_tkinter'`, install your Python's Tk
@@ -994,6 +1016,131 @@ are set for play. The map follows the usual reconstruction (the
 French on the higher ground by the Calais road, the English between
 the woods with Maisoncelle behind them), not a survey.
 
+## Cowpens: South Carolina, 17 January 1781
+
+The twenty-second game. Banastre Tarleton has marched all night to
+catch Daniel Morgan's little army in a cattle pasture with the Broad
+River at its back. Morgan has told his militia exactly what to do:
+fire two volleys at the men with the epaulettes, then fall back behind
+the Continentals on the rise.
+
+- **Eight turns** of ten minutes from seven in the morning. The
+  Americans move first. Units are seen within 2 hexes, 1 among the
+  trees; Washington's horse waits out of sight behind the second rise.
+- **Volleys**: riflemen (range 2) and Pickens's militia (range 1) don't
+  attack; they fire into attacks like guns, and can't be hurt firing.
+  Each has two volleys, and loads again at the start of the American
+  turn if it's within 2 hexes of Morgan and not next to a British unit.
+  Up to 2 fire into each British attack.
+- **The trap**: from 7:40 the British have been marching for nearly
+  five hours and attack a column worse. An American attack made from 3
+  hexes or more gains a column. The 71st is held back until turn 3;
+  Washington's horse turns to the attack on turn 5, the Continentals
+  on turn 6.
+- **Winning**: the British score the rise (6) and Morgan's post (3),
+  American steps and Morgan; the Americans British steps, Tarleton and
+  the guns. The British must finish 4 VP ahead. Computer against
+  computer each side wins 30 games in 60.
+
+The counters are battalions and detachments, the strengths set for
+play, and the map is the pasture and its two rises as the accounts
+describe them, not a survey.
+
+## Tanga: German East Africa, 4 November 1914
+
+The twenty-third game. Indian Expeditionary Force B has landed at Ras
+Kasone to take the port of Tanga, the end of the Usambara railway.
+Lettow-Vorbeck has a few companies of askari in the town and more
+coming down the line by train, and between the beach and the town
+there are rubber plantations, thick bush and wild bees.
+
+- **Eight turns** of an hour from noon. The British move first.
+  Plantations hide what's in them; the bush hides it too, costs 2 and
+  gives the defenders a column; the railway cutting in front of the
+  town gives one more. At dusk units see only next door.
+- **The bees**: seven hives are hidden in the plantations and the bush,
+  in different places each game. A unit that moves into one rouses it
+  two times in three, and every unit in that hex and next to it, of
+  either side, scatters for the rest of its turn and the next. The
+  half-trained battalions lose a step one time in two.
+- **The forces**: the 13th Rajputs, the 61st, the 63rd and the 98th
+  lose a column attacking alone; the Loyal North Lancs and the
+  Kashmiris gain one fighting in the town. The cruiser Fox shells
+  anything within 3 hexes of her. German companies arrive by train
+  from turn 2, machine guns fire into attacks on their neighbours, and
+  from dusk every German attack gains a column.
+- **Winning**: the British score Tanga (8) and the station (4) and
+  German steps; the Germans British steps. The British must finish 5
+  VP ahead. Computer against computer they win 32 games in 60.
+
+The forces are close to the real ones, the strengths are set for play,
+and the map is the peninsula between Tanga and Ras Kasone as the
+accounts describe it, not a survey.
+
+## Nagashino: Shitaragahara, 28 June 1575
+
+The twenty-fourth game. Takeda Katsuyori has besieged the castle of
+Nagashino, and Oda Nobunaga and Tokugawa Ieyasu have come to relieve
+it. They dig in behind a palisade along the Rengo stream with
+thousands of matchlock men behind it, and the Takeda horse must charge.
+
+- **Eight turns** of an hour from six in the morning. The Takeda move
+  first, across rice paddies (2, 3 for horses) and the stream. The
+  palisade runs the length of the field: an attack across it loses a
+  column, horsemen lose another, and horses pay 4 to cross.
+- **The guns** fire from next door and can't be hurt doing it, and up
+  to 2 fire into each Takeda attack; but a gun that fires must reload.
+  One that fired in the allies' turn can't fire into the next Takeda
+  attack, and one that fired into an attack can't fire in the allies'
+  next turn. The guns and the spearmen don't leave the palisade;
+  spearmen cancel the horses' shock.
+- **The castle and the raid**: Nagashino gives its defenders two
+  columns and never gives ground. On turn 2 Sakai Tadatsugu's raiders
+  come out of the hills behind the Takeda for the forts at Tobigasu.
+  When three of the six old generals are dead, or Katsuyori, the Takeda
+  attack a column worse.
+- **Winning**: the Takeda score Nobunaga's and Ieyasu's camps, the
+  castle, allied steps and the two commanders; the allies Takeda
+  steps, Tobigasu, the generals and Katsuyori. The Takeda must finish 2
+  VP ahead. Computer against computer they win 28 games in 60: either
+  they break a hex of the palisade and ride for the camps, or the
+  charge dies in front of it.
+
+How the guns were fired at Nagashino (in three ranks, or not) is
+argued over; the game's rule is only that a gun can't fire twice
+running. The strengths are set for play, and the map is
+Shitaragahara as the accounts describe it, not a survey.
+
+## Belleau Wood: the Marne, 6 June 1918
+
+The twenty-fifth game. The German spring offensive has reached the
+Marne. The 4th Marine Brigade has stopped it in front of Lucy-le-Bocage,
+and on 6 June it attacks: Hill 142 at dawn, and in the evening the
+wood itself and the village of Bouresches, across open wheat.
+
+- **Ten turns** of two hours from four in the morning. The Marines
+  move first. The wood is dense trees and boulders: 2 to enter, a
+  column to its defenders (two among the boulders), and nothing in it
+  is seen from more than next door. At dawn, dusk and night units see
+  only next door.
+- **The wheat**: by daylight a Marine unit that moves through wheat
+  within 2 hexes of a German machine gun loses a step one time in
+  three. Machine guns fire from 2 hexes and can't be hurt doing it, and
+  up to 2 fire into each attack. Marines attacking anything in the open
+  gain a column (aimed rifle fire).
+- **The day**: two battalions of the 5th Marines go for Hill 142 at
+  dawn; the three for the evening attack are held until 4 PM. German
+  reserves come down from the north at dusk, and by night German
+  attacks gain a column.
+- **Winning**: the Marines score Hill 142 (4), Bouresches (6) and the
+  south (4) and north (6) of the wood, and German steps; the Germans
+  Marine steps. The Marines must finish 10 VP ahead. Computer against
+  computer they win 27 games in 60.
+
+It took the Marines until 26 June to clear the wood; this is only the
+first day. The battalions are the real ones, the strengths are set for
+play, and the map follows the ground, not a survey.
+
 ## Playing
 
 The screen is laid out like the wargames of the early '90s: a menu bar
@@ -1331,7 +1478,16 @@ victory decided by an objective and a leader rather than points; and
 `agincourt` for a hexside of its own (stakes, which horses pay more to
 cross and attack across worse), a game built on `DEFENSIVE_FIRE`,
 `STEP_VP` that differs by side, and a computer player that keeps its
-line (`AI_CLASS`).
+line (`AI_CLASS`); and `cowpens` for support units that fire a set
+number of volleys and must fall back to a leader to load again, and
+postures that change on a given turn; and `tanga` for hidden things
+dealt out by `SETUP` (the hives) and set off by `ON_MOVE`, a sound of
+its own, popups, and a ship supporting from the harbour; and
+`nagashino` for guns that must reload (a turn's firing recorded in
+`ON_TURN`, checked in `CAN_SUPPORT`), units that never move (`m=0`),
+and hexsides worked out in code along a column; and `belleau` for
+losses taken while moving (`ON_MOVE` and `engine.take_losses`) and
+units held until a given turn for an evening attack.
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)

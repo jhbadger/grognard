@@ -1,0 +1,545 @@
+#!/usr/bin/env python3
+"""Nagashino: Shitaragahara, 28 June 1575.  A sample game for the
+Grognard engine.
+
+Takeda Katsuyori has besieged the castle of Nagashino, and Oda
+Nobunaga and Tokugawa Ieyasu have come to relieve it with three times
+his numbers.  They don't come on: they build a palisade along the far
+bank of the little Rengo stream and put thousands of matchlock men
+behind it.  The Takeda horse, the most famous in Japan, must charge it.
+Play either side against the computer, or against a friend at the same
+screen.
+
+Run it with ./nagashino (Python 3 with Tk, nothing else).  The game is
+saved to ~/.nagashino.json.  ./nagashino --selftest checks the map and
+plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import ai, counters, hexgrid             # noqa: E402
+
+ID = 'nagashino'
+TITLE = 'Nagashino'
+SUBTITLE = 'Shitaragahara, 28 June 1575'
+
+INTRO = [
+    "Summer 1575. Takeda Shingen, the Tiger of Kai, is two years dead, "
+    "and his son Katsuyori means to show he is as great. He has come "
+    "out of the mountains with fifteen thousand men and laid siege to "
+    "Nagashino, a small castle of the Tokugawa on a cliff where two "
+    "rivers meet.",
+
+    "Its five hundred defenders are starving. One of them, Torii "
+    "Sune'emon, slipped out through the Takeda lines to beg for help, "
+    "and was caught on his way back and crucified in sight of the walls, "
+    "shouting to his friends that help was coming. It was: Oda Nobunaga "
+    "and Tokugawa Ieyasu with thirty-eight thousand men.",
+
+    "They stop at Shitaragahara, three miles west of the castle, and "
+    "dig in behind a palisade along the Rengo stream, with three "
+    "thousand matchlock men behind it. In the night Sakai Tadatsugu "
+    "takes a column round through the hills to fall on the Takeda forts "
+    "at Tobigasu. At dawn Katsuyori's generals beg him to withdraw. He "
+    "orders the charge.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='tk', name='Takeda', adj='Takeda', colour='#a82a24',
+         ink='#f4e0a0', posture='attack', singular=True,
+         about="Break through the palisade and take Nobunaga's camp at "
+               'Gokurakuji or Ieyasu\'s at Danjōyama. The guns must '
+               'reload after every volley: strike while they do.'),
+    dict(id='od', name='Oda-Tokugawa', adj='Oda-Tokugawa',
+         colour='#2a2a2e', ink='#e8e0c8', posture='defend', singular=True,
+         about='Hold the palisade and let the guns do the work. Keep a '
+               "volley ready for each charge. Sakai's raid will free the "
+               'castle.'),
+]
+ORDER = ['tk', 'od']
+
+TURNS = 8
+
+
+def TURN_NAME(t):
+    """An hour a turn, from six in the morning."""
+    h = 6 + t - 1
+    return ('28 Jun 1575', '%d %s' % ((h - 1) % 12 + 1,
+                                      'AM' if h < 12 else 'PM'))
+
+
+STACK = 2
+FOG = False             # the armies in full view across the paddies
+DEFENSIVE_FIRE = 2      # the guns behind the palisade
+COMBAT_SOUND = 'swords'
+STEP_VP = 1
+
+WEATHER = {1: 'overcast', 3: 'clear'}
+
+GOKURAKUJI = hexgrid.parse('0205')
+DANJO = hexgrid.parse('0510')
+LINE_COL = 5            # the palisade runs along the east of this column
+BROKEN = 3              # generals lost before the Takeda lose heart
+
+
+# ----------------------------------------------------------- the guns
+
+def _empty(e):
+    return e.flags.setdefault('empty', [])
+
+
+def ON_TURN(e, side):
+    """Reloading: a gun that fired in the last turn is still loading
+    this one.  The flags are set at the start of each side's turn from
+    what the guns did in the turn just ended."""
+    guns = [u for u in e.alive('od') if u.kind == 'teppo']
+    if side == 'tk':
+        e.flags['empty'] = [u.id for u in guns if u.fired]
+        if e.turn == 1:
+            e.say('The drums of the Takeda roll. The first wave goes '
+                  'down into the paddies.')
+    else:
+        e.flags['empty'] = [u.id for u in guns if u.dfired]
+        if e.turn == 1:
+            e.say('"Hold your fire until they reach the palisade."')
+        if e.turn == 2:
+            e.say("Sakai Tadatsugu's column comes down on the forts at "
+                  'Tobigasu from the hills behind them.')
+
+
+def CAN_SUPPORT(e, u):
+    """A gun fires only if it's loaded: it fired in neither this turn
+    nor the last."""
+    return u.kind != 'teppo' or u.id not in _empty(e)
+
+
+GENERALS = ('yamagata', 'baba', 'naito', 'sanada', 'tsuchiya', 'hara')
+
+
+def ON_ELIMINATE(e, u, where):
+    """The generals of the Takeda, and the two commanders."""
+    if u.id in GENERALS:
+        n = e.flags['generals'] = e.flags.get('generals', 0) + 1
+        e.say('%s is killed before the palisade.' % u.long)
+        if n == BROKEN:
+            e.say('So many of the old generals are dead that the Takeda '
+                  'army loses heart.')
+    elif u.id == 'katsuyori':
+        e.flags['katsuyori'] = True
+        e.say('Takeda Katsuyori is killed! The house of Takeda falls.')
+    elif u.id == 'nobunaga':
+        e.flags['nobunaga'] = True
+        e.say('Oda Nobunaga is killed! His army wavers.')
+    elif u.id == 'ieyasu':
+        e.say('Tokugawa Ieyasu is killed.')
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """The palisade and morale:
+    - horsemen attacking across the palisade lose another column (the
+      palisade itself costs one);
+    - with BROKEN generals dead, or Katsuyori, the Takeda attack a
+      column worse;
+    - with Nobunaga dead the Oda-Tokugawa attack a column worse."""
+    out = []
+    if e.side == 'tk':
+        if any(u.type.get('mounted') and _palisade(e, u.hex, target)
+               for u in attackers):
+            out.append((-1, 'horses at the palisade'))
+        if e.flags.get('generals', 0) >= BROKEN or \
+                e.flags.get('katsuyori'):
+            out.append((-1, 'the generals are dead'))
+    elif e.flags.get('nobunaga'):
+        out.append((-1, 'Nobunaga is dead'))
+    return out
+
+
+def _palisade(e, a, b):
+    side = e.board.river(a, b)
+    return bool(side) and side.get('name') == HEXSIDES['palisade']['name']
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'w': 'paddy', 'k': 'castle', 'T': 'fort'}
+
+TERRAIN = {
+    'clear':  dict(name='Dry fields', colour='#b4b47a', ink='#94945a',
+                   edge='#727240'),
+    'fields': dict(name='Barley', colour='#c4b870', ink='#a09450',
+                   edge='#7a7038'),
+    'paddy':  dict(name='Rice paddies', colour='#88a888', ink='#5a8a9a',
+                   pattern='fields', edge='#4a6a5a', z=1, shift=0,
+                   open=True, los=True,
+                   move={'foot': 2, 'track': 3, 'wheel': 4}),
+    'hills':  dict(name='Wooded hills', colour='#8a9a5a', ink='#5e6e36',
+                   pattern='hills', shift=-1),
+    'woods':  dict(name='Woods', colour='#4e6e34', ink='#2e4a1c'),
+    'forest': dict(name='Mountain forest', colour='#3a5228',
+                   ink='#203818'),
+    'town':   dict(name='Shitara village', colour='#c0b494',
+                   ink='#7a4a34'),
+    'castle': dict(name='Nagashino castle', colour='#a8a090',
+                   ink='#4a4440', pattern='city', edge='#3a342e', z=8,
+                   shift=-2, open=False, los=False, stand=True,
+                   move={'foot': 1, 'track': 2, 'wheel': 2}),
+    'fort':   dict(name='Tobigasu forts', colour='#a49a7a',
+                   ink='#5a4a3a', pattern='town', edge='#3e342a', z=7,
+                   shift=-1, open=False, los=False,
+                   move={'foot': 1, 'track': 2, 'wheel': 2}),
+}
+
+MAP = [
+    'ff:.h.ww.:hhffFF',
+    'fh:.h.ww:.hhh.fF',
+    'fh.:h.ww..:hh.fF',
+    'f.:.h.ww.:.hh.ff',
+    'hh..h.ww:..h..ff',
+    'hh:.h.ww.:.hh.f.',
+    'f.:th.ww..:hh...',
+    'f.:.h.ww:..h.:..',
+    'fh.:h.ww.:.hh...',
+    'hh..h.ww..:hh.k.',
+    'h.:.h.ww.:..:.h.',
+    'f..:h.ww..:..ff.',
+    'ff.:..ww.:.:fTf.',
+    'Ff.:..ww..:.fff.',
+]
+
+HEXSIDES = {
+    'palisade': dict(name='Palisade', colour='#3a2410', width=2,
+                     posts=True, cost={'foot': 2, 'track': 4,
+                                       'wheel': None},
+                     halve=False, shift=-1),
+}
+
+GAPS = ()               # rows of the line left open (none)
+
+
+def _between(col, rows, skip=()):
+    """Every side between a column and the next, over some rows."""
+    out = []
+    for r in rows:
+        if r in skip:
+            continue
+        for n in hexgrid.neighbours((col, r)):
+            if n[0] == col + 1 and 0 <= n[1] < len(MAP):
+                out.append('%s/%s' % (hexgrid.hid((col, r)), hexgrid.hid(n)))
+    return out
+
+
+def _river():
+    """The Kansa river below the castle: the sides between the tenth
+    row and the eleventh, east of the paddies."""
+    out = []
+    for c in range(9, 16):
+        for n in hexgrid.neighbours((c, 10)):
+            if n[1] == 11 and 9 <= n[0] < 16:
+                out.append('%s/%s' % (hexgrid.hid((c, 10)), hexgrid.hid(n)))
+    return out
+
+
+RIVERS = [
+    ('palisade', _between(LINE_COL, range(len(MAP)), GAPS)),
+    ('stream', _between(7, range(len(MAP)))),       # the Rengo
+    ('river', _river()),
+]
+
+ROADS = [
+    ('trail', ['0107', '0607', '1607']),
+    ('trail', ['1510', '1314']),
+]
+
+LABELS = {
+    '0205': 'Gokurakuji', '0510': 'Danjōyama', '0407': 'Shitara',
+    '1510': 'Nagashino', '1413': 'Tobigasu', '0802': 'Rengo stream',
+    '1206': 'Takeda camp', '1607': 'to Kai',
+}
+
+OBJECTIVES = {
+    '0205': dict(name="Nobunaga's camp", vp=8, owner='od',
+                 **{'for': 'tk'}),
+    '0510': dict(name="Ieyasu's camp", vp=6, owner='od', **{'for': 'tk'}),
+    '1510': dict(name='Nagashino castle', vp=4, owner='od',
+                 **{'for': 'tk'}),
+    '1413': dict(name='Tobigasu', vp=3, owner='tk', **{'for': 'od'}),
+}
+
+SUPPLY = {
+    'tk': dict(**{'from': ['E'], 'range': 16}),
+    'od': dict(**{'from': ['W', '1510'], 'range': 16}),
+}
+
+
+def _score(e):
+    return 'Takeda %d VP, Oda-Tokugawa %d.' % (e.vp('tk'), e.vp('od'))
+
+
+def VICTORY(e):
+    """The Takeda score the two camps (8 and 6) and the castle (4) if
+    they hold them at the end, every Oda-Tokugawa step, and Nobunaga
+    (6) and Ieyasu (4); the Oda-Tokugawa every Takeda step, the forts at
+    Tobigasu (3), each general (2) and Katsuyori (6).  The Takeda must
+    finish THRESHOLD ahead (set from games between computer players:
+    ./nagashino --simulate 60)."""
+    m = e.vp('tk') - e.vp('od')
+    if m >= THRESHOLD + 8:
+        return 'tk', ('Takeda victory. %s The palisade is broken and the '
+                      'horsemen ride through the camps.' % _score(e))
+    if m >= THRESHOLD:
+        return 'tk', ('Takeda marginal victory. %s The allies draw back, '
+                      'and the castle must starve.' % _score(e))
+    if m > THRESHOLD - 5:
+        return 'od', ('Oda-Tokugawa marginal victory. %s Katsuyori lifts '
+                      'the siege and goes home to Kai.' % _score(e))
+    return 'od', ('Oda-Tokugawa victory. %s The Takeda horse lies dead '
+                  'before the palisade with most of the old generals, and '
+                  'the house of Takeda never recovers.' % _score(e))
+
+
+THRESHOLD = 2           # the Takeda must finish this far ahead
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'teppo':    dict(name='Matchlock men', symbol='gun', move='foot',
+                     support=True, fight='gun',
+                     fate='is ridden down'),
+    'yari':     dict(name='Spearmen', symbol='infantry', move='foot',
+                     at=True),
+    'samurai':  dict(name='Samurai on foot', symbol='infantry',
+                     move='foot', fight='swords'),
+    'kiba':     dict(name='Mounted samurai', symbol='horse', move='track',
+                     armor=True, mounted=True, sound='hooves',
+                     fate='goes down under the guns'),
+    'ashigaru': dict(name='Ashigaru', symbol='infantry', move='foot'),
+    'garrison': dict(name='Castle garrison', symbol='infantry',
+                     move='foot'),
+    'hq':       dict(name='Commander', symbol='hq', move='foot',
+                     zoc=False, stack=0),
+}
+
+
+@grognard.symbol('gun')
+def s_gun(p, x, y, w, h, c):
+    """Matchlock men: the infantry cross with a long barrel across it."""
+    p.line(x, y, x + w - 1, y + h - 1, c)
+    p.line(x, y + h - 1, x + w - 1, y, c)
+    p.line(x + 1, y + h // 2, x + w - 2, y + h // 2, c)
+    p.set(x + w - 2, y + h // 2 - 1, c)
+
+
+counters.PICTURES['gun'] = [
+    '...........', '....##.....', '...####....', '#########..',
+    '...####.##.', '....##.....', '...#..#....', '...#..#....']
+
+ODA = '#2a2a2e'
+TOKUGAWA = '#3e3a2a'
+GUNS = '#4a4a52'
+TAKEDA = '#a82a24'
+RED = '#b8302a'         # Yamagata's red regiment
+SIEGE = '#8a3a2e'
+
+
+def unit(uid, side, kind, a, d, m, hx, long, colour, formation, steps=2,
+         **kw):
+    """A division: attack, defence, movement and where it starts (None
+    to arrive later, with arrive and at)."""
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, size=kw.pop('size', 'III'), a=a, d=d, m=m,
+                steps=steps, hex=hx, long=long, colour=colour,
+                formation=formation)
+    spec.update(kw)
+    return spec
+
+
+def guns(n, hx, colour=GUNS, formation='The guns'):
+    return unit('gun%d' % n, 'od', 'teppo', 5, 2, 0, hx,
+                'Five hundred matchlock men', colour, formation, range=1,
+                name='GUNS %d' % n, size='II')
+
+
+def spears(n, hx, colour=ODA, formation='Oda'):
+    return unit('yari%d' % n, 'od', 'yari', 3, 4, 0, hx,
+                'Ashigaru with long spears', colour, formation,
+                name='YARI %d' % n)
+
+
+def general(uid, a, hx, long, colour=TAKEDA, **kw):
+    return unit(uid, 'tk', 'kiba', a, 3, 4, hx, long, colour,
+                'The generals', vp=2, name=kw.pop('name', uid.upper()),
+                **kw)
+
+
+SAKAI_AT = ['1614', '1613', '1514']
+
+UNITS = [
+    # ---- behind the palisade: Oda in the north, Tokugawa in the south
+    unit('nobunaga', 'od', 'hq', 0, 2, 3, '0205', 'Oda Nobunaga', ODA,
+         'Command', steps=1, vp=6, size='', name='NOBNGA'),
+    unit('ieyasu', 'od', 'hq', 0, 2, 3, '0510', 'Tokugawa Ieyasu',
+         TOKUGAWA, 'Command', steps=1, vp=4, size='', name='IEYASU'),
+    guns(1, '0602'), guns(2, '0604'), guns(3, '0606'), guns(4, '0608'),
+    guns(5, '0610', TOKUGAWA, 'Tokugawa'),
+    guns(6, '0612', TOKUGAWA, 'Tokugawa'),
+    spears(1, '0603'), spears(2, '0605'), spears(3, '0607'),
+    spears(4, '0609', TOKUGAWA, 'Tokugawa'),
+    spears(5, '0611', TOKUGAWA, 'Tokugawa'),
+    spears(6, '0613', TOKUGAWA, 'Tokugawa'),
+    unit('sakuma', 'od', 'samurai', 5, 4, 3, '0503',
+         'Sakuma Nobumori', ODA, 'Oda', name='SAKUMA'),
+    unit('hashiba', 'od', 'samurai', 5, 4, 3, '0505',
+         'Hashiba Hideyoshi', ODA, 'Oda', name='HASHBA'),
+    unit('niwa', 'od', 'samurai', 5, 4, 3, '0507', 'Niwa Nagahide', ODA,
+         'Oda', name='NIWA'),
+    unit('honda', 'od', 'samurai', 5, 4, 3, '0509', 'Honda Tadakatsu',
+         TOKUGAWA, 'Tokugawa', name='HONDA'),
+    unit('okubo', 'od', 'samurai', 5, 4, 3, '0512',
+         'The Ōkubo brothers', TOKUGAWA, 'Tokugawa', name='OKUBO'),
+    unit('sakai', 'od', 'samurai', 4, 3, 4, None,
+         "Sakai Tadatsugu's raiders", TOKUGAWA, 'Sakai', arrive=2,
+         at=SAKAI_AT, name='SAKAI', posture='attack'),
+    unit('kanamori', 'od', 'ashigaru', 4, 3, 4, None,
+         'Kanamori Nagachika with Oda matchlocks', ODA, 'Sakai',
+         arrive=2, at=SAKAI_AT, name='KNAMRI', posture='attack'),
+    unit('okudaira', 'od', 'garrison', 2, 4, 2, '1510',
+         'Okudaira Sadamasa and the starving garrison', TOKUGAWA,
+         'Nagashino', name='OKUDRA'),
+
+    # ---- the Takeda: the generals' horse and their foot
+    unit('katsuyori', 'tk', 'hq', 0, 2, 3, '1306', 'Takeda Katsuyori',
+         TAKEDA, 'Command', steps=1, vp=6, size='', name='KATSYR'),
+    general('baba', 6, '1203', 'Baba Nobuharu', name='BABA'),
+    general('sanada', 6, '1104', 'The Sanada brothers', name='SANADA'),
+    general('naito', 6, '1206', 'Naitō Masatoyo', name='NAITO'),
+    general('tsuchiya', 5, '1108', 'Tsuchiya Masatsugu', name='TSCHYA'),
+    general('hara', 5, '1209', 'Hara Masatane', name='HARA'),
+    general('yamagata', 7, '1210', 'Yamagata Masakage and the red '
+            'regiment', colour=RED, name='YAMGTA'),
+    unit('foot1', 'tk', 'ashigaru', 4, 3, 3, '1103', 'Takeda ashigaru',
+         TAKEDA, 'The foot', name='FOOT 1'),
+    unit('foot2', 'tk', 'ashigaru', 4, 3, 3, '1105', 'Takeda ashigaru',
+         TAKEDA, 'The foot', name='FOOT 2'),
+    unit('foot3', 'tk', 'ashigaru', 4, 3, 3, '1107', 'Takeda ashigaru',
+         TAKEDA, 'The foot', name='FOOT 3'),
+    unit('foot4', 'tk', 'ashigaru', 4, 3, 3, '1209', 'Takeda ashigaru',
+         TAKEDA, 'The foot', name='FOOT 4'),
+    unit('siege', 'tk', 'ashigaru', 3, 3, 3, '1410',
+         'The siege lines before the castle', SIEGE, 'The siege',
+         name='SIEGE'),
+    unit('nobuzane', 'tk', 'ashigaru', 3, 3, 3, '1413',
+         'Takeda Nobuzane in the Tobigasu forts', SIEGE, 'The siege',
+         name='NOBZNE', vp=2),
+]
+
+
+def _line(e, h):
+    return any(u.spec.get('hex') and hexgrid.parse(u.spec['hex']) == h
+               for u in e.units.values() if u.side == 'od')
+
+
+class Nobunaga(ai.AI):
+    """The stock computer player, taught the shape of the day: the
+    allies keep to the palisade (Sakai's column and the garrison
+    excepted), and the Takeda charge it rather than wait in the
+    paddies."""
+
+    def score(self, u, h):
+        s = super().score(u, h)
+        e = self.e
+        if self.side == 'od':
+            if u.spec.get('formation') in ('Sakai', 'Nagashino'):
+                return s
+            if u.spec.get('hex') and hexgrid.parse(u.spec['hex']) == h:
+                s += 20 if u.kind in ('teppo', 'yari') else 6
+            elif _line(e, h):
+                s += 3
+            if h[0] > LINE_COL:
+                s -= 6
+        elif u.formation in ('The generals', 'The foot'):
+            s -= max(0, h[0] - LINE_COL - 1) * 1.2
+            if any(e.at(n, 'od') for n in hexgrid.neighbours(h)):
+                s += 6
+        return s
+
+
+AI_CLASS = Nobunaga
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1e1a18', panel='#2e2824', light='#7e6e64',
+              dark='#0a0806', accent='#e8c070', button='#4e423a',
+              button_hi='#9e8a7a', button_lo='#1e1a18', red='#b03020')
+
+HELP = [
+    "THE FIELD. The Takeda move first, from the hills in the east. "
+    "Between the armies lie rice paddies, 2 to cross (3 for horses), "
+    "and the Rengo stream. Along its far bank runs the palisade, the "
+    "length of the field: an attack across it loses a column, horsemen "
+    "lose another, and horses pay 4 to cross it. "
+    "Eight turns of an hour from six in the morning.",
+
+    "THE GUNS. Matchlock men fire from next door and can't be hurt "
+    "doing it, alone or with an attack, and up to 2 fire into each "
+    "Takeda attack. But a gun that fires must reload: if it fired in "
+    "the allies' turn it can't fire into the next Takeda attack, and if "
+    "it fired into an attack it can't fire in the allies' next turn. "
+    "The guns and the spearmen don't move from behind the palisade; "
+    "spearmen cancel the horses' shock.",
+
+    "THE CASTLE. Nagashino stands on a cliff above the rivers: its "
+    "defenders gain two columns and never give ground. On turn 2 "
+    "Sakai Tadatsugu's raiders come out of the hills in the south-east "
+    "for the Takeda forts at Tobigasu. When 3 of the six old generals "
+    "are dead, or Katsuyori, the Takeda attack a column worse; with "
+    "Nobunaga dead, the allies do.",
+
+    "WINNING. The Takeda score Nobunaga's camp at Gokurakuji (8), "
+    "Ieyasu's at Danjōyama (6) and the castle (4) if they hold them at "
+    "the end, every allied step destroyed, Nobunaga 6 more and Ieyasu "
+    "4. The allies score every Takeda step, Tobigasu (3), each general "
+    "2 more and Katsuyori 6. The Takeda must finish 2 ahead to win, 10 "
+    "ahead for a clear victory; the allies win clearly if they finish 3 "
+    "or more ahead.",
+]
+
+ICON = 'nagashino'
+
+
+@grognard.icon('nagashino')
+def draw_icon(p, n):
+    """A palisade, smoke from the guns, and a red banner beyond."""
+    p.fill('#d8d0b8')
+    p.rect(0, n * 0.62, n, n * 0.38, '#88a888')
+    p.line(n * 0.78, n * 0.12, n * 0.78, n * 0.6, '#3a2a1a',
+           max(1, n // 40))
+    p.rect(n * 0.78, n * 0.12, n * 0.14, n * 0.24, '#a82a24')
+    p.disc(n * 0.85, n * 0.24, n * 0.04, '#f4e0a0')
+    for k in range(5):
+        p.disc(n * (0.12 + k * 0.12), n * (0.42 - (k % 2) * 0.05),
+               n * 0.09, '#f0f0ec')
+    for k in range(7):
+        x = n * (0.06 + k * 0.1)
+        p.line(x, n * 0.85, x, n * 0.5, '#6a4a2a', max(1, n // 32))
+    p.line(0, n * 0.6, n * 0.7, n * 0.6, '#6a4a2a', max(1, n // 40))
+    p.line(0, n * 0.72, n * 0.7, n * 0.72, '#6a4a2a', max(1, n // 40))
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

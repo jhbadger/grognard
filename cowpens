@@ -1,0 +1,475 @@
+#!/usr/bin/env python3
+"""Cowpens: South Carolina, 17 January 1781.  A sample game for the
+Grognard engine.
+
+Daniel Morgan has a thousand men, half of them militia, in a cattle
+pasture with a river at his back.  Banastre Tarleton has marched all
+night to catch him and attacks at sunrise.  Morgan has told the
+militia exactly what to do: fire two volleys, then fall back behind the
+Continentals on the rise.  Play either side against the computer, or
+against a friend at the same screen.
+
+Run it with ./cowpens (Python 3 with Tk, nothing else).  The game is
+saved to ~/.cowpens.json.  ./cowpens --selftest checks the map and
+plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import ai, hexgrid                       # noqa: E402
+
+ID = 'cowpens'
+TITLE = 'Cowpens'
+SUBTITLE = 'South Carolina, 17 January 1781'
+
+INTRO = [
+    "January 1781. Cornwallis has sent Banastre Tarleton, the most "
+    "feared officer in the South, to destroy Daniel Morgan's little "
+    "army before it can raise the back country against him. Tarleton "
+    "has his British Legion, light infantry, the 7th and the 71st, two "
+    "small guns, and a name for giving no quarter.",
+
+    "Morgan has stopped at the Cowpens, an open pasture where drovers "
+    "rest their cattle, with the Broad River six miles behind him and "
+    "no way out. He means to fight there. All night he walks among the "
+    "militia's fires: two volleys, boys, at the men with the epaulettes, "
+    "and then fall back. Old Morgan will be there.",
+
+    "Tarleton's men have marched since three in the morning. At sunrise "
+    "they come out of the trees on the Green River road and see the "
+    "riflemen in front, the militia behind them, and on the rise the "
+    "Continentals of Maryland and Delaware. Tarleton forms his line at "
+    "once and attacks.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='br', name='British', adj='British', colour='#b02a24',
+         ink='#f4ecd8', posture='attack',
+         about="Drive the militia off and break the Continentals on the "
+               "rise before the Americans can get away. Don't spend the "
+               "71st too soon."),
+    dict(id='am', name='Americans', adj='American', colour='#2e4a86',
+         ink='#f0e0b0', posture='defend',
+         about='Let the riflemen and the militia fire their volleys and '
+               'fall back to rally near Morgan; hold the rise with the '
+               "Continentals; and keep Washington's horse out of sight "
+               'until the British are worn out.'),
+]
+ORDER = ['am', 'br']
+
+TURNS = 8
+
+
+def TURN_NAME(t):
+    """Ten minutes a turn, from seven in the morning (no AM, which
+    wouldn't fit on the calendar)."""
+    m = 7 * 60 + (t - 1) * 10
+    return ('17 Jan 1781', '%d:%02d' % (m // 60, m % 60))
+
+
+STACK = 2
+FOG = True              # Washington's horse waits behind the second rise
+DEFENSIVE_FIRE = 2      # riflemen and militia fire into an attack
+STEP_VP = 1
+
+WEATHER = {1: 'clear'}
+
+RISE = hexgrid.parse('0706')
+POST = hexgrid.parse('0705')      # Morgan, behind the Continentals
+HIDE = hexgrid.parse('0702')      # Washington's horse, out of sight
+VOLLEYS = 2             # what a skirmisher fires before falling back
+RALLY = 2               # how near Morgan they must be to load again
+WORN = 5                # from 7:40 the night march tells on the British
+TURN_ABOUT = 6          # 7:50: the Continentals face about and fire
+
+
+# --------------------------------------------------------- the volleys
+
+def _volleys(e):
+    return e.flags.setdefault('volleys', {})
+
+
+def volleys_left(e, u):
+    """Volleys a skirmisher has left now: what it had at the start of
+    the American turn, less any it has fired since (in its own turn, or
+    into a British attack)."""
+    n = _volleys(e).get(u.id, VOLLEYS)
+    if e.side == 'br':
+        n -= int(u.fired) + int(u.dfired)
+    else:
+        n -= int(u.fired)
+    return max(0, n)
+
+
+def CAN_SUPPORT(e, u):
+    """Riflemen and militia fire only while they have volleys left."""
+    if not u.type.get('volleys'):
+        return True
+    return volleys_left(e, u) > 0
+
+
+def ON_TURN(e, side):
+    """The volleys: at the start of the American turn each skirmisher
+    pays for what it fired, and those that have fallen back near Morgan,
+    out of reach of the British, load again."""
+    if side == 'am':
+        v = _volleys(e)
+        morgan = e.units.get('morgan')
+        foes = [x.hex for x in e.alive('br')]
+        rallied = 0
+        for u in e.alive('am'):
+            if not u.type.get('volleys'):
+                continue
+            n = v.get(u.id, VOLLEYS) - int(u.fired) - int(u.dfired)
+            if morgan and morgan.alive and \
+                    hexgrid.distance(u.hex, morgan.hex) <= RALLY and \
+                    all(hexgrid.distance(u.hex, f) > 1 for f in foes):
+                if n < VOLLEYS:
+                    rallied += 1
+                n = VOLLEYS
+            v[u.id] = max(0, n)
+        if e.turn == 1:
+            e.say('"Two volleys, boys, at the men with the epaulettes!"')
+        elif rallied:
+            e.say('Morgan rides among the militia: %d compan%s load and '
+                  'form again.' % (rallied, 'ies' if rallied > 1 else 'y'))
+    else:
+        if e.turn == 1:
+            e.say('Tarleton forms his line across the road and the '
+                  'drums beat the advance.')
+        elif e.turn == WORN:
+            e.say('The British have marched since three in the morning. '
+                  'They are worn out.')
+
+
+def ON_ELIMINATE(e, u, where):
+    """Leaders and guns."""
+    if u.id == 'tarleton':
+        e.say('Tarleton is down! The Legion scatters.')
+    elif u.id == 'morgan':
+        e.flags['morgan'] = True
+        e.say('Morgan has fallen! The militia lose heart.')
+    elif u.kind == 'gun':
+        e.say('A grasshopper is taken, its gunners dead around it.')
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Fatigue and the trap:
+    - from WORN on, the British attack a column worse (the night march);
+    - an American attack made from three hexes or more gains a column
+      (surrounded);
+    - with Morgan dead the Americans attack a column worse."""
+    out = []
+    if e.side == 'br':
+        if attackers and e.turn >= WORN:
+            out.append((-1, 'worn out'))
+    else:
+        if len({u.hex for u in attackers}) >= 3:
+            out.append((1, 'surrounded'))
+        if e.flags.get('morgan'):
+            out.append((-1, 'Morgan is down'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'p': 'park', 'm': 'ravine'}
+
+TERRAIN = {
+    'clear':  dict(name='Pasture', colour='#b4b47a', ink='#94945a',
+                   edge='#727240'),
+    'fields': dict(name='Winter grass', colour='#c0b880', ink='#9c9460',
+                   edge='#7a7244'),
+    'park':   dict(name='Scattered trees', colour='#98a466', ink='#5e7240',
+                   pattern='trees', edge='#566234', z=4, shift=0,
+                   open=True, los=False,
+                   move={'foot': 1, 'track': 1, 'wheel': 2}),
+    'hills':  dict(name='The rise', colour='#c4b27a', ink='#9a8656',
+                   edge='#7a6838', shift=0,
+                   move={'foot': 1, 'track': 1, 'wheel': 2}),
+    'ravine': dict(name='Wet ravine', colour='#7e9470', ink='#4a7a8a',
+                   pattern='marsh', edge='#3e6460', z=2, shift=-1,
+                   open=False, los=True,
+                   move={'foot': 2, 'track': None, 'wheel': None}),
+    'woods':  dict(name='Woods', colour='#5a7038', ink='#36501e'),
+    'forest': dict(name='Pine woods', colour='#3e5a2c', ink='#203a16'),
+}
+
+MAP = [
+    'Ff.p..:..p.fF',
+    'f.p..hhh..p.f',
+    'm..p.hhh.p..m',
+    'm.p.......p.m',
+    'm..hhhhhhh..m',
+    'mp.hhhhhhh.pm',
+    'm.p.......p.m',
+    'mp..p...p..pm',
+    'm...p.p.p...m',
+    'm.p.......p.m',
+    'mp..p.p.p..pm',
+    'm..p.....p..m',
+    '.p..p...p..p.',
+    'p..:...:...p.',
+]
+
+ROADS = [
+    ('road', ['1114', '0705', '0301']),         # the Green River road
+]
+
+LABELS = {
+    '0705': 'The rise', '0602': 'Second rise', '0301': 'to Broad River',
+    '1114': 'Green River road', '0109': 'Ravine', '1309': 'Ravine',
+}
+
+OBJECTIVES = {
+    '0706': dict(name='The rise', vp=6, owner='am', **{'for': 'br'}),
+    '0705': dict(name="Morgan's post", vp=3, owner='am', **{'for': 'br'}),
+}
+
+SUPPLY = {
+    'br': dict(**{'from': ['S'], 'range': 14}),
+    'am': dict(**{'from': ['N'], 'range': 14}),
+}
+
+
+def _score(e):
+    return 'British %d VP, Americans %d.' % (e.vp('br'), e.vp('am'))
+
+
+def VICTORY(e):
+    """The British score the rise (6) and Morgan's post (3) if they
+    hold them at the end, every American step, and Morgan (4); the
+    Americans every British step, Tarleton (4) and each gun (2).  The
+    British must finish THRESHOLD ahead (set from games between computer
+    players: ./cowpens --simulate 60)."""
+    m = e.vp('br') - e.vp('am')
+    if m >= THRESHOLD + 8:
+        return 'br', ('British victory. %s Morgan\'s army is destroyed '
+                      'and the back country is quiet.' % _score(e))
+    if m >= THRESHOLD:
+        return 'br', ('British marginal victory. %s Morgan gets away over '
+                      'the Broad River with what he can save.' % _score(e))
+    if m > THRESHOLD - 8:
+        return 'am', ('American marginal victory. %s Tarleton draws off, '
+                      'and Morgan marches north with his prisoners.'
+                      % _score(e))
+    return 'am', ('American victory. %s Tarleton\'s army is caught '
+                  'between the Continentals and the horse and taken '
+                  'almost to a man.' % _score(e))
+
+
+THRESHOLD = 4           # the British must finish this far ahead
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'line':     dict(name='Line infantry', symbol='infantry', move='foot'),
+    'light':    dict(name='Light infantry', symbol='infantry', move='foot',
+                     spot=3),
+    'rifles':   dict(name='Riflemen', symbol='infantry', move='foot',
+                     support=True, volleys=True, zoc=False,
+                     fate='is ridden down'),
+    'militia':  dict(name='Militia', symbol='infantry', move='foot',
+                     support=True, volleys=True, fate='scatters'),
+    'dragoons': dict(name='Dragoons', symbol='horse', move='track',
+                     armor=True, spot=3, sound='hooves'),
+    'gun':      dict(name='Grasshopper', symbol='artillery', move='wheel',
+                     zoc=False, support=True, fate='is taken'),
+    'hq':       dict(name='Commander', symbol='hq', move='track',
+                     zoc=False, stack=0),
+}
+
+BRITISH = '#b02a24'
+LEGION = '#2a5a3a'      # the Legion wore green
+HIGHLAND = '#a43a2e'
+ARTY = '#3a3a5a'
+CONT = '#2e4a86'
+VIRGINIA = '#4a5e8a'
+MILITIA = '#7a6a4a'
+RIFLES = '#5e6a3a'
+HORSE = '#e0d8c0'       # Washington's men in white
+
+
+def unit(uid, side, kind, a, d, m, hx, long, colour, formation, steps=2,
+         **kw):
+    """A battalion or a detachment: attack, defence, movement and where
+    it starts (None to arrive later, with arrive and at)."""
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, size=kw.pop('size', 'II'), a=a, d=d, m=m,
+                steps=steps, hex=hx, long=long, colour=colour,
+                formation=formation)
+    spec.update(kw)
+    return spec
+
+
+UNITS = [
+    # ---- Morgan's army: the riflemen in front, Pickens's militia
+    # behind them, the Continentals on the rise, and the horse in reserve
+    unit('rif1', 'am', 'rifles', 3, 2, 4, '0511',
+         "McDowell's North Carolina riflemen", RIFLES, 'Skirmishers',
+         steps=1, range=2, name='MCDWL', size='I'),
+    unit('rif2', 'am', 'rifles', 3, 2, 4, '0911',
+         "Cunningham's Georgia riflemen", RIFLES, 'Skirmishers',
+         steps=1, range=2, name='CNNGHM', size='I'),
+    unit('mil1', 'am', 'militia', 2, 2, 3, '0409',
+         'South Carolina militia', MILITIA, "Pickens's militia",
+         range=1, name='SC MIL'),
+    unit('mil2', 'am', 'militia', 2, 2, 3, '0709', "Pickens's own men",
+         MILITIA, "Pickens's militia", range=1, name='PICKNS'),
+    unit('mil3', 'am', 'militia', 2, 2, 3, '1009',
+         'North Carolina and Georgia militia', MILITIA,
+         "Pickens's militia", range=1, name='NC MIL'),
+    unit('va1', 'am', 'line', 4, 4, 3, '0506',
+         "Virginia militia, old Continentals: Triplett's", VIRGINIA,
+         "Howard's line", name='TRPLT'),
+    unit('md', 'am', 'line', 5, 4, 3, '0706',
+         'The Maryland Continentals under Howard', CONT, "Howard's line",
+         steps=3, name='MD', vp=2, posture=('attack', TURN_ABOUT)),
+    unit('de', 'am', 'line', 5, 4, 3, '0806',
+         'The Delaware Continentals under Kirkwood', CONT,
+         "Howard's line", name='DE', posture=('attack', TURN_ABOUT)),
+    unit('va2', 'am', 'line', 4, 4, 3, '1006',
+         "Virginia militia, old Continentals: Tate's", VIRGINIA,
+         "Howard's line", name='TATE'),
+    unit('wash', 'am', 'dragoons', 5, 3, 6, '0702',
+         "William Washington's Continental dragoons", HORSE,
+         "Washington's horse", name='WASHTN', posture=('attack', WORN)),
+    unit('mccall', 'am', 'dragoons', 4, 2, 6, '0602',
+         "McCall's mounted militia", HORSE, "Washington's horse",
+         name='MCCALL', posture=('attack', WORN)),
+    unit('morgan', 'am', 'hq', 0, 1, 5, '0705', 'Daniel Morgan',
+         CONT, 'Morgan', steps=1, vp=4, size='', name='MORGAN'),
+
+    # ---- Tarleton's army
+    unit('drag1', 'br', 'dragoons', 5, 3, 6, '0313',
+         'British Legion dragoons', LEGION, 'The Legion', name='LEG DR'),
+    unit('drag2', 'br', 'dragoons', 5, 3, 6, '1113',
+         'British Legion dragoons', LEGION, 'The Legion', name='LEG DR'),
+    unit('lgd17', 'br', 'dragoons', 4, 3, 6, '0714',
+         '17th Light Dragoons', BRITISH, 'The Legion', name='17 LD',
+         size='I'),
+    unit('light', 'br', 'light', 4, 3, 4, '0413',
+         'Light infantry companies', BRITISH, 'The line', name='LIGHT'),
+    unit('legion', 'br', 'line', 4, 3, 3, '0613', 'British Legion infantry',
+         LEGION, 'The line', name='LEG INF'),
+    unit('fus7', 'br', 'line', 4, 3, 3, '0913', '7th Foot, the Fusiliers',
+         BRITISH, 'The line', steps=3, name='7TH'),
+    unit('gun1', 'br', 'gun', 3, 1, 3, '0713', 'A three-pounder', ARTY,
+         'The guns', steps=1, range=2, vp=2, name='GUN 1', size=''),
+    unit('gun2', 'br', 'gun', 3, 1, 3, '0813', 'A three-pounder', ARTY,
+         'The guns', steps=1, range=2, vp=2, name='GUN 2', size=''),
+    unit('hl71', 'br', 'line', 5, 4, 3, '0814', '1st Battalion, 71st '
+         "Highlanders (Fraser's)", HIGHLAND, 'The reserve', steps=3,
+         name='71ST', release=3),
+    unit('tarleton', 'br', 'dragoons', 3, 2, 6, '0714',
+         'Banastre Tarleton', LEGION, 'Tarleton', steps=1, vp=4,
+         size='', name='TARLTN'),
+]
+
+
+class Morgan(ai.AI):
+    """The stock computer player, taught Morgan's plan: a skirmisher
+    with no volleys left goes back to Morgan to load, the Continentals
+    keep the rise, and the horse waits until the British are worn out;
+    the British go straight at the rise."""
+
+    def score(self, u, h):
+        s = super().score(u, h)
+        e = self.e
+        if self.side == 'am':
+            morgan = e.units.get('morgan')
+            if u.type.get('volleys') and morgan and morgan.alive and \
+                    volleys_left(e, u) == 0:
+                s -= max(0, hexgrid.distance(h, morgan.hex) - 1) * 4
+            elif u.kind == 'line' and e.turn < TURN_ABOUT:
+                start = hexgrid.parse(u.spec['hex'])
+                s -= hexgrid.distance(h, start) * 3
+            elif u.kind == 'dragoons' and e.turn < WORN:
+                s -= hexgrid.distance(h, HIDE) * 4
+            elif u.id == 'morgan':
+                s -= hexgrid.distance(h, POST) * 6
+        elif u.kind != 'gun' and u.kind != 'hq':
+            s -= hexgrid.distance(h, RISE) * 1.2
+            if any(e.at(n, 'am') for n in hexgrid.neighbours(h)):
+                s += 7
+        return s
+
+
+AI_CLASS = Morgan
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1c1a16', panel='#2c2820', light='#7c7058',
+              dark='#080604', accent='#e8c878', button='#4e4634',
+              button_hi='#9e9070', button_lo='#1c1a16', red='#b03020')
+FONT = dict(family='Georgia')
+
+HELP = [
+    "THE FIELD. The Americans move first. A cattle pasture with "
+    "scattered trees, wet ravines on both flanks (no horses), and two "
+    "low rises: the Continentals on the first, and Washington's horse "
+    "out of sight behind the second. Units are "
+    "seen within 2 hexes, 1 among the trees. Eight turns of ten minutes "
+    "from seven in the morning.",
+
+    "VOLLEYS. Riflemen (range 2) and militia (range 1) don't attack: "
+    "like guns they fire into attacks and into the British attacks on "
+    "anyone near them, and can't be hurt firing. Each has 2 volleys. At "
+    "the start of the American turn, one within 2 hexes of Morgan and "
+    "not next to a British unit loads again. Up to 2 fire into each "
+    "British attack.",
+
+    "THE TRAP. From 7:40 the British have been marching for nearly five "
+    "hours, and attack a column worse. An American attack made from 3 "
+    "hexes or more gains a column: surrounded. The 71st is held in "
+    "reserve until turn 3. If Morgan falls, American attacks lose a "
+    "column.",
+
+    "WINNING. The British score the rise (6) and Morgan's post (3) if "
+    "they hold them at the end, every American step destroyed, and "
+    "Morgan 4 more. The Americans score every British step, Tarleton 4 "
+    "more and each gun 2. The British must finish 4 ahead to win, 12 "
+    "ahead for a clear victory; the Americans win clearly if they finish "
+    "4 or more ahead.",
+]
+
+ICON = 'cowpens'
+
+
+@grognard.icon('cowpens')
+def draw_icon(p, n):
+    """A blue line on a low rise under a winter sky, and smoke."""
+    p.fill('#d4dce4')
+    p.disc(n * 0.5, n * 1.5, n * 0.95, '#b4b47a')
+    p.rect(0, n * 0.82, n, n * 0.18, '#94945a')
+    for k in range(5):
+        x = n * (0.16 + k * 0.17)
+        p.rect(x - n * 0.04, n * 0.5, n * 0.08, n * 0.16, '#2e4a86')
+        p.disc(x, n * 0.47, n * 0.04, '#e8d8b0')
+        p.disc(x + n * 0.06, n * 0.4, n * 0.06, '#f4f4f0')
+    p.line(n * 0.08, n * 0.2, n * 0.08, n * 0.55, '#4a3420',
+           max(1, n // 48))
+    p.rect(n * 0.08, n * 0.2, n * 0.18, n * 0.12, '#2e4a86')
+    for k in range(13):
+        p.rect(n * (0.09 + (k % 4) * 0.04), n * (0.21 + (k // 4) * 0.03),
+               n * 0.015, n * 0.015, '#f4f4f0')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

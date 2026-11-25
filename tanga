@@ -1,0 +1,496 @@
+#!/usr/bin/env python3
+"""Tanga: German East Africa, 4 November 1914.  A sample game for the
+Grognard engine.
+
+Eight thousand men of Indian Expeditionary Force B have come ashore at
+Ras Kasone to take the port of Tanga, the end of the railway into the
+highlands.  Paul von Lettow-Vorbeck has a thousand askari and a few
+hundred German settlers, and more coming down the line by train.
+Between the beach and the town lie rubber plantations and thick bush,
+and in the trees there are wild bees.  Play either side against the
+computer, or against a friend at the same screen.
+
+Run it with ./tanga (Python 3 with Tk, nothing else).  The game is
+saved to ~/.tanga.json.  ./tanga --selftest checks the map and plays a
+game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import counters, hexgrid, sound          # noqa: E402
+
+ID = 'tanga'
+TITLE = 'Tanga'
+SUBTITLE = 'German East Africa, 4 November 1914'
+
+INTRO = [
+    "November 1914. The war has come to Africa. To stop the German "
+    "cruisers using its harbour and to open the way into the colony, "
+    "India sends a force to take Tanga, the port at the end of the "
+    "Usambara railway: two brigades of Indian infantry, many of them "
+    "half trained, and one British battalion, after a month at sea.",
+
+    "The cruiser Fox warned the town before the landing, and Lettow-"
+    "Vorbeck has had two days to bring his askari down the railway. On "
+    "the 3rd the first attack from the beach at Ras Kasone was thrown "
+    "back from the railway cutting in front of the town.",
+
+    "Now, at noon on the 4th, General Aitken sends his whole force "
+    "forward through the plantations and the bush. It is hot, the bush "
+    "is thick, and the trees are full of hives.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='br', name='British', adj='British', colour='#c8a46a',
+         ink='#2a2010', posture='attack', singular=False,
+         about='Push through the plantations and the bush, take Tanga '
+               'and its railway station before dark, and keep the '
+               'shaky battalions moving.'),
+    dict(id='de', name='Germans', adj='German', colour='#5a6a7a',
+         ink='#f0f0e8', posture='defend',
+         about='Hold the railway cutting and the town while the trains '
+               'bring up the rest of the Schutztruppe, then go for the '
+               'British flank.'),
+]
+ORDER = ['br', 'de']
+
+TURNS = 8
+
+
+def TURN_NAME(t):
+    """An hour a turn, from noon."""
+    h = 12 + t - 1
+    return ('4 Nov 1914', '%d PM' % ((h - 1) % 12 + 1))
+
+
+STACK = 2
+FOG = True              # bush and plantations: you see the next hex
+DEFENSIVE_FIRE = 2      # the askari's machine guns
+STEP_VP = 1
+
+WEATHER = {1: 'clear', 7: 'dusk', 8: 'night'}
+WEATHER_TYPES = {
+    'dusk': dict(name='Dusk', icon='fog', air=False, spot=1),
+    'night': dict(name='Night', icon='cloud', air=False, spot=1),
+}
+
+HIVES = 7               # how many swarms are hidden in the trees
+STING = 2               # in 3: the chance a hive is roused
+SHAKY_PANIC = 3         # in 6: the chance shaky troops stung break
+
+
+# -------------------------------------------------------------- the bees
+
+def SETUP(e):
+    """Hide the hives: a few plantation and bush hexes, dealt out
+    afresh each game, that neither side can see."""
+    spots = [h for h in sorted(e.board.hexes)
+             if e.board.terrain_name(h) in ('plantation', 'bush')]
+    e.flags['hives'] = [hexgrid.hid(h) for h in e.rng.sample(spots, HIVES)]
+
+
+def _swarm(e, at):
+    """The bees come out: every unit in the hex and next to it is stung
+    and scatters (it can't move or fight until the end of its next
+    turn), and shaky troops may run."""
+    hit = [u for u in e.alive()
+           if hexgrid.distance(u.hex, at) <= 1]
+    for u in hit:
+        u.disabled = True
+        u.recovering = False
+        u.mp = 0
+    e.events.append(('sound', 'bees'))
+    e.events.append(('popup', at, 'Bees!', (240, 200, 40)))
+    e.say('The bees! A swarm pours out of the trees at %s, and friend '
+          'and foe alike throw down their rifles and run.' % e.place(at))
+    for u in hit:
+        if u.side == 'br' and u.type.get('shaky') and \
+                e.rng.randint(1, 6) <= SHAKY_PANIC:
+            e.take_losses([u], 1)
+            if u.alive:
+                e.say('%s break and run for the beach.' % u.long)
+
+
+def ON_MOVE(e, u, path):
+    """Moving into a hidden hive may rouse it."""
+    hives = e.flags.get('hives', [])
+    for h in path[1:]:
+        k = hexgrid.hid(h)
+        if k in hives and e.rng.randint(1, 3) <= STING:
+            hives.remove(k)
+            _swarm(e, h)
+            return
+
+
+def ON_TURN(e, side):
+    """The hours of the afternoon."""
+    if side == 'br' and e.turn == 1:
+        e.say('Noon. The whole force goes forward from Ras Kasone into '
+              'the plantations.')
+    elif side == 'de' and e.turn == 1:
+        e.say('Lettow-Vorbeck rides his bicycle along the railway '
+              'cutting, listening for the trains.')
+    elif side == 'de' and e.turn == 7:
+        e.say('Dusk. Lettow-Vorbeck orders the bugles to sound the '
+              'charge all along the line.')
+
+
+def ON_ELIMINATE(e, u, where):
+    if u.id == 'lettow':
+        e.flags['lettow'] = True
+        e.say('Lettow-Vorbeck is down! The askari fight on alone.')
+    elif u.id == 'fox':
+        e.say('The Fox is hit and stands out to sea.')
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Bush fighting:
+    - an attack made only by shaky battalions loses a column;
+    - the Loyal North Lancs and the Kashmiris gain one in the town
+      (they fight house to house);
+    - at dusk and after, the Germans gain a column (the charge);
+    - with Lettow-Vorbeck down they lose one."""
+    out = []
+    if e.side == 'br':
+        if attackers and all(u.type.get('shaky') for u in attackers):
+            out.append((-1, 'shaky troops'))
+        if attackers and e.board.terrain_name(target) in ('town', 'city') \
+                and any(u.spec.get('steady') for u in attackers):
+            out.append((1, 'house to house'))
+    else:
+        if attackers and e.turn >= 7:
+            out.append((1, 'the charge'))
+        if e.flags.get('lettow'):
+            out.append((-1, 'Lettow-Vorbeck is down'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'P': 'plantation', 'B': 'bush', 'b': 'beach'}
+
+TERRAIN = {
+    'clear':  dict(name='Open ground', colour='#b8b070', ink='#988e50',
+                   edge='#78703a'),
+    'fields': dict(name='Native gardens', colour='#a8b464', ink='#889448',
+                   edge='#687430'),
+    'plantation': dict(name='Rubber plantation', colour='#6e8a44',
+                       ink='#465e28', pattern='trees', edge='#344a1c',
+                       z=5, shift=0, open=False, los=False,
+                       move={'foot': 1, 'track': 2, 'wheel': 2}),
+    'bush':   dict(name='Thick bush', colour='#56702e', ink='#34481a',
+                   pattern='trees', edge='#22340e', z=6, shift=-1,
+                   open=False, los=False,
+                   move={'foot': 2, 'track': 3, 'wheel': None}),
+    'beach':  dict(name='Ras Kasone beach', colour='#e0d0a0',
+                   ink='#b8a878', pattern='grass', edge='#a09060', z=1,
+                   shift=0, open=True, los=True,
+                   move={'foot': 1, 'track': 2, 'wheel': 2}),
+    'town':   dict(name='Tanga', colour='#d0c0a0', ink='#9a5a3a'),
+    'city':   dict(name='Tanga: the boma', colour='#c0b498',
+                   ink='#7a4a34'),
+    'water':  dict(name='The harbour', colour='#3a7aa8', ink='#6aa0c8',
+                   impassable=False,
+                   move={'foot': None, 'track': None, 'wheel': None,
+                         'ship': 1}),
+}
+
+MAP = [
+    '~~~~~~~~~~~~~~~~~~',
+    '~tCCt...~~~~~~~~~~',
+    '~tCCt.:PPP..~~~~~~',
+    '.ttt..:PPPBB.bb~~~',
+    '..tt.:PPPBBB.bb~~~',
+    '....:.PPBBBPP.bb~~',
+    '.:..:.PPPBBPPP..b~',
+    ':..:..PPBBBBPP...~',
+    '..:..BBBBPPPBB...~',
+    '.:..BBBPPPBBB..:.~',
+    ':..BBBB..PPBBB...~',
+    '..:.BBB.:..BBB:..~',
+    '.:..::BB..:..BB..~',
+]
+
+HEXSIDES = {
+    'cutting': dict(name='Railway cutting', colour='#6a5a44', width=2,
+                    cost={'foot': 1, 'track': 2, 'wheel': None},
+                    halve=False, shift=-1),
+}
+
+
+def _cutting():
+    """The railway cutting in front of the town: every side between the
+    sixth column and the seventh, from the harbour south."""
+    out = []
+    for r in range(1, 9):
+        for n in hexgrid.neighbours((5, r)):
+            if n[0] == 6 and 1 <= n[1] <= 8:
+                out.append('%s/%s' % (hexgrid.hid((5, r)), hexgrid.hid(n)))
+    return out
+
+
+RIVERS = [('cutting', _cutting())]
+
+ROADS = [
+    ('rail', ['0405', '0113']),                 # the Usambara railway
+    ('trail', ['0405', '1505']),                # Tanga to Ras Kasone
+]
+
+LABELS = {
+    '0303': 'Tanga', '0405': 'Station', '1505': 'Ras Kasone',
+    '0113': 'Moshi line', '0902': 'Fox', '0809': 'The bush',
+    '1006': 'Plantations',
+}
+
+OBJECTIVES = {
+    '0303': dict(name='Tanga', vp=8, owner='de', **{'for': 'br'}),
+    '0405': dict(name='The station', vp=4, owner='de', **{'for': 'br'}),
+}
+
+LANDING = ['1404', '1504', '1405', '1505', '1506', '1606', '1707']
+
+SUPPLY = {
+    'br': dict(**{'from': LANDING, 'range': 14}),
+    'de': dict(**{'from': ['W'], 'range': 14}),
+}
+
+
+def _score(e):
+    return 'British %d VP, Germans %d.' % (e.vp('br'), e.vp('de'))
+
+
+def VICTORY(e):
+    """The British score Tanga (8) and the station (4) if they hold
+    them at the end, and every German step destroyed; the Germans every
+    British step.  The British must finish THRESHOLD ahead (set from
+    games between computer players: ./tanga --simulate 60)."""
+    m = e.vp('br') - e.vp('de')
+    if m >= THRESHOLD + 8:
+        return 'br', ('British victory. %s Tanga is taken, and the '
+                      'railway into the highlands lies open.' % _score(e))
+    if m >= THRESHOLD:
+        return 'br', ('British marginal victory. %s The British hold a '
+                      'foothold in the town, but Lettow-Vorbeck holds the '
+                      'railway.' % _score(e))
+    if m > THRESHOLD - 8:
+        return 'de', ('German marginal victory. %s In the night Aitken '
+                      'orders the force back to the ships.' % _score(e))
+    return 'de', ('German victory. %s The expedition flees to the beach, '
+                  'leaving its rifles, its machine guns and its wounded, '
+                  'and Lettow-Vorbeck arms his askari with them.'
+                  % _score(e))
+
+
+THRESHOLD = 5           # the British must finish this far ahead
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'askari':  dict(name='Askari field company', symbol='infantry',
+                    move='foot', spot=3),
+    'whites':  dict(name='Settler rifles', symbol='infantry', move='foot'),
+    'mg':      dict(name='Machine guns', symbol='mg', move='foot',
+                    zoc=False, support=True, fate='is overrun'),
+    'sepoy':   dict(name='Indian infantry', symbol='infantry',
+                    move='foot'),
+    'shaky':   dict(name='Indian infantry, half trained',
+                    symbol='infantry', move='foot', shaky=True,
+                    fate='breaks and runs'),
+    'british': dict(name='British infantry', symbol='infantry',
+                    move='foot'),
+    'mtn':     dict(name='Mountain guns', symbol='artillery', move='foot',
+                    zoc=False, support=True),
+    'ship':    dict(name='Cruiser', symbol='ship', move='ship', zoc=False,
+                    support=True),
+}
+
+
+@grognard.symbol('mg')
+def s_mg(p, x, y, w, h, c):
+    """Machine guns: the infantry cross and a gun barrel under it."""
+    p.line(x, y, x + w - 1, y + h - 1, c)
+    p.line(x, y + h - 1, x + w - 1, y, c)
+    p.rect(x + w // 4, y + h // 2 - 1, w // 2, 2, c)
+
+
+@grognard.symbol('ship')
+def s_ship(p, x, y, w, h, c):
+    """A cruiser: a long hull, a deckhouse and two funnels."""
+    base = y + h - 3
+    p.rect(x + 1, base, w - 2, 2, c)
+    p.rect(x + w // 3, base - h // 4, w // 3, h // 4, c)
+    for k in (0.42, 0.58):
+        p.rect(int(x + (w - 1) * k), base - h // 2, 1, h // 4, c)
+
+
+counters.PICTURES['mg'] = [
+    '...........', '...##......', '..####.....', '.#########.',
+    '..####.....', '..#..#.....', '.#....#....', '#......#...']
+counters.PICTURES['ship'] = [
+    '...........', '....#.#....', '....#.#....', '...#####...',
+    '..#######..', '###########', '.#########.', '..#######..']
+
+sound.EFFECTS['bees'] = lambda: sound.mixdown(
+    sound.tone(210, 0.9, 'saw', 0.07, slide=30),
+    sound.tone(236, 0.9, 'saw', 0.06, slide=-24),
+    sound.tone(262, 0.8, 'saw', 0.05, slide=18))
+
+ASKARI = '#5a6a7a'
+WHITES = '#7a8a9a'
+LETTOW = '#3e4e5e'
+LNL = '#c8a46a'         # khaki
+INDIA = '#b89a62'
+SHAKY = '#a89468'
+NAVY = '#8a8a9a'
+
+
+def unit(uid, side, kind, a, d, m, hx, long, colour, formation, steps=2,
+         **kw):
+    """A battalion or a company: attack, defence, movement and where it
+    starts (None to arrive later, with arrive and at)."""
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, size=kw.pop('size', 'II'), a=a, d=d, m=m,
+                steps=steps, hex=hx, long=long, colour=colour,
+                formation=formation)
+    spec.update(kw)
+    return spec
+
+
+def company(n, a, d, hx, **kw):
+    return unit('fk%d' % n, 'de', 'askari', a, d, 4, hx,
+                '%d. Feldkompanie' % n, ASKARI, 'Schutztruppe',
+                name='%d FK' % n, size='I', **kw)
+
+
+TRAIN = ['0113', '0112', '0212']
+
+UNITS = [
+    # ---- the Schutztruppe in and around Tanga
+    company(6, 4, 4, '0604'),
+    company(17, 4, 4, '0606'),
+    unit('lettow', 'de', 'askari', 2, 2, 4, '0405',
+         'Paul von Lettow-Vorbeck and his staff', LETTOW, 'Command',
+         steps=1, vp=4, size='', name='LETTOW'),
+    unit('sk7', 'de', 'whites', 3, 3, 3, '0303',
+         '7. Schützenkompanie: settlers and planters', WHITES,
+         'Schutztruppe', name='7 SK', size='I'),
+    unit('mg1', 'de', 'mg', 4, 2, 3, '0605', 'Machine guns of the 6th and '
+         '17th companies', ASKARI, 'Schutztruppe', range=1, name='MG',
+         size=''),
+    company(16, 4, 4, None, arrive=2, at=TRAIN),
+    unit('sk8', 'de', 'whites', 3, 3, 3, None,
+         '8. Schützenkompanie from the Usambara', WHITES, 'Schutztruppe',
+         name='8 SK', size='I', arrive=2, at=TRAIN),
+    company(13, 5, 4, None, arrive=3, at=TRAIN, posture='attack'),
+    company(4, 4, 4, None, arrive=4, at=TRAIN, posture='attack'),
+    unit('mg2', 'de', 'mg', 4, 2, 3, None, 'Machine guns of the 13th '
+         'company', ASKARI, 'Schutztruppe', range=1, name='MG',
+         size='', arrive=3, at=TRAIN),
+    company(1, 4, 4, None, arrive=5, at=TRAIN, posture='attack'),
+
+    # ---- Indian Expeditionary Force B
+    unit('lnl', 'br', 'british', 5, 4, 3, '1405',
+         '2nd Battalion, Loyal North Lancashire Regiment', LNL,
+         'Bangalore Brigade', steps=3, name='LNL', steady=True),
+    unit('kr2', 'br', 'sepoy', 4, 4, 3, '1505', '2nd Kashmir Rifles',
+         INDIA, 'Imperial Service Brigade', steps=3, name='2 KASH',
+         steady=True),
+    unit('kr3', 'br', 'sepoy', 4, 3, 3, '1404', '3rd Kashmir Rifles',
+         INDIA, 'Imperial Service Brigade', name='3 KASH', steady=True),
+    unit('g101', 'br', 'sepoy', 4, 3, 3, '1504', '101st Grenadiers', INDIA,
+         'Bangalore Brigade', steps=3, name='101 GR'),
+    unit('r13', 'br', 'shaky', 3, 3, 3, '1405', '13th Rajputs', SHAKY,
+         '27th Brigade', steps=3, name='13 RAJ'),
+    unit('p61', 'br', 'shaky', 3, 3, 3, '1506', '61st Pioneers', SHAKY,
+         '27th Brigade', name='61 PNR'),
+    unit('p63', 'br', 'shaky', 2, 2, 3, '1606',
+         '63rd Palamcottah Light Infantry', SHAKY, '27th Brigade',
+         name='63 PLI'),
+    unit('i98', 'br', 'shaky', 3, 3, 3, '1506', '98th Infantry', SHAKY,
+         '27th Brigade', name='98 INF'),
+    unit('gw3', 'br', 'sepoy', 3, 3, 3, '1505', '3rd Gwalior Infantry',
+         INDIA, 'Imperial Service Brigade', name='3 GWAL'),
+    unit('mtn28', 'br', 'mtn', 3, 1, 3, '1606', '28th Mountain Battery',
+         INDIA, 'Divisional troops', steps=1, range=2, name='28 MTN',
+         size=''),
+    unit('fox', 'br', 'ship', 4, 12, 0, '0902', 'HMS Fox, light cruiser',
+         NAVY, 'Royal Navy', range=3, steps=2, vp=4, name='FOX',
+         size=''),
+]
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1c1c16', panel='#2c2c22', light='#7c7a60',
+              dark='#080806', accent='#e8c860', button='#4c4a36',
+              button_hi='#9c9a76', button_lo='#1c1c16', red='#b03020')
+
+HELP = [
+    "THE GROUND. The British move first, from the beach at Ras Kasone in "
+    "the east. Rubber plantations hide what's in them; the thick bush "
+    "hides it too, costs 2, and gives the defenders a column. The "
+    "railway cutting in front of the town gives one more to defenders "
+    "attacked across it. Units are seen within 2 hexes, 1 in the trees, "
+    "and at dusk only next door. Eight turns of an hour from noon.",
+
+    "THE BEES. Somewhere in the plantations and the bush there are 7 "
+    "hives, a different place each game. A unit that moves into one "
+    "rouses it two times in three: every unit in that hex and next to "
+    "it, of either side, scatters and can't move or fight until the end "
+    "of its next turn, and the half-trained battalions stung lose a "
+    "step one time in two.",
+
+    "THE FORCES. Half-trained battalions (the 13th Rajputs, the 61st, "
+    "the 63rd and the 98th) lose a column attacking alone. The Loyal "
+    "North Lancs and the Kashmiris gain one fighting in the town. The "
+    "Fox shells anything within 3 hexes of the harbour. German companies "
+    "arrive by train on the Usambara railway from turn 2, and from dusk "
+    "every German attack gains a column. Machine guns fire into attacks "
+    "on anything next to them.",
+
+    "WINNING. The British score Tanga (8) and the station (4) if they "
+    "hold them at the end, and every German step destroyed; the "
+    "Germans every British step. The British must finish 5 ahead to "
+    "win, 13 ahead for a clear victory; the Germans win clearly if they "
+    "finish 3 or more ahead.",
+]
+
+ICON = 'tanga'
+
+
+@grognard.icon('tanga')
+def draw_icon(p, n):
+    """A swarm of bees over the bush, and the sea beyond."""
+    p.fill('#e8d8a0')
+    p.rect(0, n * 0.28, n, n * 0.1, '#3a7aa8')
+    p.rect(0, n * 0.38, n, n * 0.62, '#6e8a44')
+    for k in range(6):
+        p.disc(n * (0.1 + k * 0.17), n * 0.5, n * 0.11, '#56702e')
+    p.rect(0, n * 0.78, n, n * 0.22, '#465e28')
+    import math
+    for k in range(14):
+        a = k * 2.4
+        x = n * (0.5 + 0.28 * math.cos(a) * (0.4 + (k % 5) * 0.15))
+        y = n * (0.55 + 0.2 * math.sin(a) * (0.4 + (k % 4) * 0.18))
+        p.disc(x, y, max(1, n * 0.03), '#f0b820')
+        p.rect(x - n * 0.012, y - n * 0.008, n * 0.024, n * 0.016,
+               '#2a2010')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

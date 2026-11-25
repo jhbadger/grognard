@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""Belleau Wood: the Marne, 6 June 1918.  A sample game for the
+Grognard engine.
+
+The German spring offensive has reached the Marne, forty miles from
+Paris.  The 4th Marine Brigade has stopped it at Lucy-le-Bocage, and on
+6 June it attacks: Hill 142 at dawn, and in the evening Belleau Wood
+itself and the village of Bouresches, across open wheat swept by
+machine guns hidden among the rocks.  Play either side against the
+computer, or against a friend at the same screen.
+
+Run it with ./belleau (Python 3 with Tk, nothing else).  The game is
+saved to ~/.belleau.json.  ./belleau --selftest checks the map and
+plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import counters, hexgrid                 # noqa: E402
+
+ID = 'belleau'
+TITLE = 'Belleau Wood'
+SUBTITLE = 'The Marne, 6 June 1918'
+
+INTRO = [
+    "June 1918. In ten days the German offensive on the Aisne has "
+    "carried them forty miles to the Marne at Château-Thierry, and the "
+    "road to Paris is open. The French put in the only fresh troops "
+    "they have: the American 2nd Division, half of it Marines.",
+
+    "On the 3rd and 4th the Marines stop the Germans in the wheat in "
+    "front of Lucy-le-Bocage. A French officer advises them to fall "
+    "back. 'Retreat? Hell, we just got here.'",
+
+    "Now they attack. At dawn on the 6th the 1st Battalion, 5th "
+    "Marines goes for Hill 142 on the left. At five in the afternoon, "
+    "with almost no artillery to help them, three more battalions cross "
+    "the wheat toward Belleau Wood, a square mile of trees and boulders "
+    "full of machine-gun nests, and the village of Bouresches beyond.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='us', name='Marines', adj='Marine', colour='#5a6a3e',
+         ink='#f0e8c8', posture='attack',
+         about='Take Hill 142 at dawn; in the evening cross the wheat, '
+               'get into Belleau Wood and take Bouresches. Find the '
+               'machine guns and close with them.'),
+    dict(id='de', name='Germans', adj='German', colour='#6a7480',
+         ink='#f0f0e8', posture='defend',
+         about='Hold the wood and the village. Let the machine guns cut '
+               'the Marines down in the wheat, and counterattack in the '
+               'dark.'),
+]
+ORDER = ['us', 'de']
+
+TURNS = 10
+
+
+def TURN_NAME(t):
+    """Two hours a turn, from four in the morning."""
+    h = 4 + (t - 1) * 2
+    return ('6 Jun 1918', '%d %s' % ((h - 1) % 12 + 1,
+                                     'AM' if h < 12 else 'PM'))
+
+
+STACK = 2
+FOG = True              # the nests are hidden among the trees and rocks
+DEFENSIVE_FIRE = 2      # machine guns and the guns behind them
+STEP_VP = 1
+
+WEATHER = {1: 'dawn', 2: 'clear', 9: 'dusk', 10: 'night'}
+WEATHER_TYPES = {
+    'dawn': dict(name='Dawn', icon='fog', air=False, spot=1),
+    'dusk': dict(name='Dusk', icon='fog', air=False, spot=1),
+    'night': dict(name='Night', icon='cloud', air=False, spot=1),
+}
+
+EVENING = 7             # 4 PM: the attack on the wood
+GRAZE = 2               # in 6: the chance a move through the wheat costs
+GRAZE_RANGE = 2         # how far a machine gun sweeps the wheat
+
+
+def _dark(e):
+    return e.weather().get('spot') == 1
+
+
+# ------------------------------------------------------- grazing fire
+
+def ON_MOVE(e, u, path):
+    """Into the wheat: by daylight a Marine unit that moves through
+    wheat within reach of a German machine gun may lose a step to its
+    fire before it gets there."""
+    if u.side != 'us' or _dark(e) or not u.alive:
+        return
+    wheat = [h for h in path[1:] if e.board.terrain_name(h) == 'wheat']
+    if not wheat:
+        return
+    guns = [x for x in e.alive('de') if x.kind == 'mg' and not x.disabled]
+    if not any(hexgrid.distance(g.hex, h) <= GRAZE_RANGE
+               for g in guns for h in wheat):
+        return
+    if e.rng.randint(1, 6) <= GRAZE:
+        at = wheat[-1]
+        e.events.append(('sound', 'gun'))
+        e.events.append(('popup', at, 'Cut down', (240, 220, 200)))
+        e.say('Machine guns sweep the wheat: %s lose a step crossing '
+              'it.' % u.long)
+        e.take_losses([u], 1)
+
+
+def ON_TURN(e, side):
+    """The day."""
+    if side == 'us':
+        if e.turn == 1:
+            e.say('3:45 AM. The 1st Battalion, 5th Marines goes forward '
+                  'against Hill 142 in four waves, bayonets fixed.')
+        elif e.turn == EVENING:
+            e.say('Afternoon. The 3rd Battalions of the 5th and 6th '
+                  'Marines and the 2nd of the 6th form up in the wheat. '
+                  '"Come on, you sons of bitches! Do you want to live '
+                  'forever?"')
+    elif e.turn == 9:
+        e.say('Dusk. The German reserves come down through the wood to '
+              'counterattack.')
+
+
+def ON_ELIMINATE(e, u, where):
+    if u.kind == 'mg' and u.side == 'de':
+        e.say('A machine-gun nest is taken with grenades and bayonets.')
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Rifles and the dark:
+    - Marines attacking anything in the open gain a column (aimed rifle
+      fire at long range);
+    - by night the Germans gain a column attacking (they know the wood)."""
+    out = []
+    t = e.board.terrain(target) or {}
+    if e.side == 'us':
+        if attackers and t.get('open'):
+            out.append((1, 'aimed fire'))
+    elif attackers and _dark(e):
+        out.append((1, 'they know the wood'))
+    return out
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'W': 'belleau', 'r': 'boulders', 'w': 'wheat'}
+
+TERRAIN = {
+    'clear':  dict(name='Pasture', colour='#a8b46a', ink='#88944c',
+                   edge='#687434'),
+    'fields': dict(name='Hay', colour='#b8bc70', ink='#989c50',
+                   edge='#787c38'),
+    'wheat':  dict(name='Wheat, waist high', colour='#d4c478',
+                   ink='#b0a050', pattern='fields', edge='#8a7a38', z=1,
+                   shift=0, open=True, los=True,
+                   move={'foot': 1, 'track': 1, 'wheel': 2}),
+    'belleau': dict(name='Belleau Wood', colour='#3e5a2a', ink='#22401a',
+                    pattern='trees', edge='#122a0c', z=6, shift=-1,
+                    open=False, los=False,
+                    move={'foot': 2, 'track': 3, 'wheel': None}),
+    'boulders': dict(name='Boulders in the wood', colour='#5a6450',
+                     ink='#3a4234', pattern='rough', edge='#22281c', z=7,
+                     shift=-2, open=False, los=False,
+                     move={'foot': 2, 'track': 4, 'wheel': None}),
+    'woods':  dict(name='Copse', colour='#4e6e34', ink='#2e4a1c'),
+    'hills':  dict(name='Hill 142', colour='#a8a066', ink='#80784a'),
+    'town':   dict(name='Village', colour='#bcae94', ink='#7a4a34'),
+}
+
+MAP = [
+    ':.t..:..:.t..:..',
+    '.:..:.fWWW.:..:.',
+    ':h..:WWWrWW.:..:',
+    'hh.:.WWrWWWW..:.',
+    'hhh..wWWWrWW.:..',
+    'hh.w.wWWWWWw.:..',
+    'f..ww.WWWWw..:..',
+    '.:.www.wWWww.:.f',
+    ':..wwww.www.w..:',
+    '.:..www.www..tt.',
+    ':.f..:..:..::..:',
+    '.:.t.:..f..:.:..',
+    ':.tt..:..ff..:..',
+    '..:..:..:..:..:.',
+]
+
+ROADS = [
+    ('road', ['0313', '0410', '1410']),             # Lucy to Bouresches
+    ('trail', ['0313', '0201']),
+    ('trail', ['1110', '1101']),                    # Bouresches to Belleau
+]
+
+LABELS = {
+    '0204': 'Hill 142', '0313': 'Lucy-le-Bocage', '1410': 'Bouresches',
+    '0301': 'Torcy', '1101': 'Belleau', '0805': 'Belleau Wood',
+    '0509': 'The wheat',
+}
+
+OBJECTIVES = {
+    '0204': dict(name='Hill 142', vp=4, owner='de', **{'for': 'us'}),
+    '1410': dict(name='Bouresches', vp=6, owner='de', **{'for': 'us'}),
+    '0807': dict(name='South of the wood', vp=4, owner='de',
+                 **{'for': 'us'}),
+    '0803': dict(name='North of the wood', vp=6, owner='de',
+                 **{'for': 'us'}),
+}
+
+SUPPLY = {
+    'us': dict(**{'from': ['S'], 'range': 14}),
+    'de': dict(**{'from': ['N'], 'range': 14}),
+}
+
+
+def _score(e):
+    return 'Marines %d VP, Germans %d.' % (e.vp('us'), e.vp('de'))
+
+
+def VICTORY(e):
+    """The Marines score Hill 142 (4), Bouresches (6) and the south (4)
+    and north (6) of the wood if they hold them at the end, and every
+    German step; the Germans every Marine step.  The Marines must finish
+    THRESHOLD ahead (set from games between computer players: ./belleau
+    --simulate 60)."""
+    m = e.vp('us') - e.vp('de')
+    if m >= THRESHOLD + 8:
+        return 'us', ('Marine victory. %s The Germans are driven out of '
+                      'the wood, and the French rename it the Wood of the '
+                      'Marine Brigade.' % _score(e))
+    if m >= THRESHOLD:
+        return 'us', ('Marine marginal victory. %s The Marines hold a '
+                      'foothold in the wood. It will take them three more '
+                      'weeks to clear it.' % _score(e))
+    if m > THRESHOLD - 8:
+        return 'de', ('German marginal victory. %s The Marines are thrown '
+                      'back into the wheat, with the worst losses in the '
+                      'history of the Corps.' % _score(e))
+    return 'de', ('German victory. %s The attack is shattered in the '
+                  'wheat, and the road to Paris is open again.' % _score(e))
+
+
+THRESHOLD = 10          # the Marines must finish this far ahead
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'marine': dict(name='Marine battalion', symbol='infantry',
+                   move='foot'),
+    'inf':    dict(name='Infantry battalion', symbol='infantry',
+                   move='foot'),
+    'mg':     dict(name='Machine guns', symbol='mg', move='foot',
+                   support=True, fate='is overrun'),
+    'art':    dict(name='Artillery', symbol='artillery', move='wheel',
+                   zoc=False, support=True),
+}
+
+
+@grognard.symbol('mg')
+def s_mg(p, x, y, w, h, c):
+    """Machine guns: the infantry cross and a gun barrel under it."""
+    p.line(x, y, x + w - 1, y + h - 1, c)
+    p.line(x, y + h - 1, x + w - 1, y, c)
+    p.rect(x + w // 4, y + h // 2 - 1, w // 2, 2, c)
+
+
+counters.PICTURES['mg'] = [
+    '...........', '...##......', '..####.....', '.#########.',
+    '..####.....', '..#..#.....', '.#....#....', '#......#...']
+
+MARINE5 = '#5a6a3e'
+MARINE6 = '#6a7a46'
+MGBN = '#4e5a36'
+ARMY = '#7a7a4a'
+GERMAN = '#6a7480'
+GERMAN2 = '#7a8490'
+GERMAN_MG = '#4e5662'
+
+
+def unit(uid, side, kind, a, d, m, hx, long, colour, formation, steps=2,
+         **kw):
+    """A battalion or a company: attack, defence, movement and where it
+    starts (None to arrive later, with arrive and at)."""
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, size=kw.pop('size', 'II'), a=a, d=d, m=m,
+                steps=steps, hex=hx, long=long, colour=colour,
+                formation=formation)
+    spec.update(kw)
+    return spec
+
+
+def marines(bn, reg, hx, **kw):
+    return unit('m%d_%d' % (bn, reg), 'us', 'marine', 6, 4, 3, hx,
+                '%s Battalion, %dth Marines' % (
+                    ('1st', '2nd', '3rd')[bn - 1], reg),
+                MARINE5 if reg == 5 else MARINE6,
+                '%dth Marines' % reg, steps=3,
+                name='%d/%d' % (bn, reg), **kw)
+
+
+def nest(n, hx):
+    return unit('mg%d' % n, 'de', 'mg', 4, 3, 2, hx,
+                'Machine-gun nest among the rocks', GERMAN_MG, 'The nests',
+                steps=1, range=2, size='I', name='MG %d' % n)
+
+
+UNITS = [
+    # ---- the 4th Marine Brigade
+    marines(1, 5, '0207'),
+    marines(2, 5, '0108'),
+    marines(3, 5, '0410', release=EVENING),
+    marines(3, 6, '0611', release=EVENING),
+    marines(2, 6, '1011', release=EVENING),
+    marines(1, 6, '0712'),
+    unit('mgb1', 'us', 'mg', 4, 2, 3, '0511',
+         '6th Machine Gun Battalion', MGBN, 'Machine guns', range=2,
+         name='6 MG', size='I'),
+    unit('mgb2', 'us', 'mg', 4, 2, 3, '0911',
+         '6th Machine Gun Battalion', MGBN, 'Machine guns', range=2,
+         name='6 MG', size='I'),
+    unit('art', 'us', 'art', 5, 1, 2, '0814',
+         '2nd Field Artillery Brigade', ARMY, '2nd Division', range=3,
+         steps=1, name='ARTY', size='X'),
+
+    # ---- the Germans: the 237th Division in the wood, the 10th at
+    # Bouresches
+    unit('i461a', 'de', 'inf', 4, 4, 3, '0806',
+         'I Battalion, 461st Infantry', GERMAN, '237th Division',
+         name='I/461'),
+    unit('i461b', 'de', 'inf', 4, 4, 3, '0905',
+         'II Battalion, 461st Infantry', GERMAN, '237th Division',
+         name='II/461'),
+    unit('i460', 'de', 'inf', 4, 4, 3, '0703',
+         'III Battalion, 460th Infantry', GERMAN, '237th Division',
+         name='III/460'),
+    unit('hill', 'de', 'inf', 3, 4, 3, '0204',
+         'II Battalion, 460th Infantry on Hill 142', GERMAN,
+         '237th Division', name='II/460'),
+    unit('i398', 'de', 'inf', 4, 4, 3, '1410',
+         'I Battalion, 398th Infantry', GERMAN2, '10th Division',
+         name='I/398'),
+    nest(1, '0807'), nest(2, '0906'), nest(3, '1005'), nest(4, '0305'),
+    nest(5, '1209'),
+    unit('gart', 'de', 'art', 5, 1, 2, '0901',
+         'Artillery of the 237th Division', GERMAN, '237th Division',
+         range=3, steps=1, name='ARTY', size='X'),
+    unit('i273', 'de', 'inf', 5, 4, 3, None, 'I Battalion, 273rd Reserve '
+         'Infantry', GERMAN2, 'Reserves', arrive=8,
+         at=['0801', '0701', '0901'], name='I/273', posture='attack'),
+    unit('i40', 'de', 'inf', 5, 4, 3, None, 'II Battalion, 40th Fusiliers',
+         GERMAN2, 'Reserves', arrive=9, at=['1101', '1201', '1001'],
+         name='II/40', posture='attack'),
+]
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#1a1c18', panel='#2a2e26', light='#767c6a',
+              dark='#080a06', accent='#e0c878', button='#464c3e',
+              button_hi='#94997e', button_lo='#1a1c18', red='#b03020')
+
+HELP = [
+    "THE GROUND. The Marines move first, from Lucy-le-Bocage in the "
+    "south-west. Belleau Wood is dense trees and boulders: 2 to enter, "
+    "a column to its defenders, two among the boulders, and nothing in "
+    "it is seen from more than next door. Units elsewhere are seen "
+    "within 2 hexes, and at dawn, dusk and night only next door. Ten "
+    "turns of two hours from four in the morning.",
+
+    "THE WHEAT. By daylight, a Marine unit that moves through wheat "
+    "within 2 hexes of a German machine gun loses a step one time in "
+    "three, to fire it never sees. Machine guns fire from 2 hexes and "
+    "can't be hurt doing it, and up to 2 guns fire into each attack. "
+    "Marines attacking anything in the open gain a column: aimed "
+    "rifle fire.",
+
+    "THE DAY. At dawn the 1st and 2nd Battalions of the 5th Marines go "
+    "for Hill 142. The battalions for the evening attack (3/5, 3/6 and "
+    "2/6) are held until 4 PM. German reserves come down from the north "
+    "at dusk, and by night German attacks gain a column.",
+
+    "WINNING. The Marines score Hill 142 (4), Bouresches (6), and the "
+    "south (4) and north (6) of the wood if they hold them at the end, "
+    "and every German step destroyed; the Germans every Marine step. "
+    "The Marines must finish 10 ahead to win, 18 ahead for a clear "
+    "victory; the Germans win clearly if the Marines finish no more "
+    "than 2 ahead.",
+]
+
+ICON = 'belleau'
+
+
+@grognard.icon('belleau')
+def draw_icon(p, n):
+    """A dark wood above a field of wheat, and tracer across it."""
+    p.fill('#c8ccc0')
+    p.rect(0, n * 0.55, n, n * 0.45, '#d4c478')
+    for k in range(7):
+        p.disc(n * (0.04 + k * 0.155), n * 0.42, n * 0.16, '#3e5a2a')
+    p.rect(0, n * 0.42, n, n * 0.14, '#3e5a2a')
+    for k in range(9):
+        x = n * (0.05 + k * 0.11)
+        p.line(x, n * 0.95, x + n * 0.03, n * 0.66, '#b0a050',
+               max(1, n // 48))
+    for k in range(3):
+        y = n * (0.6 + k * 0.08)
+        p.line(n * 0.15, y - n * 0.04, n * 0.8, y, '#f8e070',
+               max(1, n // 64))
+    p.disc(n * 0.88, n * 0.16, n * 0.07, '#f4f0d0')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])
