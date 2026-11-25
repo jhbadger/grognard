@@ -1,0 +1,663 @@
+#!/usr/bin/env python3
+"""Sea Lion: Kent and Sussex, September 1940.  A sample game for the
+Grognard engine, and an invasion that never happened.
+
+In the summer of 1940 the German army planned to cross the Channel in
+river barges towed by tugs and land on the beaches between Folkestone
+and Bexhill: Operation Sea Lion.  It was put off when the Luftwaffe
+failed to win the air over England, and never tried.  Here it is tried:
+the first wave lands at dawn, and the rest must come across a Channel
+the Royal Navy still commands.  Play either side against the computer,
+or against a friend at the same screen.
+
+Run it with ./sealion (Python 3 with Tk, nothing else).  The game is
+saved to ~/.sealion.json.  ./sealion --selftest checks the map and
+plays a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import counters, hexgrid                 # noqa: E402
+from grognard.hexgrid import hid                       # noqa: E402
+
+ID = 'sealion'
+TITLE = 'Sea Lion'
+SUBTITLE = 'Kent and Sussex, September 1940: an invasion that never was'
+
+INTRO = [
+    "September 1940. France has fallen, and the British army has come "
+    "home from Dunkirk without its guns. Hitler has ordered an invasion "
+    "of England, Operation Sea Lion, for as soon as the Luftwaffe has "
+    "driven the RAF from the sky over the Channel. Two thousand river "
+    "barges, tugs and motor boats wait in the ports from Rotterdam to "
+    "Le Havre.",
+
+    "In this game the Luftwaffe is judged to have done enough, and on "
+    "the morning of 22 September the first wave lands: two divisions "
+    "between Hythe and Dymchurch, two more on the shingle from "
+    "Dungeness to Rye, two on the beaches by Hastings and Bexhill, and "
+    "the paratroops of the 7th Flieger Division on the Downs behind "
+    "Folkestone.",
+
+    "Holding the coast are two thin divisions and the Home Guard. "
+    "Behind them, round London, is General Brooke's reserve. And in "
+    "Portsmouth, Sheerness and Harwich are the destroyers of the Royal "
+    "Navy, waiting for the barges that must bring the second wave "
+    "across.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='de', name='Germans', adj='German', colour='#9aa0a4',
+         ink='#0c0e10', flag='cross', posture='attack',
+         about='Get off the beaches, take the ports at Folkestone and '
+               'Dover, and push inland to Ashford and Canterbury before '
+               'the British reserve and the Royal Navy can drive you '
+               'back into the sea.'),
+    dict(id='br', name='British', adj='British', colour='#c4a870',
+         ink='#140e06', flag='cross', posture='defend',
+         about='Hold the Royal Military Canal and the ports, sink the '
+               'barges of the later waves, and throw the invaders back '
+               'into the sea with Brooke\'s reserve.'),
+]
+ORDER = ['de', 'br']
+
+# Twelve turns: day and night from the 22nd to the 27th of September.
+TURNS = 12
+
+
+def TURN_NAME(t):
+    return ('%d Sep 1940' % (22 + (t - 1) // 2),
+            'Day' if t % 2 else 'Night')
+
+
+STACK = 3
+FOG = True
+DEFENSIVE_FIRE = 2
+
+# A calm first week, and then the equinoctial gale that the German navy
+# had always feared.
+WEATHER = {1: 'clear', 2: 'night', 3: 'clear', 4: 'night',
+           5: 'overcast', 6: 'night', 7: 'gale', 8: 'galenight',
+           9: 'clear', 10: 'night', 11: 'overcast', 12: 'night'}
+WEATHER_TYPES = {
+    'clear': dict(name='Clear: the Luftwaffe', icon='sun', air=True),
+    'night': dict(name='Night', icon='cloud', air=False, spot=1),
+    'gale': dict(name='Gale', icon='rain', air=False, move=1.5),
+    'galenight': dict(name='Gale, night', icon='rain', air=False,
+                      move=1.5, spot=1),
+}
+AIR = ['de']
+NAVY_TURN = 2           # the destroyers come into the Channel
+
+
+def night(e, turn=None):
+    return e.weather(turn)['id'] in ('night', 'galenight')
+
+
+def gale(e, turn=None):
+    return e.weather(turn)['id'] in ('gale', 'galenight')
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'s': 'shingle', 'A': 'airfield'}
+
+TERRAIN = {
+    'clear':  dict(name='Pasture', colour='#9cba6c', ink='#80a052',
+                   edge='#628040'),
+    'fields': dict(name='Orchards and hop gardens', colour='#aebc6c',
+                   ink='#8c9c4c', edge='#6c7c38'),
+    'woods':  dict(name='The Weald', colour='#4e7234', ink='#2e4e1e',
+                   edge='#1e3612'),
+    'hills':  dict(name='The Downs', colour='#c4c08c', ink='#94905c',
+                   edge='#74703e'),
+    'marsh':  dict(name='Romney Marsh', colour='#8cae84', ink='#4a7a8e',
+                   move={'foot': 2, 'track': 3, 'wheel': 3}, shift=0),
+    'shingle': dict(name='Dungeness shingle', colour='#cec6aa',
+                    ink='#a49c84', pattern='rough', edge='#8a8268', z=2,
+                    shift=0, open=True, los=True,
+                    move={'foot': 2, 'track': 2, 'wheel': 3}),
+    'airfield': dict(name='Airfield', colour='#a8c47c', ink='#7a7a6a',
+                     pattern='grass', edge='#6a8a4a', z=2, shift=0,
+                     open=True, los=True,
+                     move={'foot': 1, 'track': 1, 'wheel': 1}),
+    'town':   dict(colour='#c0b49c', ink='#8a4a38'),
+    'city':   dict(name='Dover', colour='#b4ac9c', ink='#6a5048', stack=4),
+}
+# Ships go nowhere on land.
+for _t in TERRAIN.values():
+    _t.setdefault('move', {})['ship'] = None
+for _k in ('clear', 'fields', 'woods', 'hills', 'town', 'city'):
+    TERRAIN[_k]['move'] = {'ship': None}
+# The Channel: only ships, which take no room, and nothing else.
+TERRAIN['water'] = dict(name='The Channel', colour='#3e6e9c',
+                        ink='#6a98c4', impassable=False, stack=0,
+                        move={'foot': None, 'track': None, 'wheel': None,
+                              'ship': 1})
+ROAD_TYPES = {
+    'road': dict(cost={'foot': 0.5, 'track': 0.5, 'wheel': 0.5,
+                       'ship': None}),
+    'trail': dict(cost={'foot': 1, 'track': 1, 'wheel': 1, 'ship': None}),
+}
+
+# West on the left: the High Weald behind Hastings, the Weald, the
+# North Downs from Maidstone to Dover along the top of the map, Ashford
+# in the Stour valley, and Romney Marsh behind the coast from Hythe to
+# Rye, with the shingle of Dungeness at its point.
+MAP = [
+    ':.::..::.:.:.:::....::.:..',
+    '..t.::..::f.:.:::t.:::..::',
+    ':.:hhhh:.::.f.::.::f:..:::',
+    '.::.:.:hhhh:hhf::.:::f.::t',
+    'f:f:.:f:...h::hhh.f:h...:.',
+    ':f.:f.::.:.:::::hhh:hhhh:~',
+    '.:.f.f.:f::t.::.:.hh:..C~~',
+    'f:..:f::.f:::..:.::A:.~~~~',
+    '.f::..tf:.:::..A.t.t~~~~~~',
+    '.:f.f::..h....mmm~~~~~~~~~',
+    'f:..:.f.h.mmmmtm~~~~~~~~~~',
+    '::hf:::.:mmmmtmm~~~~~~~~~~',
+    ':f.h:..:mmmmmmm~~~~~~~~~~~',
+    'hhhf.::tmmmmtms~~~~~~~~~~~',
+    'hthhh:.~~~~~sss~~~~~~~~~~~',
+    'hfhfhh~~~~~~~~~~~~~~~~~~~~',
+    't::t~~~~~~~~~~~~~~~~~~~~~~',
+    '~~~~~~~~~~~~~~~~~~~~~~~~~~',
+]
+
+ROWS = len(MAP)
+COLS = len(MAP[0])
+
+
+def _land(h):
+    c, r = h
+    return 0 <= c < COLS and 0 <= r < ROWS and MAP[r][c] != '~'
+
+
+# The marsh behind the Royal Military Canal: below this row, column by
+# column (the marsh and its towns, down to the sea).
+MARSH = {8: 12, 9: 11, 10: 10, 11: 10, 12: 10, 13: 10, 14: 9, 15: 9,
+         16: 9}
+
+
+def _in_marsh(h):
+    return h[0] in MARSH and h[1] >= MARSH[h[0]] and _land(h)
+
+
+def _canal():
+    """The Royal Military Canal: every side between the marsh and the
+    land behind it, from Hythe round to Rye."""
+    out = []
+    for c in range(COLS):
+        for r in range(ROWS):
+            if not _in_marsh((c, r)):
+                continue
+            for n in hexgrid.neighbours((c, r)):
+                if _land(n) and not _in_marsh(n):
+                    out.append((hid((c, r)), hid(n)))
+    return out
+
+
+HEXSIDES = {
+    'canal': dict(name='The Royal Military Canal', colour='#4a80b4',
+                  width=2, cost={'foot': 2, 'track': 3, 'wheel': 3,
+                                 'ship': None}, halve=True),
+}
+RIVERS = [('canal', _canal())]
+
+ROADS = [
+    ('road', ['0302', '1207', '2009', '2407']),     # the A20
+    ('road', ['0101', '0901', '1802', '2407']),     # the A2
+    ('road', ['1207', '1802']),                     # Ashford to Canterbury
+    ('road', ['1207', '0709', '0417']),             # by Tenterden
+    ('road', ['0117', '0417', '0814', '1412', '1511', '1809', '2009']),
+    ('road', ['0417', '0215', '0109']),             # the A21
+    ('road', ['1207', '1010', '1412']),             # over the marsh
+    ('road', ['2604', '2407']),
+    ('trail', ['1314', '1412']),
+    ('trail', ['2009', '2008', '1802']),
+    ('trail', ['1809', '1609', '1207']),
+    ('trail', ['0709', '0814']),
+    ('trail', ['0302', '0709']),
+    ('trail', ['2604', '1802']),
+]
+
+LABELS = {
+    '2407': 'Dover', '2009': 'Folkestone', '1809': 'Hythe',
+    '1511': 'Dymchurch', '1412': 'New Romney', '1314': 'Lydd',
+    '0814': 'Rye', '0417': 'Hastings', '0117': 'Bexhill',
+    '0215': 'Battle', '0709': 'Tenterden', '1207': 'Ashford',
+    '1802': 'Canterbury', '0302': 'Maidstone', '2604': 'Deal',
+    '1609': 'Lympne', '2008': 'Hawkinge', '1415': 'Dungeness',
+    '1211': 'Romney Marsh', '0306': 'The Weald', '1004': 'North Downs',
+    '1915': 'English Channel', '2511': 'Strait of Dover',
+    '0101': 'To London',
+}
+
+# Only the Germans score ground: the British score the Germans they
+# kill, ashore and afloat.
+OBJECTIVES = {
+    '2407': dict(name='Dover', vp=6, owner='br', **{'for': 'de'}),
+    '2009': dict(name='Folkestone', vp=5, owner='br', **{'for': 'de'}),
+    '1207': dict(name='Ashford', vp=4, owner='br', **{'for': 'de'}),
+    '1802': dict(name='Canterbury', vp=4, owner='br', **{'for': 'de'}),
+    '0417': dict(name='Hastings', vp=3, owner='br', **{'for': 'de'}),
+    '1809': dict(name='Hythe', vp=2, owner='br', **{'for': 'de'}),
+    '0814': dict(name='Rye', vp=2, owner='br', **{'for': 'de'}),
+    '0709': dict(name='Tenterden', vp=2, owner='br', **{'for': 'de'}),
+    '1609': dict(name='Lympne', vp=2, owner='br', **{'for': 'de'}),
+    '2008': dict(name='Hawkinge', vp=2, owner='br', **{'for': 'de'}),
+    '1412': dict(name='New Romney', vp=1, owner='br', **{'for': 'de'}),
+}
+STEP_VP = 1
+MARGIN = 2              # set from ./sealion --simulate 60
+
+# The beaches of the plan, and the ports.
+BEACH_B = ['1710', '1611', '1612', '1512']      # Hythe to Dymchurch
+BEACH_C = ['1214', '1114', '1014', '0914']      # Dungeness to Rye
+BEACH_D = ['0117', '0217', '0516', '0616']      # Hastings and Bexhill
+PORTS = ['2009', '2407']
+
+SUPPLY = {
+    'de': dict(**{'from': BEACH_B + BEACH_C + BEACH_D + PORTS,
+                  'range': 7}),
+    'br': dict(**{'from': ['N', 'W'], 'range': 14}),
+}
+
+
+# --------------------------------------------------- the Channel crossing
+
+def ON_END_TURN(e):
+    """The barges for the coming turn cross tonight (or today).  In a
+    gale they don't sail at all, and wait a turn.  Once the Royal Navy
+    is in the Channel each destroyer flotilla still afloat sinks a
+    crossing unit one time in six by day, when the Luftwaffe keeps the
+    ships off, and one time in three at night."""
+    nxt = e.turn + 1
+    if nxt > TURNS:
+        return
+    crossing = [u for u in e.units.values() if u.side == 'de' and
+                u.status == 'pending' and u.arrive == nxt]
+    if not crossing:
+        return
+    if gale(e, nxt):
+        for u in crossing:
+            u.arrive += 1
+        e.say('A gale in the Channel. The barges stay in harbour.')
+        e.changed()
+        return
+    ships = sum(1 for u in e.alive('br') if u.kind == 'ship')
+    if not ships:
+        return
+    p = min(0.8, ships * (1 / 3 if night(e, nxt) else 1 / 6))
+    for u in sorted(crossing, key=lambda u: u.id):
+        if e.rng.random() < p:
+            e.lost['de'] += u.steps
+            u.steps = 0
+            u.status = 'dead'
+            e.say('The Royal Navy finds the barges carrying %s: they are '
+                  'sunk in the Channel.' % u.long)
+    e.changed()
+
+
+def ON_TURN(e, side):
+    if side == 'de':
+        if e.turn == 1:
+            e.say('Dawn. The barges ground on the beaches from Hythe to '
+                  'Bexhill, the tanks of the Tauchpanzer battalions come '
+                  'up out of the sea, and the parachutes open over the '
+                  'Downs behind Folkestone.')
+        if e.turn == 3:
+            e.say('The rest of the first wave\'s divisions are coming '
+                  'ashore.')
+        if e.turn == 5:
+            e.say('The second wave, the panzer divisions, is ready to '
+                  'cross.')
+    else:
+        if e.turn == 1:
+            e.say('Cromwell. The church bells ring across Kent and '
+                  'Sussex, and the Home Guard stand to.')
+        if e.turn == 2:
+            e.say('The New Zealanders are coming down from Maidstone.')
+        if e.turn == NAVY_TURN:
+            e.say('The destroyers of the Home Fleet are in the Channel.')
+        if e.turn == 4:
+            e.say('The 1st Canadian Division, Brooke\'s best, is on the '
+                  'way.')
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Surprise on the first morning."""
+    if attackers and e.side == 'de' and e.turn == 1:
+        return [(1, 'surprise')]
+    return []
+
+
+def _score(e):
+    return 'Germans %d VP, British %d.' % (e.vp('de'), e.vp('br'))
+
+
+def VICTORY(e):
+    """The Germans score the places they hold and the British steps
+    they destroy; the British score German steps, those sunk at sea as
+    well as those killed ashore."""
+    m = e.vp('de') - e.vp('br')
+    if m >= MARGIN + 7:
+        return 'de', ('German victory. %s The ports are taken and the '
+                      'lodgement is safe. The panzers are ashore, and the '
+                      'road to London is open.' % _score(e))
+    if m >= MARGIN:
+        return 'de', ('German marginal victory. %s The beachhead holds, '
+                      'but it is fed through one port and some beaches, '
+                      'and the Navy is still in the Channel.' % _score(e))
+    if m > MARGIN - 7:
+        return 'br', ('British marginal victory. %s The invaders are '
+                      'penned on the coast and starving for supplies; '
+                      'in Berlin they talk of evacuation.' % _score(e))
+    return 'br', ('British victory. %s The invasion has failed, and the '
+                  'Channel is full of wrecked barges. England will not be '
+                  'invaded again.' % _score(e))
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'ship': dict(name='Destroyer flotilla', symbol='ship', move='ship',
+                 zoc=False, support=True, stack=0, fate='is sunk'),
+    'homeguard': dict(name='Home Guard', symbol='infantry', move='foot',
+                      fate='is overrun'),
+    'coastal': dict(name='Coastal guns', symbol='artillery', move='foot',
+                    zoc=False, support=True),
+    'tauch': dict(name='Submersible tanks', symbol='armor', move='track',
+                  armor=True),
+}
+
+DE = '#9aa0a4'
+DE2 = '#8c9298'
+DE3 = '#aab0b4'
+FJ = '#b4b08c'          # Luftwaffe paratroops
+BR = '#c4a870'
+BR2 = '#b89c64'
+HG = '#d4c08c'
+NZ = '#a8ac6c'
+CAN = '#bc9c5c'
+RN = '#8a8a9a'
+
+
+def u(uid, side, kind, a, d, m, hx, formation, colour, long, **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, size=kw.pop('size', 'III'), a=a, d=d, m=m,
+                steps=kw.pop('steps', 2), hex=hx, formation=formation,
+                colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+def regiment(div, reg, kind, colour, arrive, at, a=4, d=4, m=3, **kw):
+    """A German regiment of the first wave's divisions."""
+    names = {'infantry': 'Infantry Regiment', 'mountain':
+             'Gebirgsjäger Regiment'}
+    return u('%s_%s' % (div, reg), 'de', kind, a, d, m, None,
+             '%s Division' % div, colour,
+             '%s %s, %s Division' % (names.get(kind, 'Regiment'), reg, div),
+             name='%s/%s' % (reg, div.split()[0]), arrive=arrive, at=at,
+             **kw)
+
+
+def brigade(uid, name, formation, colour, hx, long, a=4, d=5, m=3, **kw):
+    """A British brigade."""
+    return u(uid, 'br', kw.pop('kind', 'infantry'), a, d, m, hx, formation,
+             colour, long, name=name, size='X', steps=3, **kw)
+
+
+def home_guard(uid, hx, town):
+    return u(uid, 'br', 'homeguard', 1, 2, 2, hx, 'Home Guard', HG,
+             'The %s Home Guard' % town, size='II', name='HG', steps=1)
+
+
+UNITS = [
+    # ---- the coast: the 1st London and 45th Divisions, and the Home
+    # Guard in the towns
+    brigade('1ld1', '1/1LON', '1st London Division', BR, '1609',
+            'A brigade of the 1st London Division, Lympne'),
+    brigade('1ld2', '2/1LON', '1st London Division', BR, '1209',
+            'A brigade of the 1st London Division, behind the marsh'),
+    brigade('1ld3', '3/1LON', '1st London Division', BR, '2009',
+            'A brigade of the 1st London Division, Folkestone'),
+    brigade('45d1', '1/45', '45th Division', BR2, '0315',
+            'A brigade of the 45th Division, behind Hastings'),
+    brigade('45d2', '2/45', '45th Division', BR2, '0712',
+            'A brigade of the 45th Division, by Rye'),
+    u('dover', 'br', 'infantry', 3, 6, 2, '2407', 'Dover garrison', BR2,
+      'The Dover garrison', size='X', name='DOVER', steps=3),
+    u('guns', 'br', 'coastal', 5, 2, 0, '2407', 'Dover garrison', BR2,
+      'The coast artillery of Dover', name='DOVER', range=3, steps=1),
+    u('ra', 'br', 'artillery', 5, 2, 3, '1308', 'XII Corps', BR,
+      'XII Corps field artillery', name='XII', range=2),
+    home_guard('hg1', '1809', 'Hythe'),
+    home_guard('hg2', '0814', 'Rye'),
+    home_guard('hg3', '0417', 'Hastings'),
+    home_guard('hg4', '1207', 'Ashford'),
+    home_guard('hg5', '1802', 'Canterbury'),
+    home_guard('hg6', '1412', 'New Romney'),
+    # ---- Brooke's reserve: they counterattack
+    brigade('nz4', '4/NZ', '2nd New Zealand Expeditionary Force', NZ, None,
+            'A New Zealand brigade group', a=5, m=4, arrive=2,
+            at=['0302', '0202', '0402'], posture='attack'),
+    brigade('nz5', '5/NZ', '2nd New Zealand Expeditionary Force', NZ, None,
+            'A New Zealand brigade group', a=5, m=4, arrive=2,
+            at=['0402', '0302', '0202'], posture='attack'),
+    brigade('1arm2', '2/1ARM', '1st Armoured Division', BR, None,
+            'A tank brigade of the 1st Armoured Division', a=6, d=4, m=6,
+            kind='armor', arrive=3, at=['0901', '1001', '0801'],
+            posture='attack'),
+    brigade('1arm3', '3/1ARM', '1st Armoured Division', BR, None,
+            'A tank brigade of the 1st Armoured Division', a=6, d=4, m=6,
+            kind='armor', arrive=3, at=['1001', '0901', '1101'],
+            posture='attack'),
+    brigade('1can1', '1/1CAN', '1st Canadian Division', CAN, None,
+            '1st Canadian Infantry Brigade', a=5, m=4, arrive=4,
+            at=['0101', '0201', '0102'], posture='attack'),
+    brigade('1can2', '2/1CAN', '1st Canadian Division', CAN, None,
+            '2nd Canadian Infantry Brigade', a=5, m=4, arrive=4,
+            at=['0201', '0101', '0301'], posture='attack'),
+    brigade('1can3', '3/1CAN', '1st Canadian Division', CAN, None,
+            '3rd Canadian Infantry Brigade', a=5, m=4, arrive=4,
+            at=['0102', '0101', '0201'], posture='attack'),
+    brigade('43d1', '1/43', '43rd (Wessex) Division', BR2, None,
+            'A brigade of the 43rd (Wessex) Division', arrive=6,
+            at=['0110', '0109', '0111'], posture='attack'),
+    brigade('43d2', '2/43', '43rd (Wessex) Division', BR2, None,
+            'A brigade of the 43rd (Wessex) Division', arrive=6,
+            at=['0109', '0110', '0108'], posture='attack'),
+    # ---- the Royal Navy
+    u('rn1', 'br', 'ship', 3, 5, 4, None, 'Royal Navy', RN,
+      'A destroyer flotilla from Portsmouth', size='', name='RN',
+      range=2, arrive=NAVY_TURN, at=['1016', '1116', '0916']),
+    u('rn2', 'br', 'ship', 3, 5, 4, None, 'Royal Navy', RN,
+      'A destroyer flotilla from Harwich and the Nore', size='',
+      name='RN', range=2, arrive=NAVY_TURN, at=['1913', '2012', '1813']),
+
+    # ---- the first wave: the Tauchpanzer and the paratroops
+    u('tauchA', 'de', 'tauch', 5, 3, 4, None, 'Panzer-Abteilung A', DE3,
+      'Panzer-Abteilung A: submersible Panzer IIIs', size='II',
+      name='TAUCH A', arrive=1, at=BEACH_B),
+    u('tauchB', 'de', 'tauch', 5, 3, 4, None, 'Panzer-Abteilung B', DE3,
+      'Panzer-Abteilung B: submersible Panzer IIIs', size='II',
+      name='TAUCH B', arrive=1, at=BEACH_C),
+    u('tauchC', 'de', 'tauch', 5, 3, 4, None, 'Panzer-Abteilung C', DE3,
+      'Panzer-Abteilung C: submersible Panzer IIIs', size='II',
+      name='TAUCH C', arrive=1, at=BEACH_D),
+    u('fj1', 'de', 'para', 4, 3, 3, '1807', '7th Flieger Division', FJ,
+      'Fallschirmjäger Regiment 1, dropped at Lyminge', name='FJR1'),
+    u('fj3', 'de', 'para', 4, 3, 3, '1707', '7th Flieger Division', FJ,
+      'Fallschirmjäger Regiment 3, dropped on the Downs', name='FJR3'),
+] + [
+    # ---- the first wave: a regiment of each division at dawn, the rest
+    # on the second day
+    regiment('17th', 21, 'infantry', DE, 1, BEACH_B),
+    regiment('35th', 34, 'infantry', DE2, 1, BEACH_B),
+    regiment('7th', 19, 'infantry', DE, 1, BEACH_C),
+    regiment('1st Mountain', 98, 'mountain', DE2, 1, BEACH_C),
+    regiment('34th', 80, 'infantry', DE, 1, BEACH_D),
+    regiment('26th', 39, 'infantry', DE2, 1, BEACH_D),
+    regiment('17th', 55, 'infantry', DE, 3, PORTS[:1] + BEACH_B),
+    regiment('35th', 109, 'infantry', DE2, 3, BEACH_B),
+    regiment('7th', 61, 'infantry', DE, 3, BEACH_C),
+    regiment('1st Mountain', 99, 'mountain', DE2, 3, BEACH_C),
+    regiment('34th', 107, 'infantry', DE, 3, BEACH_D),
+    regiment('26th', 77, 'infantry', DE2, 3, BEACH_D),
+    u('art17', 'de', 'artillery', 5, 2, 3, None, 'XIII Corps', DE,
+      'XIII Corps artillery', name='XIII', range=2, arrive=3,
+      at=BEACH_B),
+    u('art34', 'de', 'artillery', 5, 2, 3, None, 'VIII Corps', DE,
+      'VIII Corps artillery', name='VIII', range=2, arrive=3,
+      at=BEACH_D),
+    # ---- the second wave: XXXXI Panzer Corps
+    u('8pz', 'de', 'armor', 7, 4, 6, None, '8th Panzer Division', DE3,
+      'Panzer Regiment 10, 8th Panzer Division', name='10/8PZ', arrive=5,
+      at=PORTS + BEACH_B),
+    u('8pzs', 'de', 'motorized', 5, 4, 5, None, '8th Panzer Division',
+      DE3, 'Schützen Regiment 8, 8th Panzer Division', name='8/8PZ',
+      arrive=5, at=PORTS + BEACH_B),
+    u('10pz', 'de', 'armor', 7, 4, 6, None, '10th Panzer Division', DE3,
+      'Panzer Regiment 7, 10th Panzer Division', name='7/10PZ', arrive=5,
+      at=BEACH_C),
+    u('10pzs', 'de', 'motorized', 5, 4, 5, None, '10th Panzer Division',
+      DE3, 'Schützen Regiment 86, 10th Panzer Division', name='86/10PZ',
+      arrive=5, at=BEACH_C),
+    u('29mot', 'de', 'motorized', 5, 4, 5, None, '29th Motorized Division',
+      DE2, 'Infantry Regiment 15 (motorized), 29th Motorized Division',
+      name='15/29', arrive=7, at=PORTS + BEACH_B),
+    u('29mot2', 'de', 'motorized', 5, 4, 5, None,
+      '29th Motorized Division', DE2,
+      'Infantry Regiment 71 (motorized), 29th Motorized Division',
+      name='71/29', arrive=7, at=BEACH_C),
+    u('gd', 'de', 'motorized', 6, 5, 5, None, 'Großdeutschland', DE3,
+      'Infantry Regiment Großdeutschland (motorized)', name='GD',
+      arrive=7, at=PORTS + BEACH_B),
+]
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#12161a', panel='#202830', light='#62707c',
+              dark='#06080a', accent='#e8d090', button='#384450',
+              button_hi='#7a8a98', button_lo='#12161a', red='#b02820')
+
+HELP = [
+    "THE LANDING. The Germans move first. At dawn a regiment of each "
+    "of six divisions comes ashore, two on each of the three beaches "
+    "(Hythe to Dymchurch, Dungeness to Rye, Hastings and Bexhill), each "
+    "beach with a battalion of submersible tanks, and two parachute "
+    "regiments are already down behind Folkestone. The rest of the "
+    "divisions follow on turn 3, two panzer divisions on turn 5, and "
+    "motorized troops on turn 7. Reinforcements come in at a port the "
+    "Germans hold, or on the beaches.",
+
+    "THE CHANNEL. From turn %d two Royal Navy destroyer flotillas are in "
+    "the Channel. Every German unit crossing is sunk, and its steps "
+    "lost, one time in six for each flotilla afloat by day (the "
+    "Luftwaffe keeps them off) and one time in three at night. In a "
+    "gale the barges don't sail at all, and wait. The destroyers can "
+    "also fire on the coast, like guns, within two hexes." % NAVY_TURN,
+
+    "THE GROUND. The Royal Military Canal runs along the back of Romney "
+    "Marsh from Hythe to Rye: it costs 2 or 3 to cross off the roads, "
+    "and halves an attack across it. The marsh is slow going, the Downs "
+    "and the Weald help a defender. German supply runs at most 7 hexes "
+    "from the beaches or a port. On clear days the Luftwaffe gives every "
+    "German attack a column, and on the first morning surprise gives "
+    "another.",
+
+    "WINNING. Only the Germans score ground: the places they hold at "
+    "the end (Dover 6, Folkestone 5, Ashford and Canterbury 4, Hastings "
+    "3, New Romney 1, the rest 2), and the British steps they destroy. "
+    "The British score every German step destroyed, ashore or sunk at "
+    "sea. The Germans must finish %d VP or more ahead to win."
+    % MARGIN,
+]
+
+ICON = 'sealion'
+
+
+# ---------------------------------------------------------- symbols
+
+@grognard.symbol('ship')
+def s_ship(p, x, y, w, h, c):
+    """A destroyer: a long low hull, a bridge and a funnel."""
+    base = y + h - 3
+    p.rect(x + 1, base, w - 2, 2, c)
+    p.rect(x + w // 3, base - h // 4, w // 4, h // 4, c)
+    p.rect(int(x + (w - 1) * 0.6), base - h // 3, 2, h // 3, c)
+
+
+counters.PICTURES['ship'] = [
+    '...........', '.....#.....', '....##.#...', '...######..',
+    '.#########.', '###########', '.#########.', '...........']
+
+
+def _poly(p, n, pts, c):
+    """Fill a polygon given in fractions of the icon, a row at a time."""
+    pts = [(x * n, y * n) for x, y in pts]
+    y0 = int(min(y for _, y in pts))
+    y1 = int(max(y for _, y in pts)) + 1
+    for y in range(y0, y1):
+        yc = y + 0.5
+        xs = []
+        for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+            if (ay <= yc) != (by <= yc):
+                xs.append(ax + (yc - ay) * (bx - ax) / (by - ay))
+        xs.sort()
+        for a, b in zip(xs[::2], xs[1::2]):
+            x0, x1 = int(a + 0.5), int(b + 0.5)
+            if x1 > x0:
+                p.rect(x0, y, x1 - x0, 1, c)
+
+
+@grognard.icon('sealion')
+def draw_icon(p, n):
+    """A towed barge full of soldiers heading for the white cliffs."""
+    p.fill('#b8c4cc')
+    # the cliffs, white with green on top
+    _poly(p, n, [(0.52, 0.56), (0.62, 0.3), (1.0, 0.26), (1.0, 0.56)],
+          '#eceae0')
+    _poly(p, n, [(0.6, 0.34), (0.62, 0.28), (1.0, 0.24), (1.0, 0.3)],
+          '#6a8a4a')
+    for x in (0.68, 0.78, 0.9):
+        p.rect(n * x, n * 0.34, max(1, n // 48), n * 0.2, '#c8c6bc')
+    # the Channel
+    p.rect(0, n * 0.56, n, n * 0.44, '#3e6890')
+    for k in range(5):
+        p.rect(n * (0.05 + k * 0.2), n * (0.62 + (k % 2) * 0.1),
+               n * 0.1, max(1, n // 40), '#6a94bc')
+    # the barge: a low, flat hull with a row of helmets
+    _poly(p, n, [(0.06, 0.7), (0.62, 0.7), (0.56, 0.84), (0.1, 0.84)],
+          '#2a2c2e')
+    for k in range(6):
+        p.disc(n * (0.14 + k * 0.08), n * 0.68, n * 0.035, '#4a5048')
+    # the tow rope and the tug
+    p.line(n * 0.62, n * 0.72, n * 0.74, n * 0.66, '#1a1a1a',
+           max(1, n // 48))
+    _poly(p, n, [(0.72, 0.66), (0.96, 0.66), (0.92, 0.76), (0.74, 0.76)],
+          '#2a2c2e')
+    p.rect(n * 0.8, n * 0.56, n * 0.06, n * 0.1, '#3a3c3e')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

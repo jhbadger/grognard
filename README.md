@@ -17,7 +17,7 @@ exception is text: the window draws it over the picture in a real font,
 so it stays smooth however big the window is (View, Text: pixels brings
 back the bitmap font).
 
-There are twenty-nine games so far, in four kinds.
+There are thirty-two games so far, in four kinds.
 
 Twenty-two are historical battles, from the oldest to the newest:
 Carrhae, where the Parthian horse archers shot Crassus's legions to
@@ -52,8 +52,11 @@ American tankers and Wehrmacht soldiers held a castle in the Tyrol
 together against the Waffen-SS five days after Hitler's death in
 1945.
 
-One is hypothetical: the Fulda Gap, a Soviet attack in November 1983
-that never happened.
+Four are hypothetical, battles that were planned and never fought: Sea
+Lion, the German invasion of Kent and Sussex in September 1940; Cuba,
+the American invasion of the island in the missile crisis of October
+1962; and two from a Soviet attack on West Germany in November 1983,
+the Fulda Gap and the North German Plain.
 
 Four are science fiction: Saltmarsh, a raid in a far-future war of
 hovercraft and missile tanks in 2187 that uses the engine's optional
@@ -158,7 +161,19 @@ west ahead of a dragon that burns the map as it goes.
 ```
 
 ```bash
+./sealion
+```
+
+```bash
+./cuba
+```
+
+```bash
 ./fulda
+```
+
+```bash
+./northag
 ```
 
 ```bash
@@ -1035,6 +1050,102 @@ fields round about, not a survey.
 
 ## Hypothetical battles
 
+### Sea Lion: Kent and Sussex, September 1940
+
+An invasion that wasn't tried. In the summer of 1940 the German army
+planned to cross the Channel in river barges towed by tugs and land on
+the beaches between Folkestone and Bexhill, Operation Sea Lion; it was
+put off when the Luftwaffe failed to win the air over England. Here the
+first wave lands at dawn on 22 September, and the rest must cross a
+Channel the Royal Navy still commands.
+
+- **Twelve turns**, day and night from 22 to 27 September. The Germans
+  move first.
+- **The map**: 26 by 18 hexes from the High Weald behind Hastings to
+  Dover and Deal, with the North Downs along the top from Maidstone to
+  Dover, Ashford in the Stour valley, Romney Marsh behind the coast from
+  Hythe to Rye with the Royal Military Canal along its back, and the
+  Channel. The canal costs 2 or 3 to cross off the roads and halves an
+  attack across it.
+- **The Germans**: a regiment of each of the six first-wave divisions
+  (the 17th and 35th between Hythe and Dymchurch, the 7th and the 1st
+  Mountain from Dungeness to Rye, the 34th and 26th at Hastings and
+  Bexhill) with a battalion of submersible tanks on each beach, and two
+  parachute regiments of the 7th Flieger Division on the Downs behind
+  Folkestone. The rest of the six divisions cross on turn 3, two panzer
+  divisions on turn 5, and motorized troops on turn 7. Reinforcements
+  land at a port the Germans hold, or on the beaches; supply runs 7
+  hexes from them. On clear days the Luftwaffe gives every German attack
+  a column.
+- **The British**: two brigades of the 1st London Division and one of
+  the 45th on the coast, the Dover garrison and its guns, and the Home
+  Guard in the towns; then Brooke's reserve, which counterattacks: the
+  New Zealanders on turn 2, two tank brigades of the 1st Armoured
+  Division on turn 3, the 1st Canadian Division on turn 4 and the 43rd
+  (Wessex) on turn 6.
+- **The Channel**: from turn 2 two destroyer flotillas are in the
+  Channel, and fire on the coast like guns. Each sinks a crossing unit,
+  and all its steps, one time in six by day and one time in three at
+  night. In the gale of turns 7 and 8 the barges don't sail at all.
+- **Winning**: only the Germans score ground: the places they hold at
+  the end (Dover 6, Folkestone 5, Ashford and Canterbury 4, Hastings 3,
+  the rest 1 or 2) and the British steps they destroy. The British
+  score every German step destroyed, ashore or at sea. The Germans must
+  finish 2 VP ahead. Computer against computer they win 28 games in 60.
+
+The German divisions and their beaches are those of the plan as it
+stood in September, and the British formations were in or near Kent
+that month; the timing of the waves, the strengths and the navy's toll
+are set for play.
+
+### Cuba: Havana, October 1962
+
+The invasion planned in the missile crisis, OPLAN 316. While Kennedy
+and Khrushchev bargained, a quarter of a million men were readied in
+Florida and Georgia to land on Cuba. Here the bargaining fails, and at
+dawn on 30 October the Marines land east of Havana and the paratroopers
+drop on its airfields. Washington doesn't know that the Soviet
+regiments waiting for them have nuclear rockets.
+
+- **Twelve turns**, day and night from 30 October to 4 November. The
+  Americans move first.
+- **The map**: 26 by 15 hexes from Mariel to Santa Cruz del Norte and
+  from the Straits of Florida to the swamps on the Gulf of Batabanó:
+  Havana and its bay, the beaches at Tarará and Guanabo, José Martí
+  airport and the airfields at San Antonio and Baracoa, Bejucal, and
+  the Escaleras de Jaruco. Sugar cane, like woods and towns, lets units
+  see only the next hex.
+- **The Americans**: the 2nd, 6th and 8th Marines and a tank battalion
+  on the beaches, three battle groups of the 82nd Airborne on José
+  Martí and San Antonio, two of the 101st on Baracoa; more paratroopers
+  and the Marines' guns on turn 2, a regiment of the 5th Marine
+  Expeditionary Brigade on turn 3, and the 1st Armored Division over the
+  beaches on turns 4 and 5. The cruiser Newport News and a destroyer
+  squadron fire on the coast. On clear days American air power gives
+  every American attack a column.
+- **The Cubans and Soviets**: eight Cuban divisions, two tank
+  battalions, guns and militia, and two Soviet motorized rifle regiments
+  with tanks, which counterattack the airheads; a Soviet guard holds the
+  warhead bunker at Bejucal. Each Cuban turn up to three militia
+  battalions turn out in towns the Cubans still hold, until twenty
+  have.
+- **The Lunas**: two batteries of Luna rockets are hidden near the
+  Soviet regiments, somewhere different each game, and fog of war hides
+  them until an American comes close. They can't move or fight (the
+  game stops short of their use); each destroyed is worth 6 VP to the
+  Americans.
+- **Winning**: the Americans score the places they hold at the end
+  (Havana 8, Bejucal 5, José Martí, San Antonio and Mariel 3, the rest 1
+  or 2), the Cuban and Soviet steps they destroy (militia don't count)
+  and the Lunas; the Cubans score every American step destroyed twice,
+  for a war that mustn't cost too much. The Americans must finish
+  11 VP ahead. Computer against computer they win 29 games in 60.
+
+The American formations are those of the plan, and the Soviet regiments
+and their Lunas were really there, though nobody in Washington knew it
+until long after; where they stood, and the Cuban order of battle, are
+set for play, as are the strengths.
+
 ### Fulda Gap: Hesse, November 1983
 
 A battle that wasn't fought. In November 1983 NATO rehearsed the release
@@ -1088,6 +1199,56 @@ regiments are numbered by division rather than by their real numbers,
 the timing of each echelon is a planner's, not a historian's, and the
 strengths are set for play. The map follows the country, not a survey.
 The game stops at the nuclear threshold and doesn't go past it.
+
+### The North German Plain: Lower Saxony, November 1983
+
+The same war as the Fulda Gap, two hundred kilometres to the north. The
+3rd Shock Army attacks the British I Corps on the best tank country in
+Europe, the open plain from the border at Helmstedt to the Weser at
+Hameln, and most of the corps is still in its barracks on the far side
+of the Weser.
+
+- **Twelve turns**, day and night from 11 to 16 November. The Soviets
+  move first.
+- **The map**: 26 by 18 hexes from the Weser on the west edge to the
+  inner-German border and a strip of East Germany in the south-east:
+  Hanover on the Leine, Braunschweig on the Oker, Hildesheim, Salzgitter,
+  the Mittelland Canal north of them all, the Lüneburg Heath, the Deister,
+  the Elm and the Harz. The canal can be crossed only on the roads'
+  bridges.
+- **The Soviets**: the 47th Guards Tank Division down the autobahn and
+  the 207th Motor Rifle Division south of the Elm on the first day, with
+  an air assault battalion on the Oker west of Braunschweig; the 12th
+  and 10th Guards Tank Divisions on the second day, the 10th round the
+  Harz, and the 7th Guards Tank Division, the army's operational
+  manoeuvre group, on the fourth.
+- **NATO**: a covering force of British and German armoured
+  reconnaissance, the border police at Helmstedt, Panzerbrigade 2 in
+  Braunschweig, Panzergrenadierbrigade 1 in Hildesheim and Lynx
+  helicopters. The British 1st Armoured Division comes over the Weser on
+  turn 2, the 4th on turn 3, the 3rd on turn 5 and the 2nd Infantry on
+  turn 7; the American 2nd Armored Division arrives on turns 8 and 9 and
+  counterattacks.
+- **The bridges**: at the start of every Soviet turn each bridge over
+  the Leine, the Oker or the canal with a Soviet unit within 3 hexes is
+  blown two times in three and marked with a red cross; then the river
+  costs what it would anywhere and the canal is closed there. A bridge
+  with Soviets on either end is taken whole.
+- **Day and night**: on the first day the Soviets have surprise and
+  every Soviet attack gains a column; at night units see only the next
+  hex, helicopters don't fly, and Soviet attacks lose a column. On clear
+  days after the first the RAF gives NATO's attacks a column.
+- **Winning**: if the Soviets hold Hanover at the end of a turn, or get
+  6 steps off the west edge between the Deister and the canal, they win
+  at once. Otherwise each side scores the enemy steps it destroys and
+  the towns it holds (Hanover 8, Braunschweig 6, Hildesheim, Salzgitter
+  and Hameln 3, Goslar and Helmstedt 1, the rest 2), and the Soviets 3
+  VP a step off the west edge. The Soviets must finish 1 VP ahead.
+  Computer against computer they win 25 games in 60.
+
+As with the Fulda Gap, it's all a guess. The divisions are those of
+1983, the Soviet regiments are numbered by division, the British
+brigades too, and the strengths and timings are set for play.
 
 ## Science fiction
 
@@ -1686,7 +1847,18 @@ pad (`AI_CLASS`); and `itter` for a castle wall worked out in code
 round the hexes it encloses, with a gate of its own, a runner whose
 escape brings the relief sooner (`arrive` changed from `ON_TURN`), and
 a gun that shells the walls only once the tank it was hunting is gone
-(`CAN_SUPPORT`).
+(`CAN_SUPPORT`); and `northag` for rivers and a canal worked out in
+code from where their banks lie, bridges blown in play (kept in
+`engine.flags`, worked into `ENTER_COST`, drawn by `DRAW_MAP`), a
+border drawn as a hexside that costs nothing, and a strip of enemy
+country as a terrain of its own; and `sealion` for reinforcements
+sunk or held back on their way in (`ON_END_TURN`, before they arrive),
+ships on a sea that land units can't stop in (water with `stack` 0,
+ships that take no room) and objectives that only one side scores; and
+`cuba` for units hidden in a different place each game (`SETUP`),
+militia raised every turn (`engine.spawn`), losses that score
+differently by side (`STEP_VP`) and some that don't score at all
+(`ON_ELIMINATE`).
 
 - `ID`, `TITLE`, `SUBTITLE`, `INTRO` (pages), `HELP` (pages added to the
   engine's), `ICON` (a function registered with `@grognard.icon`)

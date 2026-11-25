@@ -1930,7 +1930,8 @@ class Charts(Mode):
         for k, sp in e.board.Rd.items():
             if any(v == k for v in e.board.roads.values()):
                 extra.append('%s: %s' % (sp['name'], ', '.join(
-                    '%s %g' % (m, c) for m, c in sp['cost'].items())))
+                    '%s %g' % (m, c) for m, c in sp['cost'].items()
+                    if c is not None)))
         for k, sp in e.board.S.items():
             if any(v == k for v in e.board.rivers.values()):
                 extra.append('%s: crossing +%s%s' % (

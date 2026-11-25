@@ -1,0 +1,609 @@
+#!/usr/bin/env python3
+"""Cuba: Havana, October 1962.  A sample game for the Grognard engine,
+and an invasion that never happened.
+
+In October 1962 the United States found Soviet nuclear missiles in Cuba,
+and while Kennedy and Khrushchev bargained, the armed forces readied
+OPLAN 316: an airborne and amphibious invasion of the island, aimed
+first at Havana.  Here the bargaining fails: the Marines land on the
+beaches east of the city and two airborne divisions drop on its
+airfields.  Nobody in Washington knows that the Soviet regiments
+waiting for them have nuclear rockets of their own.  Play either side
+against the computer, or against a friend at the same screen.
+
+Run it with ./cuba (Python 3 with Tk, nothing else).  The game is saved
+to ~/.cuba.json.  ./cuba --selftest checks the map and plays a game
+between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import counters                          # noqa: E402
+from grognard.hexgrid import hid, parse                # noqa: E402
+
+ID = 'cuba'
+TITLE = 'Cuba'
+SUBTITLE = 'Havana, October 1962: an invasion that never was'
+
+INTRO = [
+    "October 1962. American U-2s have photographed Soviet ballistic "
+    "missiles in western Cuba, and the navy has thrown a quarantine "
+    "round the island. In the Pentagon the plans for an invasion, OPLAN "
+    "316, are taken out and brought up to date, and a quarter of a "
+    "million men are moved to Florida and Georgia to carry them out.",
+
+    "In this game the bargaining between Kennedy and Khrushchev fails. "
+    "At dawn on 30 October the 2nd Marine Division lands on the beaches "
+    "at Tarará and Guanabo, east of Havana, and the 82nd and 101st "
+    "Airborne Divisions drop on the airfields south and west of the "
+    "city. The 1st Armored Division will follow over the beaches.",
+
+    "Waiting for them are the Cuban army and its militia, a hundred "
+    "thousand men and more in the province of Havana alone, and the "
+    "Soviet motorized rifle regiments that the Americans think are "
+    "advisers. Each regiment has a battery of Luna rockets, and the "
+    "warheads for them are in a bunker at Bejucal. Washington does not "
+    "know they are there.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='us', name='Americans', adj='American', colour='#a0b4c4',
+         ink='#0a1018', flag='star', posture='attack',
+         about='Take Havana and its airfields, find and destroy the '
+               'Soviet Luna rockets, and seize the warheads at Bejucal, '
+               'without losing so many men that the country turns '
+               'against the war.'),
+    dict(id='cu', name='Cubans and Soviets', adj='Cuban', colour='#7c8a5a',
+         ink='#0c1006', flag='star', posture='defend',
+         about='Hold Havana, make the Americans pay for every town, and '
+               'keep the Lunas hidden: every American step lost counts '
+               'twice.'),
+]
+ORDER = ['us', 'cu']
+
+# Twelve turns: day and night from 30 October to 4 November.
+TURNS = 12
+DAYS = ['30 Oct', '31 Oct', '1 Nov', '2 Nov', '3 Nov', '4 Nov']
+
+
+def TURN_NAME(t):
+    return ('%s 1962' % DAYS[(t - 1) // 2], 'Day' if t % 2 else 'Night')
+
+
+STACK = 3
+FOG = True
+DEFENSIVE_FIRE = 2
+
+WEATHER = {1: 'clear', 2: 'night', 3: 'clear', 4: 'night',
+           5: 'squall', 6: 'night', 7: 'clear', 8: 'night', 9: 'clear',
+           10: 'night', 11: 'overcast', 12: 'night'}
+WEATHER_TYPES = {
+    'clear': dict(name='Clear: American air', icon='sun', air=True),
+    'night': dict(name='Night', icon='cloud', air=False, spot=1),
+    'squall': dict(name='Squalls', icon='rain', air=False, move=1.5),
+}
+AIR = ['us']
+
+MILITIA_PER_TURN = 3    # battalions raised each Cuban turn
+MILITIA_MAX = 20        # in all
+
+
+# --------------------------------------------------------------- the map
+
+LEGEND = {'A': 'airfield'}
+
+TERRAIN = {
+    'clear':  dict(name='Pasture', colour='#a8c070', ink='#88a454',
+                   edge='#688440'),
+    'fields': dict(name='Sugar cane', colour='#b8c870', ink='#94a84c',
+                   edge='#748838', los=False),
+    'woods':  dict(name='Palms and scrub', colour='#5a8a40',
+                   ink='#3a6428', edge='#244a16'),
+    'hills':  dict(colour='#bca870', ink='#8c7848', edge='#6c5830'),
+    'marsh':  dict(name='Swamp', colour='#86a888', ink='#4a7a8e'),
+    'airfield': dict(name='Airfield', colour='#b0c088', ink='#7a7a6a',
+                     pattern='grass', edge='#6a8a4a', z=2, shift=0,
+                     open=True, los=True,
+                     move={'foot': 1, 'track': 1, 'wheel': 1}),
+    'town':   dict(colour='#d0c4a8', ink='#a0583c'),
+    'city':   dict(name='Havana', colour='#c4b8a4', ink='#7a5448',
+                   stack=4),
+}
+# Ships go nowhere on land.
+for _t in TERRAIN.values():
+    _t.setdefault('move', {})['ship'] = None
+for _k in ('clear', 'fields', 'woods', 'hills', 'marsh', 'town', 'city'):
+    TERRAIN[_k]['move'] = {'ship': None}
+# The sea: only ships, which take no room, and nothing else.
+TERRAIN['water'] = dict(name='The sea', colour='#3a78a8', ink='#68a2cc',
+                        impassable=False, stack=0,
+                        move={'foot': None, 'track': None, 'wheel': None,
+                              'ship': 1})
+ROAD_TYPES = {
+    'road': dict(name='Highway', cost={'foot': 0.5, 'track': 0.5,
+                                       'wheel': 0.5, 'ship': None}),
+    'trail': dict(name='Country road', cost={'foot': 1, 'track': 1,
+                                             'wheel': 1, 'ship': None}),
+}
+
+# North at the top: the Straits of Florida, Havana and its bay, the
+# beaches of Tarará and Guanabo to the east, Mariel to the west, the
+# airfields south and west of the city, sugar cane to the swamps on the
+# Gulf of Batabanó, and the Escaleras de Jaruco in the east.
+MAP = [
+    '~~~~~~~~~~~~~~~~~~~~~~~~~~',
+    '~~~~~~~~~~~~C~:.t::t.:.:t:',
+    '~~~~~~~~~~.CC:.:::::.:.::.',
+    '~~~~~~~~.:t::....h::..h:::',
+    '~~~~.:A..:...::t.:h:hhffh:',
+    '.~.::::::.:A.:::::.:hfhh:.',
+    'hth:.:.t::::t.f:.:::.hth.:',
+    'hh:t..f:...t.::...tf......',
+    'hf:h...:A:f.:.:f:...:....:',
+    'f:f:.f::t::::::.:f:.:::.f.',
+    ':t::.:.f.f:..f...:...t...:',
+    '::..f:::.:.:f:.:f:::....:.',
+    '.m:m:m.m:::....:.::..:.:::',
+    'mmmmmmmmmmm..:t:mm.mm.mm:.',
+    '~~~~~~~~~~~~~~~~~~~~~~~~~~',
+]
+
+ROWS = len(MAP)
+COLS = len(MAP[0])
+
+HAVANA = '1303'
+
+ROADS = [
+    ('road', [HAVANA, '1104', '0807', '0408', '0211']),   # Central, west
+    ('road', [HAVANA, '1605', '1908', '2211']),           # Central, east
+    ('road', [HAVANA, '1206', '1307', '1208', '1514']),   # to Batabanó
+    ('road', [HAVANA, '1702', '2002', '2502']),           # the Vía Blanca
+    ('road', ['1104', '0705', '0207']),                   # to Mariel
+    ('road', ['0207', '0408']),
+    ('road', ['0910', '1307']),
+    ('trail', ['0807', '0909', '0910', '0211']),
+    ('trail', ['2002', '2307']),
+    ('trail', ['1605', '2307']),
+    ('trail', ['2211', '1514']),
+    ('trail', ['1908', '1208']),
+]
+
+LABELS = {
+    HAVANA: 'Havana', '1104': 'Marianao', '0207': 'Mariel',
+    '0807': 'Bauta', '0408': 'Guanajay', '0211': 'Artemisa',
+    '0910': 'San Antonio de los Baños', '0909': 'San Antonio airfield',
+    '0705': 'Baracoa airfield', '1206': 'José Martí airport',
+    '1307': 'Santiago de las Vegas', '1208': 'Bejucal',
+    '1605': 'Cotorro', '1702': 'Tarará', '2002': 'Guanabo',
+    '2502': 'Santa Cruz del Norte', '2307': 'Jaruco',
+    '1908': 'San José de las Lajas', '2211': 'Güines',
+    '1514': 'Batabanó', '1401': 'Havana Bay', '1001': 'Straits of Florida',
+    '2205': 'Escaleras de Jaruco', '0715': 'Gulf of Batabanó',
+}
+
+OBJECTIVES = {
+    HAVANA: dict(name='Havana', vp=8, owner='cu', **{'for': 'us'}),
+    '1208': dict(name='Bejucal: the warheads', vp=5, owner='cu',
+                 **{'for': 'us'}),
+    '1206': dict(name='José Martí airport', vp=3, owner='cu',
+                 **{'for': 'us'}),
+    '0909': dict(name='San Antonio airfield', vp=3, owner='cu',
+                 **{'for': 'us'}),
+    '0207': dict(name='Mariel', vp=3, owner='cu', **{'for': 'us'}),
+    '0705': dict(name='Baracoa airfield', vp=2, owner='cu',
+                 **{'for': 'us'}),
+    '1104': dict(name='Marianao', vp=2, owner='cu', **{'for': 'us'}),
+    '1307': dict(name='Santiago de las Vegas', vp=2, owner='cu',
+                 **{'for': 'us'}),
+    '1605': dict(name='Cotorro', vp=2, owner='cu', **{'for': 'us'}),
+    '0211': dict(name='Artemisa', vp=1, owner='cu', **{'for': 'us'}),
+    '1908': dict(name='San José de las Lajas', vp=1, owner='cu',
+                 **{'for': 'us'}),
+    '0807': dict(name='Bauta', vp=1, owner='cu', **{'for': 'us'}),
+}
+# American losses count twice: the war must not cost too much.
+STEP_VP = {'us': 1, 'cu': 2}
+LUNA_VP = 6
+MARGIN = 11             # set from ./cuba --simulate 60
+
+BEACHES = ['1702', '1802', '1902', '2002', '1602']
+JOSE_MARTI = '1206'
+SAN_ANTONIO = '0909'
+BARACOA = '0705'
+
+SUPPLY = {
+    'us': dict(**{'from': BEACHES + [JOSE_MARTI, SAN_ANTONIO, BARACOA],
+                  'range': 9}),
+    'cu': dict(**{'from': ['W', 'E'] + ['%02d14' % c for c in
+                                       range(1, COLS + 1)],
+                  'range': 16}),
+}
+
+# Where each Luna battery may be hidden: somewhere in the woods and cane
+# near its regiment, a different place each game.
+LUNA_SITES = {
+    'luna1': ['1507', '1609', '1411', '1109', '1312', '1408'],
+    'luna2': ['0110', '0209', '0610', '0512', '0811', '0310'],
+}
+
+
+def SETUP(e):
+    """Hide the Lunas."""
+    for uid, sites in sorted(LUNA_SITES.items()):
+        u = e.units[uid]
+        u.hex = parse(e.rng.choice(sites))
+        u.status = 'map'
+
+
+# ------------------------------------------------------- the militia
+
+def _raise_militia(e):
+    """The Milicias Nacionales Revolucionarias turn out: each Cuban turn
+    up to three battalions are raised in towns the Cubans still hold, with
+    no American next door, until twenty have been."""
+    raised = e.flags.get('militia', 0)
+    if raised >= MILITIA_MAX:
+        return
+    near_us = set()
+    for x in e.alive('us'):
+        near_us.add(x.hex)
+        near_us.update(grognard.hexgrid.neighbours(x.hex))
+    towns = sorted(h for h, o in e.board.objectives.items()
+                   if e.control.get(h) == 'cu' and h not in near_us and
+                   e.board.terrain_name(h) in ('town', 'city'))
+    e.rng.shuffle(towns)
+    n = 0
+    for h in towns:
+        if raised >= MILITIA_MAX or n >= MILITIA_PER_TURN:
+            break
+        if not e.room(h, side='cu'):
+            continue
+        raised += 1
+        n += 1
+        e.spawn(dict(
+            id='mil%d' % raised, side='cu', type='militia', a=1, d=2, m=2,
+            steps=1, size='II', name='MIL', colour=MILITIA,
+            formation='Milicias Nacionales Revolucionarias',
+            long='A militia battalion raised in %s' % e.place(h),
+            hex=hid(h)))
+        e.say('A militia battalion turns out in %s.' % e.place(h))
+    e.flags['militia'] = raised
+
+
+def ON_ELIMINATE(e, u, where):
+    """A militia battalion lost is not a victory: there are always more
+    (the Americans score nothing for it)."""
+    if u.kind == 'militia':
+        e.bonus['us'] -= STEP_VP['cu'] * u.max_steps
+
+
+def ON_TURN(e, side):
+    if side == 'us':
+        if e.turn == 1:
+            e.say('H-hour. The 2nd Marine Division comes ashore at Tarará '
+                  'and Guanabo under the guns of the fleet, and the '
+                  'paratroopers of the 82nd and 101st jump over the '
+                  'airfields.')
+        if e.turn == 4:
+            e.say('The 1st Armored Division is coming ashore over the '
+                  'beaches.')
+    else:
+        _raise_militia(e)
+        if e.turn == 1:
+            e.say('Fidel orders the whole country to arms. In the woods '
+                  'south of Havana, a Soviet colonel reads his orders '
+                  'about the Lunas again.')
+
+
+def CAN_SUPPORT(e, u):
+    """The Lunas are not used: this war stops short of that."""
+    return u.kind != 'luna'
+
+
+def _score(e):
+    return 'Americans %d VP, Cubans and Soviets %d.' % (e.vp('us'),
+                                                        e.vp('cu'))
+
+
+def _lunas(e):
+    return [u for u in e.alive('cu') if u.kind == 'luna']
+
+
+def VICTORY(e):
+    """The Americans score the places they hold, the enemy steps they
+    destroy and 6 VP a Luna battery; the Cubans score every American
+    step destroyed twice over."""
+    m = e.vp('us') - e.vp('cu')
+    left = len(_lunas(e))
+    warheads = e.control.get(parse('1208')) == 'us'
+    coda = ''
+    if left and not warheads:
+        coda = (' Somewhere in the cane, %s still waiting for orders, '
+                'and the warheads are still at Bejucal.'
+                % ('a Luna battery is' if left == 1 else
+                   'two Luna batteries are'))
+    elif left:
+        coda = (' The warheads are taken, but %s still out there.'
+                % ('a Luna battery is' if left == 1 else
+                   'two Luna batteries are'))
+    if m >= MARGIN + 10:
+        return 'us', ('American victory. %s Havana has fallen and the '
+                      'Cuban army is broken.%s' % (_score(e), coda))
+    if m >= MARGIN:
+        return 'us', ('American marginal victory. %s The Americans hold '
+                      'the airfields and the edge of Havana, at a price '
+                      'the country did not expect.%s' % (_score(e), coda))
+    if m > MARGIN - 10:
+        return 'cu', ('Cuban marginal victory. %s The invasion is stuck '
+                      'short of Havana, the casualty lists are long, and '
+                      'the United Nations demands a ceasefire.%s'
+                      % (_score(e), coda))
+    return 'cu', ('Cuban victory. %s The Marines are pinned on the '
+                  'beaches and the paratroopers cut off. Patria o '
+                  'muerte.%s' % (_score(e), coda))
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'ship': dict(name='Warship', symbol='ship', move='ship', zoc=False,
+                 support=True, stack=0, fate='is sunk'),
+    'militia': dict(name='Militia', symbol='infantry', move='foot',
+                    fate='is overrun'),
+    'smrr': dict(name='Soviet motorized rifles', symbol='mech',
+                 move='track', armor=True),
+    'luna': dict(name='Luna rocket battery', symbol='rocket', move='wheel',
+                 zoc=False, fate='is overrun, and its rockets taken'),
+}
+
+USMC = '#b4a888'
+USA = '#a0b4c4'
+USA2 = '#94a8b8'
+NAVY = '#8a8a9a'
+FAR = '#7c8a5a'
+MILITIA = '#94a070'
+SOV = '#c47664'
+
+
+def u(uid, side, kind, a, d, m, hx, formation, colour, long, **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, size=kw.pop('size', 'III'), a=a, d=d, m=m,
+                steps=kw.pop('steps', 2), hex=hx, formation=formation,
+                colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+def marines(uid, number, arrive, at, formation='2nd Marine Division',
+            colour=USMC):
+    return u(uid, 'us', 'infantry', 5, 6, 3, None, formation, colour,
+             '%s Marines, %s' % (number, formation),
+             name='%s MAR' % number.rstrip('thdsrn'), steps=3,
+             arrive=arrive, at=at)
+
+
+def battle_group(uid, name, division, arrive, at, colour=USA):
+    return u(uid, 'us', 'para', 4, 4, 3, None, division, colour,
+             'An airborne battle group of the %s' % division, name=name,
+             arrive=arrive, at=at)
+
+
+def far(uid, hx, where, a=4, d=6, **kw):
+    return u(uid, 'cu', 'infantry', a, d, 3, hx, 'Western Army', FAR,
+             'A FAR infantry division, %s' % where, size='XX', name='FAR',
+             steps=3, **kw)
+
+
+def militia(uid, hx, where):
+    return u(uid, 'cu', 'militia', 1, 2, 2, hx,
+             'Milicias Nacionales Revolucionarias', MILITIA,
+             'A militia battalion, %s' % where, size='II', name='MIL',
+             steps=1)
+
+
+UNITS = [
+    # ---- the landing: the 2nd Marine Division
+    marines('2mar', '2nd', 1, BEACHES),
+    marines('6mar', '6th', 1, BEACHES[1:] + BEACHES[:1]),
+    marines('8mar', '8th', 1, BEACHES[2:] + BEACHES[:2]),
+    u('2tank', 'us', 'armor', 6, 3, 5, None, '2nd Marine Division', USMC,
+      '2nd Tank Battalion: M48s', size='II', name='2 TK', arrive=1,
+      at=BEACHES[3:] + BEACHES[:3]),
+    u('10mar', 'us', 'artillery', 5, 2, 3, None, '2nd Marine Division',
+      USMC, '10th Marines: the division\'s artillery', name='10 MAR',
+      range=2, arrive=2, at=BEACHES),
+    marines('5meb', '1st', 3, BEACHES, '5th Marine Expeditionary Brigade',
+            '#c0b494'),
+    # ---- the drops
+    battle_group('82a', '1/82', '82nd Airborne Division', 1, [JOSE_MARTI]),
+    battle_group('82b', '2/82', '82nd Airborne Division', 1, [JOSE_MARTI]),
+    battle_group('82c', '3/82', '82nd Airborne Division', 1,
+                 [SAN_ANTONIO]),
+    battle_group('101a', '1/101', '101st Airborne Division', 1, [BARACOA],
+                 USA2),
+    battle_group('101b', '2/101', '101st Airborne Division', 1, [BARACOA],
+                 USA2),
+    battle_group('82d', '4/82', '82nd Airborne Division', 2,
+                 [JOSE_MARTI, SAN_ANTONIO]),
+    # ---- the 1st Armored Division, over the beaches
+    u('1adA', 'us', 'armor', 7, 5, 6, None, '1st Armored Division', USA,
+      'Combat Command A, 1st Armored Division', size='X', name='CCA',
+      steps=3, arrive=4, at=BEACHES),
+    u('1adB', 'us', 'armor', 7, 5, 6, None, '1st Armored Division', USA,
+      'Combat Command B, 1st Armored Division', size='X', name='CCB',
+      steps=3, arrive=5, at=BEACHES),
+    u('1adart', 'us', 'sp_art', 6, 2, 4, None, '1st Armored Division',
+      USA, '1st Armored Division Artillery', name='1 AD', range=3,
+      arrive=5, at=BEACHES),
+    # ---- the fleet
+    u('nn', 'us', 'ship', 6, 6, 3, None, 'US Navy', NAVY,
+      'USS Newport News, heavy cruiser', size='', name='CA-148', range=3,
+      hex='1301'),
+    u('dd', 'us', 'ship', 3, 5, 4, None, 'US Navy', NAVY,
+      'A destroyer squadron', size='', name='DESRON', range=2,
+      hex='1801'),
+
+    # ---- the Cuban army and militia
+    far('far1', HAVANA, 'Havana'),
+    far('far2', '1203', 'Havana'),
+    far('far3', '1104', 'Marianao'),
+    far('far4', '1605', 'Cotorro'),
+    far('far5', '2003', 'behind the beaches', a=2, d=4),
+    far('far6', '0408', 'Guanajay'),
+    far('far7', '1306', 'south of Havana', posture='attack'),
+    far('far8', '2105', 'in the Escaleras de Jaruco', posture='attack'),
+    militia('m1', '1302', 'Havana harbour'),
+    militia('m2', '1703', 'Tarará'),
+    militia('m3', '1903', 'Guanabo'),
+    militia('m4', '0207', 'Mariel'),
+    militia('m5', '0807', 'Bauta'),
+    militia('m6', '0910', 'San Antonio de los Baños'),
+    u('t34a', 'cu', 'armor', 4, 3, 5, None, 'Western Army', FAR,
+      'A Cuban tank battalion: T-34s and IS-2s', size='II', name='T-34',
+      hex='1405', posture='attack'),
+    u('t34b', 'cu', 'armor', 4, 3, 5, None, 'Western Army', FAR,
+      'A Cuban tank battalion: T-34s and IS-2s', size='II', name='T-34',
+      hex='0906', posture='attack'),
+    u('cart', 'cu', 'artillery', 5, 2, 3, None, 'Western Army', FAR,
+      'Cuban artillery: Soviet 122 mm guns', name='FAR', range=2,
+      hex='1304'),
+    # ---- the Group of Soviet Forces in Cuba
+    u('smr1', 'cu', 'smrr', 6, 6, 5, '1407', 'Group of Soviet Forces',
+      SOV, 'A Soviet motorized rifle regiment, Santiago de las Vegas',
+      name='SOV', steps=3, posture='attack'),
+    u('smr2', 'cu', 'smrr', 6, 6, 5, '0310', 'Group of Soviet Forces',
+      SOV, 'A Soviet motorized rifle regiment, Artemisa', name='SOV',
+      steps=3, posture='attack'),
+    u('sguard', 'cu', 'infantry', 3, 5, 0, '1208', 'Group of Soviet Forces',
+      SOV, 'The guard on the warhead bunker at Bejucal', size='II',
+      name='BEJUCAL'),
+    u('luna1', 'cu', 'luna', 0, 1, 0, None, 'Group of Soviet Forces', SOV,
+      'A Luna battery: two launchers, and nuclear warheads at Bejucal',
+      size='I', name='LUNA', steps=1, vp=LUNA_VP),
+    u('luna2', 'cu', 'luna', 0, 1, 0, None, 'Group of Soviet Forces', SOV,
+      'A Luna battery: two launchers, and nuclear warheads at Bejucal',
+      size='I', name='LUNA', steps=1, vp=LUNA_VP),
+]
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#101618', panel='#1c2a2c', light='#5e7478',
+              dark='#040808', accent='#f0c868', button='#324446',
+              button_hi='#76908e', button_lo='#101618', red='#c02a22')
+
+HELP = [
+    "THE INVASION. The Americans move first. On the first morning the "
+    "2nd, 6th and 8th Marines and a tank battalion land on the beaches "
+    "between Tarará and Guanabo, three airborne battle groups of the "
+    "82nd drop on José Martí airport and San Antonio airfield, and two "
+    "of the 101st on Baracoa. More paratroopers and the Marines' "
+    "artillery come on turn 2, a regiment of the 5th Marine "
+    "Expeditionary Brigade on turn 3, and the 1st Armored Division over "
+    "the beaches on turns 4 and 5. The heavy cruiser Newport News and a "
+    "destroyer squadron fire on the coast like guns.",
+
+    "THE DEFENCE. Six Cuban divisions, two tank battalions, artillery "
+    "and militia hold Havana and the towns; two Soviet motorized rifle "
+    "regiments, with tanks, are south of Havana and near Artemisa, and "
+    "a Soviet guard holds the warhead bunker at Bejucal. Each Cuban "
+    "turn up to %d militia battalions turn out in towns the Cubans still "
+    "hold with no American next to them, until %d have."
+    % (MILITIA_PER_TURN, MILITIA_MAX),
+
+    "THE LUNAS. Two batteries of Luna rockets are hidden in the woods "
+    "and cane near the Soviet regiments, somewhere different each game. "
+    "They can't move and can't fight; the game stops short of their "
+    "being used. Each destroyed is worth %d VP to the Americans. Fog of "
+    "war hides them until an American unit is close, and the cane, "
+    "like woods and towns, lets units see only next door." % LUNA_VP,
+
+    "WINNING. The Americans score the places they hold at the end "
+    "(Havana 8, Bejucal 5, José Martí, San Antonio and Mariel 3, "
+    "Baracoa, Marianao, Santiago de las Vegas and Cotorro 2, the rest "
+    "1), every Cuban and Soviet step destroyed, and the Lunas. The "
+    "Cubans score every American step destroyed twice. The Americans "
+    "must finish %d VP or more ahead to win. On clear days American "
+    "air power gives every American attack a column." % MARGIN,
+]
+
+ICON = 'cuba'
+
+
+# ---------------------------------------------------------- symbols
+
+@grognard.symbol('ship')
+def s_ship(p, x, y, w, h, c):
+    """A cruiser: a long hull, a bridge and a funnel."""
+    base = y + h - 3
+    p.rect(x + 1, base, w - 2, 2, c)
+    p.rect(x + w // 3, base - h // 4, w // 3, h // 4, c)
+    p.rect(int(x + (w - 1) * 0.58), base - h // 3, 2, h // 3, c)
+
+
+counters.PICTURES['ship'] = [
+    '...........', '.....#.....', '....##.#...', '...######..',
+    '.#########.', '###########', '.#########.', '...........']
+
+
+def _poly(p, n, pts, c):
+    """Fill a polygon given in fractions of the icon, a row at a time."""
+    pts = [(x * n, y * n) for x, y in pts]
+    y0 = int(min(y for _, y in pts))
+    y1 = int(max(y for _, y in pts)) + 1
+    for y in range(y0, y1):
+        yc = y + 0.5
+        xs = []
+        for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+            if (ay <= yc) != (by <= yc):
+                xs.append(ax + (yc - ay) * (bx - ax) / (by - ay))
+        xs.sort()
+        for a, b in zip(xs[::2], xs[1::2]):
+            x0, x1 = int(a + 0.5), int(b + 0.5)
+            if x1 > x0:
+                p.rect(x0, y, x1 - x0, 1, c)
+
+
+@grognard.icon('cuba')
+def draw_icon(p, n):
+    """A Luna rocket on its launcher under royal palms, with the sea
+    behind."""
+    p.fill('#9cc4dc')
+    p.rect(0, n * 0.5, n, n * 0.12, '#3a78a8')                 # the sea
+    p.rect(0, n * 0.62, n, n * 0.38, '#a8b868')                # cane
+    for k in range(7):
+        p.rect(n * (0.04 + k * 0.14), n * 0.66, max(1, n // 40),
+               n * 0.3, '#8a9c4c')
+    # a royal palm
+    p.rect(n * 0.8, n * 0.22, max(2, n // 24), n * 0.5, '#d8d0bc')
+    for dx, dy in ((-0.14, 0.04), (0.14, 0.04), (-0.1, -0.06),
+                   (0.1, -0.06), (0, -0.08)):
+        p.line(n * 0.81, n * 0.22, n * (0.81 + dx), n * (0.22 + dy + 0.06),
+               '#3a6a28', max(2, n // 20))
+    # the launcher truck and the rocket, raised
+    p.rect(n * 0.1, n * 0.72, n * 0.56, n * 0.1, '#4a5a3a')
+    for x in (0.18, 0.32, 0.46, 0.58):
+        p.disc(n * x, n * 0.84, n * 0.045, '#1a1e16')
+    _poly(p, n, [(0.2, 0.7), (0.56, 0.2), (0.62, 0.24), (0.27, 0.73)],
+          '#c8ccc4')
+    _poly(p, n, [(0.56, 0.2), (0.64, 0.12), (0.62, 0.24)], '#b02a20')
+    p.rect(n * 0.5, n * 0.66, n * 0.12, n * 0.08, '#3a4a2c')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])

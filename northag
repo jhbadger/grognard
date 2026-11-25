@@ -1,0 +1,745 @@
+#!/usr/bin/env python3
+"""The North German Plain: Lower Saxony, November 1983.  A sample game
+for the Grognard engine, and a war that never happened.
+
+The same war as the Fulda Gap, two hundred kilometres to the north: the
+3rd Shock Army attacks the British I Corps on the open country between
+the inner-German border and the Weser, and the British must come
+forward from their barracks to meet it while the Royal Engineers blow
+the bridges behind the covering force.  Play either side against the
+computer, or against a friend at the same screen.
+
+Run it with ./northag (Python 3 with Tk, nothing else).  The game is
+saved to ~/.northag.json.  ./northag --selftest checks the map and plays
+a game between two computer players.
+"""
+
+import os
+import sys
+
+# Pydroid starts a script as a Tk app only if the script itself
+# imports tkinter; the engine importing it is not enough.
+try:
+    import tkinter                                     # noqa: F401
+except ImportError:
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import grognard                                        # noqa: E402
+from grognard import counters, hexgrid, sound          # noqa: E402
+from grognard.hexgrid import distance, hid, parse      # noqa: E402
+
+ID = 'northag'
+TITLE = 'North German Plain'
+SUBTITLE = 'Lower Saxony, November 1983: a war that never was'
+
+INTRO = [
+    "November 1983, the same week as the Fulda Gap. NATO's exercise "
+    "Able Archer 83 has been taken in Moscow for cover for a first "
+    "strike, and the Warsaw Pact has struck first instead, without "
+    "nuclear weapons, all along the inner-German border.",
+
+    "In the north the ground is the best tank country in Europe: the "
+    "plain of Lower Saxony, open farmland from the border at Helmstedt "
+    "to the Weser at Hameln, cut by a few rivers and the Mittelland "
+    "Canal. The autobahn runs straight across it from Berlin to "
+    "Hanover. Coming down it is the 3rd Shock Army.",
+
+    "Holding it is the British I Corps, and most of the corps is in its "
+    "barracks in Westphalia, on the far side of the Weser. The covering "
+    "force of armoured reconnaissance and two Bundeswehr brigades must "
+    "buy time while the armoured divisions drive east to meet the "
+    "attack, and the sappers wait at the bridges with their charges "
+    "set.",
+]
+
+# ------------------------------------------------------------------ sides
+
+SIDES = [
+    dict(id='wp', name='Soviets', adj='Soviet', colour='#d0806c',
+         ink='#140806', flag='star', posture='attack',
+         about='Drive down the autobahn across the plain and take '
+               'Hanover, or get across the Weser, before the British '
+               'armour can stop you.'),
+    dict(id='nato', name='NATO forces', adj='NATO', colour='#c8b47a',
+         ink='#141008', flag='cross', posture='defend',
+         about='Delay with the covering force, blow the bridges, bring '
+               'the British armoured divisions forward and hold Hanover '
+               'until the American III Corps can strike back.'),
+]
+ORDER = ['wp', 'nato']
+
+# Twelve turns: day and night from the 11th to the 16th of November.
+TURNS = 12
+
+
+def TURN_NAME(t):
+    return ('%d Nov 1983' % (11 + (t - 1) // 2),
+            'Day' if t % 2 else 'Night')
+
+
+STACK = 3
+FOG = True
+DEFENSIVE_FIRE = 2
+
+WEATHER = {1: 'strike', 2: 'night', 3: 'clear', 4: 'night',
+           5: 'overcast', 6: 'night', 7: 'rain', 8: 'night', 9: 'clear',
+           10: 'night', 11: 'fog', 12: 'night'}
+WEATHER_TYPES = {
+    'strike': dict(name='Clear: Soviet air', icon='sun', air=False),
+    'clear': dict(name='Clear: RAF Harriers', icon='sun', air=True),
+    'night': dict(name='Night', icon='cloud', air=False, spot=1),
+}
+AIR = ['nato']
+
+HANOVER = '0706'
+BREAKTHROUGH = 6        # Soviet steps across the Weser: the end
+BLOW_RANGE = 3          # a bridge is fired when the enemy is this close
+
+
+def night(e):
+    return e.weather()['id'] == 'night'
+
+
+# ----------------------------------------------------------- the map
+
+LEGEND = {'g': 'gdr', 'G': 'gdrwoods'}
+
+# Every terrain needs a cost for helicopters: a point a hex, anywhere.
+TERRAIN = {
+    'clear':  dict(name='Open plain', colour='#a8b47a', ink='#8a9660',
+                   edge='#6e7a48',
+                   move={'foot': 1, 'track': 1, 'wheel': 1, 'air': 1}),
+    'fields': dict(name='Farmland', colour='#bcb680', ink='#9c9660',
+                   edge='#7c7648',
+                   move={'foot': 1, 'track': 1, 'wheel': 2, 'air': 1}),
+    'woods':  dict(colour='#5a6e3c', ink='#3a4a22', edge='#24341a',
+                   move={'foot': 2, 'track': 3, 'wheel': 4, 'air': 1}),
+    'forest': dict(colour='#3c5430', ink='#22361a', edge='#14240e',
+                   move={'foot': 2, 'track': 4, 'wheel': None, 'air': 1}),
+    'hills':  dict(colour='#b2a274', ink='#86764a', edge='#665630',
+                   move={'foot': 2, 'track': 2, 'wheel': 3, 'air': 1}),
+    'marsh':  dict(name='The Drömling', colour='#8aa080', ink='#4a7a8a',
+                   move={'foot': 3, 'track': None, 'wheel': None,
+                         'air': 1}),
+    'town':   dict(colour='#b8ae9c', ink='#7a4436',
+                   move={'foot': 1, 'track': 1, 'wheel': 1, 'air': 1}),
+    'city':   dict(colour='#aaa498', ink='#6a5048', stack=4,
+                   move={'foot': 1, 'track': 2, 'wheel': 1, 'air': 1}),
+    'gdr':    dict(name='East Germany', colour='#c0a88a', ink='#a08868',
+                   pattern='fields', edge='#806848', z=1, shift=0,
+                   open=True, los=True,
+                   move={'foot': 1, 'track': 1, 'wheel': 2, 'air': 1}),
+    'gdrwoods': dict(name='East Germany: the Fallstein and the Huy',
+                     colour='#6a6a40', ink='#4a4a26', pattern='trees',
+                     edge='#30301a', z=5, shift=-1, open=False, los=False,
+                     move={'foot': 2, 'track': 3, 'wheel': 4, 'air': 1}),
+}
+
+# West on the left: the Weser at Hameln, the Deister and the hills of
+# the Weserbergland, Hanover on the Leine, the plain to Braunschweig on
+# the Oker, the Elm, and the border at Helmstedt.  The Lüneburg Heath
+# is to the north of the canal, the Harz in the south-east corner, and
+# East Germany beyond the border.
+MAP = [
+    '::...:.f:f:t..f.f:.:f.:.::',
+    '.::..:.:f:.:FF:f::.f:::.:.',
+    ':.::.:f:.:f:FFF:.f:FF:.mm.',
+    '.:.:::....:::F::.:t..:mmmm',
+    ':.:.:..:::...::::....:t.::',
+    ':.::.CC::.::::..::::.:.:::',
+    ':::::..:.....t..:.:.:.::ff',
+    '.hhh.::..::.:::::.C..f..:f',
+    ':hFh.::.:::::.::.:::FF:::t',
+    'h::t:.:::.:..:.::::.FFf:.g',
+    'Fh::.::..t...:.t.:t....:tg',
+    't::.:::hFh:::.h.::.h:.:ggg',
+    ':::::.:hFFh:.:hh:::..:gggg',
+    'hh:.:.hh::..:h:::..:.gGggg',
+    'FhF:hFFh:.::::::.:..gggGgg',
+    'FFhhhFF::.:.thhhth:hgGgggg',
+    'hhFhFFh.::::hFFFFFtFgggggg',
+    'FFF::.:.:.:.FFFFFFFFgggggg',
+]
+
+ROWS = len(MAP)
+COLS = len(MAP[0])
+
+
+def _east_german(h):
+    return MAP[h[1]][h[0]] in 'gG'
+
+
+def _sides(first):
+    """Every hexside between a hex where first(h) is true and a
+    neighbour on the map where it isn't."""
+    out = []
+    for c in range(COLS):
+        for r in range(ROWS):
+            if not first((c, r)):
+                continue
+            for n in hexgrid.neighbours((c, r)):
+                if 0 <= n[0] < COLS and 0 <= n[1] < ROWS and \
+                        not first(n):
+                    out.append((hid((c, r)), hid(n)))
+    return out
+
+
+# The Leine: hexes up to this column, row by row, are on its west bank.
+LEINE = [5, 5, 5, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]
+# The Oker, from the Harz north past Wolfenbüttel and Braunschweig.
+OKER = [16, 16, 16, 17, 17, 17, 17, 17, 17, 17, 17, 16, 16, 16, 16, 16,
+        16, 16]
+# The Mittelland Canal: hexes above this row, column by column, are
+# north of it.
+CANAL = [4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 7, 6, 6,
+         5, 5, 5, 5, 5]
+
+HEXSIDES = {
+    'river': dict(colour='#4a7ab0',
+                  cost={'foot': 2, 'track': 3, 'wheel': 3, 'air': 0}),
+    'canal': dict(name='The Mittelland Canal', colour='#5a8ac0', width=2,
+                  cost={'foot': None, 'track': None, 'wheel': None,
+                        'air': 0}, halve=True),
+    'border': dict(name='The inner-German border', colour='#e8e4d8',
+                   width=1, posts=True, halve=False,
+                   cost={'foot': 0, 'track': 0, 'wheel': 0, 'air': 0}),
+}
+ROAD_TYPES = {
+    'road':  dict(name='Autobahn and Bundesstraße',
+                  cost={'foot': 0.5, 'track': 0.5, 'wheel': 0.5,
+                        'air': 1}),
+    'trail': dict(name='Country road',
+                  cost={'foot': 1, 'track': 1, 'wheel': 1, 'air': 1}),
+}
+
+RIVERS = [
+    ('river', _sides(lambda h: h[0] <= LEINE[h[1]])),
+    ('river', _sides(lambda h: h[0] <= OKER[h[1]])),
+    ('canal', _sides(lambda h: h[1] < CANAL[h[0]])),
+    ('border', _sides(_east_german)),
+]
+
+ROADS = [
+    ('road', ['2609', '2309', '1908', '1407', HANOVER, '0105']),  # the A2
+    ('road', ['0901', '0806', '1011', '1316', '1318']),           # the A7
+    ('road', ['0112', '0410', HANOVER]),            # Hameln to Hanover
+    ('road', ['0112', '1011']),                     # Hameln to Hildesheim
+    ('road', [HANOVER, '1011']),                    # the B6
+    ('road', ['1011', '1611', '1911', '2511', '2612']),
+    ('road', ['1908', '1911', '1917', '2117']),     # up the Oker
+    ('road', ['1611', '1716']),                     # to Goslar
+    ('road', [HANOVER, '1201']),                    # to Celle
+    ('road', ['1908', '1904', '1201']),             # by Gifhorn
+    ('road', ['1908', '2305', '2605']),             # to Wolfsburg
+    ('trail', ['1407', '1611']),
+    ('trail', ['1011', '1407']),
+    ('trail', ['2305', '2309']),
+    ('trail', ['1716', '1316']),
+]
+
+LABELS = {
+    HANOVER: 'Hanover', '1908': 'Braunschweig', '1011': 'Hildesheim',
+    '1611': 'Salzgitter', '1911': 'Wolfenbüttel', '1407': 'Peine',
+    '2305': 'Wolfsburg', '1904': 'Gifhorn', '1201': 'Celle',
+    '0112': 'Hameln', '0410': 'Springe', '2609': 'Helmstedt',
+    '2511': 'Schöningen', '1716': 'Goslar', '1917': 'Bad Harzburg',
+    '1316': 'Seesen', '0105': 'To the Weser crossings', '0309': 'Deister',
+    '2110': 'Elm', '1517': 'Harz', '1402': 'Lüneburg Heath',
+    '2414': 'East Germany', '2404': 'Drömling', '2309': 'Königslutter',
+}
+
+OBJECTIVES = {
+    HANOVER: dict(name='Hanover', vp=8, owner='nato'),
+    '1908': dict(name='Braunschweig', vp=6, owner='nato'),
+    '1011': dict(name='Hildesheim', vp=3, owner='nato'),
+    '1611': dict(name='Salzgitter', vp=3, owner='nato'),
+    '1407': dict(name='Peine', vp=2, owner='nato'),
+    '1911': dict(name='Wolfenbüttel', vp=2, owner='nato'),
+    '2305': dict(name='Wolfsburg', vp=2, owner='nato'),
+    '1201': dict(name='Celle', vp=2, owner='nato'),
+    '0112': dict(name='Hameln', vp=3, owner='nato'),
+    '1716': dict(name='Goslar', vp=1, owner='nato'),
+    '2609': dict(name='Helmstedt', vp=1, owner='nato'),
+}
+STEP_VP = 1
+EXIT_VP = 3
+MARGIN = 1              # set from ./northag --simulate 60
+
+# Soviet units off the west edge between the Deister and the canal
+# are across the Weser.
+WESER = ['01%02d' % r for r in range(4, 13)]
+EXITS = {'wp': dict(hexes=WESER, vp=EXIT_VP)}
+
+_GDR = [hid((c, r)) for r in range(ROWS) for c in range(COLS)
+        if MAP[r][c] in 'gG']
+SUPPLY = {
+    'wp': dict(**{'from': ['26%02d' % r for r in range(1, 10)] + _GDR,
+                  'range': 14}),
+    'nato': dict(**{'from': ['W', 'N'], 'range': 14}),
+}
+
+
+# ---------------------------------------------------- the barrier plan
+
+def bridges(e):
+    """Every place a road crosses the Leine, the Oker or the canal:
+    [(side, a, b)], a and b the hexes either end."""
+    def build():
+        out = []
+        for s, kind in sorted(e.board.rivers.items()):
+            if kind in ('river', 'canal') and s in e.board.roads:
+                a, b = s
+                out.append(('%s/%s' % (hid(a), hid(b)), a, b))
+        return out
+    return e.cached('bridges', build)
+
+
+def blown(e):
+    return e.cached('blown', lambda: {
+        tuple(sorted((parse(x), parse(y)))) for x, y in
+        (s.split('/') for s in e.flags.get('blown', []))})
+
+
+def _demolitions(e):
+    """At the start of every Soviet turn the sappers fire the charges
+    on each bridge the Soviets have come within BLOW_RANGE hexes of, two
+    times in three.  A bridge with Soviet troops on either end is taken
+    whole, and can't be blown after that."""
+    done = e.flags.setdefault('blown', [])
+    seized = e.flags.setdefault('seized', [])
+    soviets = [u.hex for u in e.alive('wp')]
+    for key, a, b in bridges(e):
+        if key in done or key in seized:
+            continue
+        if a in soviets or b in soviets:
+            seized.append(key)
+            e.say('The Soviets take the bridge at %s intact.'
+                  % e.place(a if a in soviets else b))
+            continue
+        near = min((min(distance(h, a), distance(h, b)) for h in soviets),
+                   default=99)
+        if near > BLOW_RANGE:
+            continue
+        if e.rng.random() < 2 / 3:
+            done.append(key)
+            e.say('The Royal Engineers blow the bridge at %s.'
+                  % e.place(b))
+            e.events.append(('popup', b, 'Bridge blown', '#ff9040'))
+            e.events.append(('sound', 'blast'))
+        else:
+            e.say('The charges on the bridge at %s fail to go off.'
+                  % e.place(b))
+    e.changed()
+
+
+def ENTER_COST(e, u, a, b, c):
+    """A blown bridge is no bridge: the river costs what it would
+    anywhere else, and the canal can't be crossed at all."""
+    if ((a, b) if a <= b else (b, a)) not in blown(e):
+        return c
+    t = e.board.terrain(b)
+    mc = u.move_class
+    base = t['move'].get(mc, t['move'].get('foot'))
+    if base is None:
+        return None
+    riv = e.board.river(a, b)
+    rc = riv['cost'].get(mc, 1) if riv else 0
+    if rc is None:
+        return None
+    return base * e.weather().get('move', 1) + rc
+
+
+def DRAW_MAP(g, s):
+    """A red cross on every blown bridge."""
+    gone = blown(g.e)
+    if not gone:
+        return
+    v = g.view
+    x0c, y0c, x1c, y1c = v.clip()
+    s.set_clip(x0c, y0c, x1c - x0c, y1c - y0c)
+    k = max(2, v.geo.dx // 6)
+    for a, b in gone:
+        (ax, ay), (bx, by) = v.to_screen(a), v.to_screen(b)
+        mx, my = (ax + bx) // 2, (ay + by) // 2
+        for d in (0, 1):
+            s.line(mx - k + d, my - k, mx + k + d, my + k, '#e02010')
+            s.line(mx - k + d, my + k, mx + k + d, my - k, '#e02010')
+    s.set_clip()
+
+
+# ----------------------------------------------------------- the turns
+
+def ON_TURN(e, side):
+    if side == 'wp':
+        _demolitions(e)
+        if e.turn == 1:
+            e.say('H-hour. The 47th Guards Tank Division comes down the '
+                  'autobahn from Marienborn, and the 207th Motor Rifle '
+                  'Division across the border at Schöningen.')
+        if e.turn == 3:
+            e.say('The second echelon is at the border: the 12th Guards '
+                  'Tank Division on the autobahn, and the 10th Guards '
+                  'Tank Division coming round the Harz.')
+        if e.turn == 6:
+            e.say('The 7th Guards Tank Division, the army\'s operational '
+                  'manoeuvre group, is through Helmstedt.')
+    else:
+        if e.turn == 1:
+            e.say('The covering force goes out to its positions. The '
+                  'armoured divisions are loading in Westphalia, behind '
+                  'the Weser.')
+        if e.turn == 2:
+            e.say('The 1st Armoured Division comes over the Weser at '
+                  'Minden.')
+        if e.turn == 3:
+            e.say('The 4th Armoured Division crosses at Hameln.')
+        if e.turn == 7:
+            e.say('The 2nd Infantry Division, flown and shipped from '
+                  'England, is up.')
+        if e.turn == 8:
+            e.say('The American III Corps is coming, and NORTHAG orders '
+                  'the counterattack.')
+
+
+def ON_END_TURN(e):
+    """If the Soviets hold Hanover, or get enough of their army off the
+    west edge, NORTHAG's front is broken and SACEUR asks for nuclear
+    release: the conventional war, and the game, is over."""
+    held = e.control.get(parse(HANOVER)) == 'wp'
+    out = e.exited.get('wp', 0) >= BREAKTHROUGH
+    if held or out:
+        e.finish('wp', 'Soviet victory: breakthrough. %s I British Corps '
+                 'is broken, the road to the Ruhr is open, and SACEUR '
+                 'asks for the release of nuclear weapons. %s'
+                 % ('Hanover has fallen.' if held else
+                    'Soviet tanks are over the Weser.', _score(e)))
+
+
+def COMBAT_SHIFTS(e, target, attackers, support):
+    """Surprise on the first day; at night the British, on ground they
+    know and have dug, cost every Soviet attack a column."""
+    out = []
+    if not attackers:
+        return out
+    if e.side == 'wp':
+        if e.turn == 1:
+            out.append((1, 'surprise and the air offensive'))
+        elif night(e):
+            out.append((-1, 'prepared positions at night'))
+    return out
+
+
+def CAN_SUPPORT(e, u):
+    """Helicopters fly by day, and not in fog."""
+    if u.kind != 'helo':
+        return True
+    return e.weather()['id'] not in ('night', 'fog')
+
+
+def _score(e):
+    return 'Soviets %d VP, NATO %d.' % (e.vp('wp'), e.vp('nato'))
+
+
+def VICTORY(e):
+    """Taking Hanover, or getting four steps over the Weser, wins at
+    once (ON_END_TURN).  Otherwise the margin decides."""
+    m = e.vp('wp') - e.vp('nato')
+    if m >= MARGIN + 8:
+        return 'wp', ('Soviet victory. %s Braunschweig and the plain are '
+                      'lost and the British corps is in pieces before '
+                      'Hanover.' % _score(e))
+    if m >= MARGIN:
+        return 'wp', ('Soviet marginal victory. %s The 3rd Shock Army is '
+                      'deep into Lower Saxony, but the Leine holds, for '
+                      'now.' % _score(e))
+    if m > MARGIN - 8:
+        return 'nato', ('NATO marginal victory. %s The British have given '
+                        'ground and not broken, and the Americans are '
+                        'coming.' % _score(e))
+    return 'nato', ('NATO victory. %s The 3rd Shock Army has burnt itself '
+                    'out on the plain, and the war stops short of the '
+                    'nuclear threshold.' % _score(e))
+
+
+# ----------------------------------------------------------------- units
+
+UNIT_TYPES = {
+    'armrecce': dict(name='Armoured reconnaissance', symbol='armcav',
+                     move='track', armor=True, spot=3),
+    'helo': dict(name='Anti-tank helicopters', symbol='helo', move='air',
+                 zoc=False, support=True, sound='rotor'),
+    'mrr': dict(name='Motor rifles', symbol='mech', move='track',
+                armor=False),
+    'police': dict(name='Border police', symbol='motorized', move='wheel',
+                   spot=3),
+}
+
+UK = '#c8b47a'
+UK2 = '#bca86c'
+UK3 = '#d4c28a'
+BW = '#a4b4a0'          # the Bundeswehr
+USA = '#8ab0cc'
+SU = '#d0806c'
+SU2 = '#c47664'
+SU3 = '#b86e5e'
+
+
+def u(uid, side, kind, a, d, m, hx, formation, colour, long, **kw):
+    spec = dict(id=uid, name=kw.pop('name', uid.upper()), side=side,
+                type=kind, size=kw.pop('size', 'X'), a=a, d=d, m=m,
+                steps=kw.pop('steps', 2), hex=hx, formation=formation,
+                colour=colour, long=long)
+    spec.update(kw)
+    return spec
+
+
+def division(prefix, number, formation, colour, kinds, arrive, at):
+    """A Soviet division's four regiments, all arriving together."""
+    out = []
+    for k, kind in enumerate(kinds, 1):
+        tank = kind == 'armor'
+        out.append(u('%s%d' % (prefix, k), 'wp', kind, 6 if tank else 5,
+                     4, 6, None, formation, colour,
+                     '%s regiment, %s' % ('A tank' if tank else
+                                          'A motor rifle', formation),
+                     name='%d/%d' % (number, k), arrive=arrive, size='III',
+                     at=at[(k - 1) % len(at):] + at[:(k - 1) % len(at)]))
+    return out
+
+
+def brigades(prefix, number, formation, colour, arrive, at, kinds,
+             **kw):
+    """A British division's three brigades."""
+    out = []
+    for k, kind in enumerate(kinds, 1):
+        a, d = (7, 7) if kind == 'armor' else (6, 7)
+        if kind == 'infantry':
+            a, d = 4, 6
+        out.append(u('%s%d' % (prefix, k), 'nato', kind, a, d,
+                     kw.get('m', 6), None, formation, colour,
+                     'A brigade of the %s' % formation,
+                     name='%d/%s' % (k, prefix.upper()), steps=3,
+                     arrive=arrive, at=at[k - 1:] + at[:k - 1],
+                     **{x: y for x, y in kw.items() if x != 'm'}))
+    return out
+
+
+MR, TK = 'mrr', 'armor'
+AUTOBAHN = ['2608', '2607', '2606', '2605']
+SOUTH = ['2412', '2313', '2512', '2214']
+HARZ = ['2117', '2116', '2115', '2216']
+MINDEN = ['0105', '0104', '0106']
+HAMELN = ['0112', '0111', '0113']
+
+UNITS = [
+    # ---- the covering force
+    u('bgs', 'nato', 'police', 1, 3, 5, '2609', 'Bundesgrenzschutz', BW,
+      'Bundesgrenzschutz, Helmstedt', size='II', name='BGS', steps=1),
+    u('rec1', 'nato', 'armrecce', 4, 4, 7, '2408', 'I British Corps', UK,
+      'An armoured reconnaissance regiment: Scorpions and Scimitars',
+      size='II', name='RECCE'),
+    u('rec2', 'nato', 'armrecce', 4, 4, 7, '2312', 'I British Corps', UK,
+      'An armoured reconnaissance regiment: Scorpions and Scimitars',
+      size='II', name='RECCE'),
+    u('pzaufkl', 'nato', 'armrecce', 4, 4, 7, '2205', '1st Panzer Division',
+      BW, 'Panzeraufklärungsbataillon 1', size='II', name='PZAUFKL'),
+    u('pzb2', 'nato', 'armor', 7, 6, 6, '1908', '1st Panzer Division', BW,
+      'Panzerbrigade 2 (Braunschweig)', name='PZB2', steps=3),
+    u('pzgb1', 'nato', 'mech', 6, 7, 6, '1011', '1st Panzer Division', BW,
+      'Panzergrenadierbrigade 1 (Hildesheim)', name='PZGB1', steps=3),
+    u('hsch', 'nato', 'infantry', 2, 4, 3, HANOVER, 'Territorialheer', BW,
+      'A Heimatschutz battalion, Hanover', size='II', name='HSCHZ'),
+    u('aac', 'nato', 'helo', 4, 2, 8, '1007', 'Army Air Corps', UK,
+      'An Army Air Corps regiment: Lynx with TOW', size='III',
+      name='LYNX', range=2, steps=1),
+    u('cart', 'nato', 'sp_art', 7, 2, 4, None, 'I British Corps', UK,
+      'I British Corps artillery: M110s and Lance', name='1 BR',
+      range=4, arrive=2, at=['0107', '0108']),
+] + brigades('1ad', 1, '1st Armoured Division', UK, 2, MINDEN,
+             ['armor', 'armor', 'mech']) \
+  + brigades('4ad', 4, '4th Armoured Division', UK2, 3, HAMELN,
+             ['armor', 'mech', 'armor']) \
+  + brigades('3ad', 3, '3rd Armoured Division', UK3, 5, MINDEN,
+             ['armor', 'mech', 'armor']) \
+  + brigades('2id', 2, '2nd Infantry Division', UK3, 7, MINDEN + HAMELN,
+             ['infantry', 'infantry', 'infantry'], m=4) \
+  + [
+    # ---- III (US) Corps: the counterattack
+    u('2ad3', 'nato', 'armor', 7, 7, 6, None, '2nd Armored Division', USA,
+      '3rd Brigade, 2nd Armored Division (Forward), from Garlstedt',
+      name='3/2AD', steps=3, arrive=8, at=['0101', '0201', '0102'],
+      posture='attack'),
+    u('2ad1', 'nato', 'armor', 7, 7, 6, None, '2nd Armored Division', USA,
+      '1st Brigade, 2nd Armored Division, from Fort Hood',
+      name='1/2AD', steps=3, arrive=9, at=MINDEN, posture='attack'),
+    u('2ad2', 'nato', 'mech', 6, 7, 6, None, '2nd Armored Division', USA,
+      '2nd Brigade, 2nd Armored Division, from Fort Hood',
+      name='2/2AD', steps=3, arrive=9, at=MINDEN, posture='attack'),
+
+    # ---- the 3rd Shock Army: the air assault landing
+    u('desant', 'wp', 'para', 3, 3, 3, '1808', '3rd Shock Army', SU,
+      'An air assault battalion, landed on the Oker bridges',
+      size='II', name='DESNT'),
+    # ---- the army's guns and helicopters
+    u('art1', 'wp', 'sp_art', 7, 2, 4, None, '3rd Shock Army', SU,
+      'An army artillery brigade', name='3 SHOCK', range=3,
+      arrive=1, at=AUTOBAHN),
+    u('art2', 'wp', 'rocket', 6, 2, 4, None, '3rd Shock Army', SU,
+      'An army rocket launcher regiment', size='III', name='3 SHOCK',
+      range=3, arrive=1, at=SOUTH),
+    u('hind', 'wp', 'helo', 5, 2, 8, None, '3rd Shock Army', SU,
+      'An attack helicopter regiment: Mi-24 Hinds', size='III',
+      name='HIND', range=2, steps=1, arrive=1, at=AUTOBAHN),
+] + division('47g', 47, '47th Guards Tank Division', SU,
+             [TK, TK, TK, MR], 1, AUTOBAHN) \
+  + division('207', 207, '207th Motor Rifle Division', SU,
+             [MR, MR, MR, TK], 1, SOUTH) \
+  + division('12g', 12, '12th Guards Tank Division', SU2,
+             [TK, TK, TK, MR], 3, AUTOBAHN) \
+  + division('10g', 10, '10th Guards Tank Division', SU2,
+             [TK, TK, TK, MR], 3, HARZ) \
+  + division('7g', 7, '7th Guards Tank Division', SU3,
+             [TK, TK, TK, MR], 6, AUTOBAHN)
+
+PANELS = dict(
+    right=['date', 'weather', 'victory', 'objectives', 'phase', 'minimap',
+           'scroll'],
+    bottom=['unit', 'orders', 'log'],
+)
+CHROME = dict(bg='#16160f', panel='#262619', light='#74725a',
+              dark='#080806', accent='#e0c060', button='#44432e',
+              button_hi='#8c8a68', button_lo='#16160f', red='#c02a22')
+
+HELP = [
+    "THE ATTACK. The Soviets move first. The 47th Guards Tank Division "
+    "comes down the autobahn at Helmstedt and the 207th Motor Rifle "
+    "Division over the border south of the Elm on the first day, with an "
+    "air assault battalion already down on the Oker west of "
+    "Braunschweig. The 12th and 10th Guards Tank Divisions follow on "
+    "the second day, the 10th round the Harz, and the 7th Guards Tank "
+    "Division on the fourth. NATO has a covering force of British and "
+    "German reconnaissance, Panzerbrigade 2 in Braunschweig and "
+    "Panzergrenadierbrigade 1 in Hildesheim. The British 1st Armoured "
+    "Division comes over the Weser on turn 2, the 4th on turn 3, the "
+    "3rd on turn 5 and the 2nd Infantry on turn 7, and the American "
+    "2nd Armored Division, which attacks, on turns 8 and 9.",
+
+    "THE BRIDGES. The Leine, the Oker and the Mittelland Canal can be "
+    "crossed easily only on the roads' bridges, and the canal nowhere "
+    "else. At the start of every Soviet turn each bridge with a Soviet "
+    "unit within %d hexes of it is blown two times in three, and marked "
+    "with a red cross: after that the river costs what it would "
+    "anywhere, and the canal is closed there. A bridge with a Soviet "
+    "unit on either end is taken intact and can't be blown. Attacks "
+    "across a river or the canal are at half strength." % BLOW_RANGE,
+
+    "DAY AND NIGHT. Each day is two turns. On the first day the "
+    "Soviets have surprise and the air, and every Soviet attack gains "
+    "a column. At night units see only the next hex, helicopters "
+    "don't fly, and Soviet attacks lose a column. On clear days after "
+    "the first, the RAF gives every NATO attack a column. Armour "
+    "attacking into the open gains a column unless the defenders have "
+    "armour of their own.",
+
+    "WINNING. If the Soviets hold Hanover at the end of a turn, or get "
+    "%d steps off the west edge between the Deister and the canal, "
+    "they win at once: the British corps is broken and NATO must decide "
+    "whether to go nuclear. Otherwise each side scores the enemy steps "
+    "it destroys and the towns it holds at the end (Hanover 8, "
+    "Braunschweig 6, Hildesheim, Salzgitter and Hameln 3, Goslar and "
+    "Helmstedt 1, the rest 2), and the Soviets %d a step off the west "
+    "edge. The Soviets must finish %d VP ahead to win."
+    % (BREAKTHROUGH, EXIT_VP, MARGIN),
+]
+
+ICON = 'northag'
+
+
+# ------------------------------------------------- symbols and sounds
+
+@grognard.symbol('armcav')
+def s_armcav(p, x, y, w, h, c):
+    """Armoured reconnaissance: the armour oval with the cavalry
+    stroke."""
+    counters.SYMBOLS['cavalry'](p, x, y, w, h, c)
+
+
+@grognard.symbol('helo')
+def s_helo(p, x, y, w, h, c):
+    """Rotary wing: the NATO bow tie."""
+    cx, cy = x + (w - 1) / 2, y + (h - 1) / 2
+    l, r = x + w // 5, x + w - 1 - w // 5
+    t, b = y + h // 4, y + h - 1 - h // 4
+    p.line(l, t, r, b, c)
+    p.line(l, b, r, t, c)
+    p.line(l, t, l, b, c)
+    p.line(r, t, r, b, c)
+    p.set(cx, cy, c)
+
+
+counters.PICTURES['helo'] = [
+    '###########', '.....#.....', '..######...', '#########..',
+    '#.#######..', '...#####...', '...#...#...', '..#######..']
+counters.PICTURES['armcav'] = counters.PICTURES['armor']
+
+sound.EFFECTS['rotor'] = lambda: sound.mixdown(
+    sound.seq(*[sound.noise(0.05, 0.35, 10, k, 0.15) + [0.0] * 1500
+                for k in range(6)]),
+    sound.tone(90, 0.6, 'saw', 0.06))
+
+# A demolition charge: a crack and a long rumble.
+sound.EFFECTS['blast'] = lambda: sound.mixdown(
+    sound.noise(0.9, 0.7, 3, 7, 0.5),
+    sound.tone(55, 0.9, 'saw', 0.12, slide=-25))
+
+
+def _poly(p, n, pts, c):
+    """Fill a polygon given in fractions of the icon, a row at a time."""
+    pts = [(x * n, y * n) for x, y in pts]
+    y0 = int(min(y for _, y in pts))
+    y1 = int(max(y for _, y in pts)) + 1
+    for y in range(y0, y1):
+        yc = y + 0.5
+        xs = []
+        for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+            if (ay <= yc) != (by <= yc):
+                xs.append(ax + (yc - ay) * (bx - ax) / (by - ay))
+        xs.sort()
+        for a, b in zip(xs[::2], xs[1::2]):
+            x0, x1 = int(a + 0.5), int(b + 0.5)
+            if x1 > x0:
+                p.rect(x0, y, x1 - x0, 1, c)
+
+
+@grognard.icon('northag')
+def draw_icon(p, n):
+    """A road bridge over a river going up in a burst of fire, on a
+    flat grey plain."""
+    p.fill('#b4bcc0')
+    p.rect(0, n * 0.48, n, n * 0.52, '#a4a878')            # the plain
+    p.rect(0, n * 0.66, n, n * 0.2, '#4a74a8')             # the river
+    p.rect(0, n * 0.7, n, n * 0.03, '#6a94c4')
+    deck = '#5a5650'
+    # the two ends of the bridge, and the gap between them
+    p.rect(0, n * 0.56, n * 0.36, n * 0.07, deck)
+    p.rect(n * 0.64, n * 0.56, n * 0.36, n * 0.07, deck)
+    for x in (0.12, 0.28, 0.72, 0.88):
+        p.rect(n * (x - 0.03), n * 0.6, n * 0.06, n * 0.24, '#48443e')
+    # the falling span
+    _poly(p, n, [(0.36, 0.56), (0.44, 0.6), (0.4, 0.78), (0.33, 0.63)],
+          deck)
+    _poly(p, n, [(0.64, 0.56), (0.57, 0.62), (0.61, 0.8), (0.67, 0.62)],
+          deck)
+    # the burst
+    p.disc(n * 0.5, n * 0.46, n * 0.2, '#e86a20')
+    p.disc(n * 0.47, n * 0.44, n * 0.13, '#f4a838')
+    p.disc(n * 0.52, n * 0.47, n * 0.06, '#fff0a0')
+    p.disc(n * 0.36, n * 0.3, n * 0.08, '#6a625a')
+    p.disc(n * 0.62, n * 0.26, n * 0.1, '#7a726a')
+    p.disc(n * 0.5, n * 0.2, n * 0.09, '#8a827a')
+
+
+if __name__ == '__main__':
+    grognard.run(sys.modules[__name__])
