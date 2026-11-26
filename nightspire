@@ -270,17 +270,17 @@ def ACT(e, u, key):
         return
     e.say('%s casts the sheep spell at %s (rolled %d).' % (
         u.long, called(t), roll))
-    ovinate(e, t)
+    ovinate(e, t, u)
 
 
 FATES = ['is eaten', 'ends up as mutton', 'is roasted on an orc spit',
          'is eaten, wool and all', 'goes into a troll stew']
 
 
-def ovinate(e, t):
+def ovinate(e, t, caster):
     """t becomes a sheep: a new unit of the Alliance's in its place, worth
     points to the Dark Host if it is killed, and to the Alliance if it is
-    driven off the west edge."""
+    driven off the west edge.  The spell lasts as long as its caster."""
     h = t.hex
     hero = t.kind in HEROES
     s = e.spawn(dict(
@@ -289,7 +289,7 @@ def ovinate(e, t):
         long=('A sheep that was %s' % called(t)) if hero else
         'A flock that was %s' % called(t),
         vp=HERO_SHEEP_VP if hero else SHEEP_VP, hex=hid(h),
-        colour='#bccc98', formation='The flock', was=t.id,
+        colour='#bccc98', formation='The flock', was=t.id, by=caster.id,
         fate=e.rng.choice(FATES)))
     s.mp = 0
     s.seen = True
@@ -303,11 +303,12 @@ def ovinate(e, t):
     e.events.append(('popup', h, 'Baa!', '#ffffff'))
 
 
-def unbind(e):
-    """The Witch-King is dead, and his spells die with him: every sheep
-    still on the map is itself again."""
+def unbind(e, caster):
+    """A sorcerer is dead, and his spells die with him: every sheep he
+    made that is still on the map is itself again."""
     back = []
-    for s in [x for x in e.alive() if x.kind == 'sheep']:
+    for s in [x for x in e.alive() if x.kind == 'sheep'
+              and s_by(x) == caster.id]:
         u = e.units[s.spec['was']]
         h = s.hex
         e.remove(s)
@@ -320,9 +321,16 @@ def unbind(e):
         e.events.append(('popup', h, 'restored', '#ffe080'))
     e.changed()
     if back:
-        e.say('His spells die with him: %d sheep %s %s again.' % (
+        e.say('%s spells die with %s: %d sheep %s %s again.' % (
+            'Her' if caster.id == 'vesska' else 'His',
+            'her' if caster.id == 'vesska' else 'him',
             len(back), 'is' if len(back) == 1 else 'are',
             'itself' if len(back) == 1 else 'themselves'))
+
+
+def s_by(s):
+    """Who made sheep s (games saved before this was kept: Malgrith)."""
+    return s.spec.get('by', KING)
 
 
 # ----------------------------------------------------------- the turns
@@ -354,7 +362,8 @@ def ON_ELIMINATE(e, u, where):
         e.say('The Witch-King is dead, and the dead falter.')
         for x in [x for x in e.alive('wk') if x.type.get('undead')]:
             e.take_losses([x], 1)
-        unbind(e)
+    if u.id in CASTERS:
+        unbind(e, u)
 
 
 def ON_END_TURN(e):
@@ -412,7 +421,7 @@ def _score(e):
 
 # What became of each hero who was turned into a sheep: still grazing
 # at the end, driven to safety, eaten, or turned back when the
-# Witch-King died.
+# sorcerer who cast the spell died.
 SHEEP_TALES = {
     'aldric': dict(
         grazing="Prince Aldric ends the battle as a sheep. The king "
@@ -425,7 +434,7 @@ SHEEP_TALES = {
               "finest mutton in the kingdom, and the minstrels have been "
               "asked not to sing about it.",
         restored="Prince Aldric turned back into himself when the "
-                 "Witch-King fell, in the middle of a mouthful of grass. "
+                 "spell broke, in the middle of a mouthful of grass. "
                  "He insists he was scouting."),
     'elowen': dict(
         grazing="Lady Elowen Starbough is still a sheep: by common "
@@ -435,8 +444,8 @@ SHEEP_TALES = {
              "are confident the spell will wear off in a century or two.",
         eaten="Lady Elowen Starbough was eaten. The orcs complained that "
               "she tasted faintly of moonlight.",
-        restored="Lady Elowen came back to herself when the Witch-King "
-                 "fell, and has asked that nobody, ever, mention the "
+        restored="Lady Elowen came back to herself when the spell "
+                 "broke, and has asked that nobody, ever, mention the "
                  "bleating."),
     'brokk': dict(
         grazing="Brokk Stonehelm is still a sheep, a very bad-tempered "
@@ -449,7 +458,7 @@ SHEEP_TALES = {
               "on him. Ironhold has sworn a blood-feud against all "
               "trolls, and all mint sauce.",
         restored="Brokk Stonehelm turned back into a dwarf when the "
-                 "Witch-King fell and went straight back to the fighting "
+                 "spell broke and went straight back to the fighting "
                  "without a word. His beard has never quite lost its "
                  "curl."),
 }
@@ -967,8 +976,9 @@ HELP = [
     "SHEEP. A sheep can't fight. If the Dark Host kills it, it scores "
     "%d (%d for a hero); if the Alliance gets it off the west edge it "
     "scores %d. Keep sheep stacked with troops: they take losses last. "
-    "If Malgrith dies, every sheep still on the map is itself again, "
-    "and the dead each lose a step." % (SHEEP_VP, HERO_SHEEP_VP, SAFE_VP),
+    "If the sorcerer who cast the spell dies, the sheep he or she made "
+    "are themselves again. If Malgrith dies, the dead each lose a step "
+    "too." % (SHEEP_VP, HERO_SHEEP_VP, SAFE_VP),
 
     "WINNING. If the Alliance holds Nightspire, or the Dark Host "
     "Aldermere, at the end of a turn, it wins at once. Otherwise each "

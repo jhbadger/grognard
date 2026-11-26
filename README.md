@@ -1425,8 +1425,9 @@ other way to end him.
   takes a step; Raise brings up a band of skeletons. Sheep can't
   fight: the Dark Host scores 2 for each one it kills (4 for a hero)
   and the Alliance 1 for each it drives off the west edge, so sheep
-  want an escort. If Malgrith dies his spells die with him, and every
-  sheep left on the map is itself again.
+  want an escort. A sorcerer's spells die with the sorcerer: kill
+  Vesska and her sheep are themselves again, and the same for
+  Morrowgast or Malgrith.
 - **Winning**: holding Nightspire, or for the Dark Host Aldermere, at
   the end of a turn wins at once. Otherwise each side scores enemy
   steps, places held (Aldermere and Nightspire 10), sheep and heroes;
